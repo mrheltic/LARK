@@ -1,0 +1,49 @@
+{
+    "python.defaultInterpreterPath": "/usr/bin/python3",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/krakenSDR/src",
+        "${workspaceFolder}/libreSDR/src",
+        "${workspaceFolder}/shared"
+    ],
+    "python.analysis.typeCheckingMode": "basic",
+
+    // Esclude le directory di build/cache dall'explorer e dall'analisi
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        "**/external/heimdall_daq_fw/build": true
+    },
+    "search.exclude": {
+        "**/__pycache__": true,
+        "**/external/*/build": true,
+        "external/iridium-toolkit": true,
+        "external/gr-iridium": true
+    },
+
+    // Associazioni linguaggio
+    "files.associations": {
+        "*.ini": "ini",
+        "*.iq":  "binary",
+        "*.bits": "plaintext"
+    },
+
+    // Editor
+    "editor.rulers": [100],
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "[python]": {
+        "editor.formatOnSave": false,
+        "editor.defaultFormatter": "ms-python.black-formatter"
+    },
+
+    // Testing
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": [
+        "krakenSDR/src"
+    ],
+    "python.testing.unittestEnabled": false,
+
+    // Terminal
+    "terminal.integrated.defaultProfile.linux": "bash",
+    "terminal.integrated.cwd": "${workspaceFolder}"
+}

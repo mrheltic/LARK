@@ -1,0 +1,33 @@
+# =============================================================================
+#  LARK – Python dependencies
+#  Installa con:  pip3 install --user -r requirements.txt
+#
+#  Dipendenze di sistema (apt) → installate da setup.sh:
+#    sudo apt install python3-libiio libiio-utils libad9361-dev
+#    sudo apt install python3-pyqt5 rtl-sdr soapysdr-module-rtlsdr
+# =============================================================================
+
+# ── DSP core ─────────────────────────────────────────────────────────────────
+numpy>=1.24
+scipy>=1.11
+
+# ── Plotting ─────────────────────────────────────────────────────────────────
+matplotlib>=3.7
+
+# ── PyQt5 (backend matplotlib + GUI KrakenSDR) ───────────────────────────────
+# Preferire: sudo apt install python3-pyqt5
+# Fallback pip:
+# PyQt5>=5.15
+
+# ── LibreSDR / AD9363 via pyadi-iio ──────────────────────────────────────────
+# Nota: richiede libiio installato via apt (python3-libiio) o pip
+pyadi-iio>=0.0.17
+
+# ── Protobuf — monitoraggio gnss-sdr via UDP ─────────────────────────────────
+protobuf>=4.21
+
+# ── Test runner ──────────────────────────────────────────────────────────────
+pytest>=7.0
+
+# ── Packaging utilities ──────────────────────────────────────────────────────
+packaging>=23.0

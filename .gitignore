@@ -1,0 +1,98 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  LARK – .gitignore
+#  KrakenSDR + LibreSDR receiver/transmitter project
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+*.egg-link
+.installed.cfg
+lib/
+lib64/
+*.whl
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+ENV/
+.python-version
+
+# ── Jupyter notebooks checkpoints ────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── IQ files (binary, large) ─────────────────────────────────────────────────
+*.iq
+*.iq.gz
+*.iq.zst
+*.sigmf-data
+*.sigmf-meta
+*.bin
+*.dat
+*.raw
+*.cf32
+*.cs16
+*.cs8
+recordings/
+captures/
+*.npz
+
+# ── GNU Radio ─────────────────────────────────────────────────────────────────
+*.grc
+*.py.bak
+*.grc.bak
+
+# ── Heimdall / DAQ ────────────────────────────────────────────────────────────
+# Build artefacts produced by heimdall_daq_fw
+external/heimdall_daq_fw/build/
+external/heimdall_daq_fw/_logs/
+external/heimdall_daq_fw/daq_chain/logs/
+.doa_calibration.json
+*.ini.local             # local overrides (not shared config)
+
+# ── iridium-toolkit: do not track decoded sessions ───────────────────────────
+*.bits
+*.parsed
+*.raw_lines
+
+# ── C/C++ build artefacts ─────────────────────────────────────────────────────
+*.o
+*.a
+*.so.*
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile.cmake
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.vscode/*.log
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Protobuf generated (only the generated _pb2.py, keep the .proto sources) ─
+# Uncomment next two lines if protobufs are regenerated from source:
+# libreSDR/src/proto/*_pb2.py
+# libreSDR/src/proto/*_pb2_grpc.py
+
+# ── LibreSDR: temp TX files ───────────────────────────────────────────────────
+/tmp/libresdr_*

@@ -1,0 +1,41 @@
+"""
+pysdr_doa.core
+==============
+Re-exports all public symbols from doa_algorithms for clean import paths:
+
+    from core import ArrayConfig, Geometry, doa_music, ...
+    from core.burst import BurstDetector, BurstResult, PassTracker
+"""
+
+from __future__ import annotations
+
+# Re-export everything from the existing monolithic module so callers that
+# already do `from doa_algorithms import ...` keep working, while new code can
+# use the sub-package path `from core import ...`.
+from doa_algorithms import (   # noqa: F401
+    ArrayConfig,
+    Geometry,
+    steering,
+    covariance,
+    forward_backward_avg,
+    toeplitzify,
+    fb_toeplitz,
+    apply_decorrelation,
+    uca_to_vula,
+    compute_doa_covariance,
+    doa_music,
+    doa_capon,
+    doa_ml,
+    doa_root_music,
+    doa_esprit,
+    apply_phase_correction,
+    measure_power_db,
+    snr_from_covariance,
+    papr_db,
+    condition_number,
+    eigenvalue_spread_db,
+    CovarianceAccumulator,
+    coherence_matrix,
+)
+
+from core.burst import BurstDetector, BurstResult, PassTracker  # noqa: F401
