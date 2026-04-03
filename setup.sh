@@ -163,9 +163,9 @@ check_env() {
     chk "PyQt5"             "python3 -c 'from PyQt5 import Qt'"
     chk "rtl-sdr (rtl_test)" "command -v rtl_test"
     chk "iio_info"          "command -v iio_info"
-    chk "Heimdall (daq_server o Docker)" \
-        "[[ -f '$SCRIPT_DIR/external/heimdall_daq_fw/build/daq_server' ]] || command -v daq_server || \
-         (command -v docker && docker image inspect krakensdr-docker:latest &>/dev/null)"
+    chk "Heimdall (daq_start_sm.sh)" \
+        "[[ -f \"\$HOME/krakensdr/heimdall_daq_fw/Firmware_new/daq_start_sm.sh\" ]] || \
+         [[ -f '$SCRIPT_DIR/external/heimdall_daq_fw/Firmware_new/daq_start_sm.sh' ]]"
     chk "iridium-toolkit" \
         "[[ -f '$SCRIPT_DIR/external/iridium-toolkit/iridium-parser.py' ]] || \
          [[ -f \"\$HOME/krakensdr/iridium-toolkit/iridium-parser.py\" ]]"

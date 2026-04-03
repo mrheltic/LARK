@@ -51,14 +51,15 @@
         },
 
         // ═══════════════════════════════════════════════════════════════════
-        // HEIMDALL DAQ  (via Docker — network_mode: host, porte 5000/5001)
+        // HEIMDALL DAQ  (nativo — ~/krakensdr/heimdall_daq_fw/Firmware_new/)
+        // porte TCP: 5000 (IQ) + 5001 (hw ctrl) — out_data_iface_type=eth
         // ═══════════════════════════════════════════════════════════════════
         {
             "label": "Heimdall: Avvia — hardware reale (Iridium 1626.270 MHz)",
-            "detail": "Avvia container krakensdr-docker con profilo hardware + Iridium L-band",
+            "detail": "Copia config Iridium nel firmware e avvia daq_start_sm.sh. Richiede RTL-SDR.",
             "type": "shell",
-            "command": "docker compose -f ~/krakensdr/docker/docker-compose.yml --profile hardware up heimdall",
-            "options": { "cwd": "${workspaceFolder}" },
+            "command": "cp ${workspaceFolder}/krakenSDR/src/config/daq_chain_config.ini ~/krakensdr/heimdall_daq_fw/Firmware_new/ && bash ~/krakensdr/heimdall_daq_fw/Firmware_new/daq_start_sm.sh",
+            "options": { "cwd": "${HOME}/krakensdr/heimdall_daq_fw/Firmware_new" },
             "isBackground": true,
             "presentation": {
                 "reveal": "always",
@@ -69,17 +70,17 @@
                 "pattern": { "regexp": "^(.*)$", "message": 1 },
                 "background": {
                     "activeOnStart": true,
-                    "beginsPattern": "heimdall",
-                    "endsPattern": "Waiting for IQ data"
+                    "beginsPattern": "Starting DAQ",
+                    "endsPattern": "Have a coffee"
                 }
             }
         },
         {
             "label": "Heimdall: Avvia — sintetico (no hardware)",
-            "detail": "Avvia container krakensdr-docker in modalità sintetica. Non richiede RTL-SDR.",
+            "detail": "Avvia daq_synthetic_start.sh. Non richiede RTL-SDR. Utile per sviluppo/test.",
             "type": "shell",
-            "command": "docker compose -f ~/krakensdr/docker/docker-compose.yml up heimdall-synth",
-            "options": { "cwd": "${workspaceFolder}" },
+            "command": "bash ~/krakensdr/heimdall_daq_fw/Firmware_new/daq_synthetic_start.sh",
+            "options": { "cwd": "${HOME}/krakensdr/heimdall_daq_fw/Firmware_new" },
             "isBackground": true,
             "presentation": {
                 "reveal": "always",
@@ -90,17 +91,17 @@
                 "pattern": { "regexp": "^(.*)$", "message": 1 },
                 "background": {
                     "activeOnStart": true,
-                    "beginsPattern": "heimdall",
-                    "endsPattern": "Waiting for IQ data"
+                    "beginsPattern": "Starting DAQ",
+                    "endsPattern": "Have a coffee"
                 }
             }
         },
         {
-            "label": "Heimdall: Stop (tutti i container)",
-            "detail": "Ferma e rimuove tutti i container krakensdr-docker",
+            "label": "Heimdall: Stop",
+            "detail": "Esegue daq_stop.sh per terminare tutti i sottoprocessi Heimdall",
             "type": "shell",
-            "command": "docker compose -f ~/krakensdr/docker/docker-compose.yml down",
-            "options": { "cwd": "${workspaceFolder}" },
+            "command": "bash ~/krakensdr/heimdall_daq_fw/Firmware_new/daq_stop.sh",
+            "options": { "cwd": "${HOME}/krakensdr/heimdall_daq_fw/Firmware_new" },
             "presentation": {
                 "reveal": "always",
                 "panel": "shared",
