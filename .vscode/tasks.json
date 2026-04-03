@@ -51,13 +51,13 @@
         },
 
         // ═══════════════════════════════════════════════════════════════════
-        // HEIMDALL DAQ
+        // HEIMDALL DAQ  (via Docker — network_mode: host, porte 5000/5001)
         // ═══════════════════════════════════════════════════════════════════
         {
-            "label": "Heimdall: Avvia (Iridium 1626.270 MHz)",
-            "detail": "Avvia Heimdall DAQ con profilo Iridium L-band",
+            "label": "Heimdall: Avvia — hardware reale (Iridium 1626.270 MHz)",
+            "detail": "Avvia container krakensdr-docker con profilo hardware + Iridium L-band",
             "type": "shell",
-            "command": "HEIMDALL_BIN=${workspaceFolder}/external/heimdall_daq_fw/build/daq_server; [ -x \"$HEIMDALL_BIN\" ] || HEIMDALL_BIN=$(which daq_server 2>/dev/null) || { echo 'ERROR: daq_server non trovato. Esegui Setup: Compila Heimdall DAQ'; exit 1; }; \"$HEIMDALL_BIN\" ${workspaceFolder}/krakenSDR/src/config/daq_chain_config.ini",
+            "command": "docker compose -f ~/krakensdr/docker/docker-compose.yml --profile hardware up heimdall",
             "options": { "cwd": "${workspaceFolder}" },
             "isBackground": true,
             "presentation": {
@@ -69,31 +69,44 @@
                 "pattern": { "regexp": "^(.*)$", "message": 1 },
                 "background": {
                     "activeOnStart": true,
-                    "beginsPattern": "\\[DAQ\\]",
-                    "endsPattern": "\\[DAQ\\] Listening"
+                    "beginsPattern": "heimdall",
+                    "endsPattern": "Waiting for IQ data"
                 }
             }
         },
         {
-            "label": "Heimdall: Avvia (868 MHz, DoA generico)",
-            "detail": "Avvia Heimdall DAQ con profilo 868 MHz ISM",
+            "label": "Heimdall: Avvia — sintetico (no hardware)",
+            "detail": "Avvia container krakensdr-docker in modalità sintetica. Non richiede RTL-SDR.",
             "type": "shell",
-            "command": "HEIMDALL_BIN=${workspaceFolder}/external/heimdall_daq_fw/build/daq_server; [ -x \"$HEIMDALL_BIN\" ] || HEIMDALL_BIN=$(which daq_server 2>/dev/null) || { echo 'ERROR: daq_server non trovato.'; exit 1; }; \"$HEIMDALL_BIN\" ${workspaceFolder}/krakenSDR/src/config/daq_chain_config_868.ini",
+            "command": "docker compose -f ~/krakensdr/docker/docker-compose.yml up heimdall-synth",
             "options": { "cwd": "${workspaceFolder}" },
             "isBackground": true,
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated",
-                "label": "Heimdall DAQ 868"
+                "label": "Heimdall DAQ Synth"
             },
             "problemMatcher": {
                 "pattern": { "regexp": "^(.*)$", "message": 1 },
                 "background": {
                     "activeOnStart": true,
-                    "beginsPattern": "\\[DAQ\\]",
-                    "endsPattern": "\\[DAQ\\] Listening"
+                    "beginsPattern": "heimdall",
+                    "endsPattern": "Waiting for IQ data"
                 }
             }
+        },
+        {
+            "label": "Heimdall: Stop (tutti i container)",
+            "detail": "Ferma e rimuove tutti i container krakensdr-docker",
+            "type": "shell",
+            "command": "docker compose -f ~/krakensdr/docker/docker-compose.yml down",
+            "options": { "cwd": "${workspaceFolder}" },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "label": "Heimdall Stop"
+            },
+            "problemMatcher": []
         },
 
         // ═══════════════════════════════════════════════════════════════════
@@ -131,7 +144,7 @@
             "label": "KrakenSDR: Iridium — Ricevitore → Parser (pipe)",
             "detail": "Demodula + porta in iridium-toolkit/iridium-parser.py per decodifica completa del protocollo.",
             "type": "shell",
-            "command": "python3 iridium_receiver.py --freq 1626270000 | python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p",
+            "command": "IRIDIUM_TOOLKIT=$([ -d '${workspaceFolder}/external/iridium-toolkit' ] && echo '${workspaceFolder}/external/iridium-toolkit' || echo ~/krakensdr/iridium-toolkit); python3 iridium_receiver.py --freq 1626270000 | python3 \"$IRIDIUM_TOOLKIT/iridium-parser.py\" -p",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
             "group": "test",
             "presentation": {
@@ -148,7 +161,7 @@
             "command": "python3 pysdr_doa_iridium.py",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
             "group": "test",
-            "dependsOn": "Heimdall: Avvia (Iridium 1626.270 MHz)",
+            "dependsOn": "Heimdall: Avvia — hardware reale (Iridium 1626.270 MHz)",
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated",

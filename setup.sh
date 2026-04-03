@@ -156,15 +156,22 @@ check_env() {
     chk "numpy"             "python3 -c 'import numpy'"
     chk "scipy"             "python3 -c 'import scipy'"
     chk "matplotlib"        "python3 -c 'import matplotlib'"
-    chk "pyadi-iio (adi)"   "python3 -c 'import adi'"
+    chk "pyadi-iio (adi)" \
+        "python3 -c 'import adi' || \
+         [[ -x '$SCRIPT_DIR/.venv/bin/python3' ]] && '$SCRIPT_DIR/.venv/bin/python3' -c 'import adi'"
     chk "libiio (iio)"      "python3 -c 'import iio'"
     chk "PyQt5"             "python3 -c 'from PyQt5 import Qt'"
     chk "rtl-sdr (rtl_test)" "command -v rtl_test"
     chk "iio_info"          "command -v iio_info"
-    chk "Heimdall (daq_server)" \
-        "[[ -f '$SCRIPT_DIR/external/heimdall_daq_fw/build/daq_server' ]] || command -v daq_server"
-    chk "iridium-toolkit"   "[[ -f '$SCRIPT_DIR/external/iridium-toolkit/iridium-parser.py' ]]"
-    chk "gr-iridium"        "[[ -d '$SCRIPT_DIR/external/gr-iridium' ]]"
+    chk "Heimdall (daq_server o Docker)" \
+        "[[ -f '$SCRIPT_DIR/external/heimdall_daq_fw/build/daq_server' ]] || command -v daq_server || \
+         (command -v docker && docker image inspect krakensdr-docker:latest &>/dev/null)"
+    chk "iridium-toolkit" \
+        "[[ -f '$SCRIPT_DIR/external/iridium-toolkit/iridium-parser.py' ]] || \
+         [[ -f \"\$HOME/krakensdr/iridium-toolkit/iridium-parser.py\" ]]"
+    chk "gr-iridium" \
+        "[[ -d '$SCRIPT_DIR/external/gr-iridium' ]] || python3 -c 'import iridium' 2>/dev/null || \
+         command -v grgsm_decode 2>/dev/null || python3 -c 'import gnuradio' 2>/dev/null"
 
     echo ""
     echo -e "  ${GRN}OK: $ok_count${RST}   ${YEL}Mancanti: $fail_count${RST}"
