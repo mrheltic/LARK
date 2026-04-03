@@ -41,6 +41,16 @@
             "problemMatcher": []
         },
         {
+            "label": "Setup: Heimdall sudoers (una volta)",
+            "detail": "Aggiunge regola NOPASSWD per i comandi kernel usati da Heimdall. Richiede password sudo UNA VOLTA.",
+            "type": "shell",
+            "command": "echo 'mrheltic ALL=(ALL) NOPASSWD: /usr/sbin/sysctl -w kernel.sched_rt_runtime_us=*, /usr/bin/tee /proc/sys/vm/drop_caches, /bin/sh -c echo 0 > /sys/module/usbcore/parameters/usbfs_memory_mb, /usr/bin/env PATH=* python3 /home/mrheltic/krakensdr/heimdall_daq_fw/Firmware_new/_daq_core/hw_controller.py, /usr/bin/chrt *' | sudo tee /etc/sudoers.d/heimdall-daq && sudo chmod 440 /etc/sudoers.d/heimdall-daq && echo 'Sudoers Heimdall configurato OK'",
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": "build",
+            "presentation": { "reveal": "always", "panel": "shared" },
+            "problemMatcher": []
+        },
+        {
             "label": "Setup: Verifica ambiente",
             "type": "shell",
             "command": "bash setup.sh --check",
@@ -210,7 +220,7 @@
             "label": "LibreSDR: Verifica connessione AD9363",
             "detail": "Diagnostica IIO: mostra canali, frequenze, gain attuali dell'AD9363.",
             "type": "shell",
-            "command": "python3 check_device.py",
+            "command": "${workspaceFolder}/.venv/bin/python3 check_device.py",
             "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
             "group": "test",
             "presentation": {
@@ -223,7 +233,7 @@
             "label": "LibreSDR: TX simulazione realistica Iridium",
             "detail": "Genera e trasmette burst π/4-DQPSK con Doppler LEO realistico.",
             "type": "shell",
-            "command": "python3 iridium_realistic_sim.py --pass-dur 60",
+            "command": "${workspaceFolder}/.venv/bin/python3 iridium_realistic_sim.py --pass-dur 60",
             "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
             "group": "test",
             "presentation": {
@@ -236,7 +246,7 @@
             "label": "LibreSDR: TX burst semplici (test loopback)",
             "detail": "Trasmette burst DQPSK base senza effetti di canale. Utile per test loopback cablato.",
             "type": "shell",
-            "command": "python3 iridium_tx_libresdr.py",
+            "command": "${workspaceFolder}/.venv/bin/python3 iridium_tx_libresdr.py",
             "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
             "group": "test",
             "presentation": {
@@ -249,7 +259,7 @@
             "label": "LibreSDR: TX ciclico (loop continuo)",
             "detail": "Trasmette un frame IQ in loop continuo tramite DMA ciclico del AD9363.",
             "type": "shell",
-            "command": "python3 iridium_tx_libresdr.py --cyclic",
+            "command": "${workspaceFolder}/.venv/bin/python3 iridium_tx_libresdr.py --cyclic",
             "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
             "group": "test",
             "presentation": {
@@ -262,7 +272,7 @@
             "label": "LibreSDR: Genera file IQ (no TX)",
             "detail": "Genera burst Iridium-like e salva come file .iq complex64. Nessun hardware necessario.",
             "type": "shell",
-            "command": "python3 iridium_burst_gen.py --save output.iq --num-bursts 8 --no-plot",
+            "command": "${workspaceFolder}/.venv/bin/python3 iridium_burst_gen.py --save output.iq --num-bursts 8 --no-plot",
             "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
             "group": "test",
             "presentation": {
@@ -275,7 +285,7 @@
             "label": "LibreSDR: Selftest loopback",
             "detail": "Test encode→decode GPS loopback (senza hardware).",
             "type": "shell",
-            "command": "python3 selftest_loopback.py",
+            "command": "${workspaceFolder}/.venv/bin/python3 selftest_loopback.py",
             "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
             "group": "test",
             "presentation": {
