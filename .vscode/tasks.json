@@ -59,7 +59,7 @@
             "detail": "Copia config Iridium nel firmware e avvia daq_start_sm.sh. Richiede RTL-SDR.",
             "type": "shell",
             "command": "cp ${workspaceFolder}/krakenSDR/src/config/daq_chain_config.ini ~/krakensdr/heimdall_daq_fw/Firmware_new/ && bash ~/krakensdr/heimdall_daq_fw/Firmware_new/daq_start_sm.sh",
-            "options": { "cwd": "${HOME}/krakensdr/heimdall_daq_fw/Firmware_new" },
+            "options": { "cwd": "/home/mrheltic/krakensdr/heimdall_daq_fw/Firmware_new" },
             "isBackground": true,
             "presentation": {
                 "reveal": "always",
@@ -80,7 +80,7 @@
             "detail": "Avvia daq_synthetic_start.sh. Non richiede RTL-SDR. Utile per sviluppo/test.",
             "type": "shell",
             "command": "bash ~/krakensdr/heimdall_daq_fw/Firmware_new/daq_synthetic_start.sh",
-            "options": { "cwd": "${HOME}/krakensdr/heimdall_daq_fw/Firmware_new" },
+            "options": { "cwd": "/home/mrheltic/krakensdr/heimdall_daq_fw/Firmware_new" },
             "isBackground": true,
             "presentation": {
                 "reveal": "always",
@@ -101,7 +101,7 @@
             "detail": "Esegue daq_stop.sh per terminare tutti i sottoprocessi Heimdall",
             "type": "shell",
             "command": "bash ~/krakensdr/heimdall_daq_fw/Firmware_new/daq_stop.sh",
-            "options": { "cwd": "${HOME}/krakensdr/heimdall_daq_fw/Firmware_new" },
+            "options": { "cwd": "/home/mrheltic/krakensdr/heimdall_daq_fw/Firmware_new" },
             "presentation": {
                 "reveal": "always",
                 "panel": "shared",
