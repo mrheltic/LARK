@@ -42,8 +42,8 @@ Uso:
   python3 scripts/iridium_realistic_sim.py                   # file IQ + plot
   python3 scripts/iridium_realistic_sim.py --pass-dur 30     # 30 s di passo
   python3 scripts/iridium_realistic_sim.py --elev 45         # max elev. 45°
-  python3 scripts/iridium_realistic_sim.py --tx              # trasmetti via LibreSDR
-  python3 scripts/iridium_realistic_sim.py --save out.iq     # salva file IQ
+  python3 scripts/iridium_realistic_sim.py --pass-dur 60     # trasmetti via LibreSDR (TX on per default)
+  python3 scripts/iridium_realistic_sim.py --no-tx --save out.iq  # genera IQ senza trasmettere
   python3 scripts/iridium_realistic_sim.py --detect          # mostra correlator
 
 NOTA LEGALE: trasmettere nella banda Iridium (1616-1626,5 MHz) senza licenza

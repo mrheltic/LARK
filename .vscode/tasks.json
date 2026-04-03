@@ -234,7 +234,7 @@
             "label": "LibreSDR: TX simulazione realistica Iridium",
             "detail": "Genera e trasmette burst π/4-DQPSK con Doppler LEO realistico.",
             "type": "shell",
-            "command": "python3 iridium_realistic_sim.py --tx --pass-dur 60",
+            "command": "python3 iridium_realistic_sim.py --pass-dur 60",
             "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
             "group": "test",
             "presentation": {
