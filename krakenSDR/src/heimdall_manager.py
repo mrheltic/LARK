@@ -251,7 +251,8 @@ class HeimdallManager:
 
     def __repr__(self) -> str:
         mode  = "synth" if self.synthetic else "hw"
-        state = f"PID={self._proc.pid}" if self.is_running() else "fermo"
+        proc  = self._proc
+        state = f"PID={proc.pid}" if proc is not None and proc.poll() is None else "fermo"
         return (
             f"HeimdallManager(mode={mode!r}, fw={self._fw.name!r}, "
             f"host={self.host!r}, data={self.data_port}, ctrl={self.ctrl_port}, "

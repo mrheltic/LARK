@@ -63,8 +63,7 @@
             "isBackground": true,
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated",
-                "label": "Heimdall DAQ"
+                "panel": "dedicated"
             },
             "problemMatcher": {
                 "pattern": { "regexp": "^(.*)$", "message": 1 },
@@ -84,8 +83,7 @@
             "isBackground": true,
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated",
-                "label": "Heimdall DAQ Synth"
+                "panel": "dedicated"
             },
             "problemMatcher": {
                 "pattern": { "regexp": "^(.*)$", "message": 1 },
@@ -104,8 +102,7 @@
             "options": { "cwd": "/home/mrheltic/krakensdr/heimdall_daq_fw/Firmware_new" },
             "presentation": {
                 "reveal": "always",
-                "panel": "shared",
-                "label": "Heimdall Stop"
+                "panel": "shared"
             },
             "problemMatcher": []
         },
@@ -122,8 +119,7 @@
             "group": "test",
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated",
-                "label": "Iridium Detect"
+                "panel": "dedicated"
             },
             "problemMatcher": "$python"
         },
@@ -136,8 +132,7 @@
             "group": "test",
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated",
-                "label": "Iridium Receiver"
+                "panel": "dedicated"
             },
             "problemMatcher": "$python"
         },
@@ -150,8 +145,7 @@
             "group": "test",
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated",
-                "label": "Iridium RX → Parser"
+                "panel": "dedicated"
             },
             "problemMatcher": "$python"
         },
@@ -165,8 +159,7 @@
             "dependsOn": "Heimdall: Avvia — hardware reale (Iridium 1626.270 MHz)",
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated",
-                "label": "Iridium DoA"
+                "panel": "dedicated"
             },
             "problemMatcher": "$python"
         },
@@ -179,8 +172,7 @@
             "group": "test",
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated",
-                "label": "DoA Realtime"
+                "panel": "dedicated"
             },
             "problemMatcher": "$python"
         },
@@ -193,8 +185,7 @@
             "group": "test",
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated",
-                "label": "DoA Playback"
+                "panel": "dedicated"
             },
             "problemMatcher": "$python"
         },
@@ -207,8 +198,7 @@
             "group": { "kind": "test", "isDefault": true },
             "presentation": {
                 "reveal": "always",
-                "panel": "shared",
-                "label": "DoA Tests"
+                "panel": "shared"
             },
             "problemMatcher": "$python"
         },
@@ -225,8 +215,7 @@
             "group": "test",
             "presentation": {
                 "reveal": "always",
-                "panel": "shared",
-                "label": "LibreSDR Check"
+                "panel": "shared"
             },
             "problemMatcher": "$python"
         },
@@ -239,8 +228,7 @@
             "group": "test",
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated",
-                "label": "LibreSDR TX Sim"
+                "panel": "dedicated"
             },
             "problemMatcher": "$python"
         },
@@ -253,8 +241,7 @@
             "group": "test",
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated",
-                "label": "LibreSDR TX Burst"
+                "panel": "dedicated"
             },
             "problemMatcher": "$python"
         },
@@ -267,8 +254,7 @@
             "group": "test",
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated",
-                "label": "LibreSDR TX Cyclic"
+                "panel": "dedicated"
             },
             "problemMatcher": "$python"
         },
@@ -281,8 +267,7 @@
             "group": "test",
             "presentation": {
                 "reveal": "always",
-                "panel": "shared",
-                "label": "IQ Gen"
+                "panel": "shared"
             },
             "problemMatcher": "$python"
         },
@@ -295,8 +280,7 @@
             "group": "test",
             "presentation": {
                 "reveal": "always",
-                "panel": "shared",
-                "label": "Selftest"
+                "panel": "shared"
             },
             "problemMatcher": "$python"
         },
