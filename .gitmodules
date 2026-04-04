@@ -1,14 +1,14 @@
 [submodule "external/heimdall_daq_fw"]
 	path = external/heimdall_daq_fw
-	url  = https://github.com/krakenrf/heimdall_daq_fw.git
+	url = https://github.com/krakenrf/heimdall_daq_fw.git
 	shallow = true
 
 [submodule "external/iridium-toolkit"]
 	path = external/iridium-toolkit
-	url  = https://github.com/muccc/iridium-toolkit.git
+	url = https://github.com/muccc/iridium-toolkit.git
 	shallow = true
 
 [submodule "external/gr-iridium"]
 	path = external/gr-iridium
-	url  = https://github.com/muccc/gr-iridium.git
+	url = https://github.com/muccc/gr-iridium.git
 	shallow = true
