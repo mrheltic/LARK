@@ -455,7 +455,8 @@ def _update_timeline() -> None:
     """Redraw burst timeline (panel E) using step + fill_between."""
     bdata = list(_S.h_burst)
     _line_tl.set_ydata(bdata)
-    _ax_tl.collections.clear()
+    for coll in _ax_tl.collections[:]:
+        coll.remove()
     if any(bdata):
         _ax_tl.fill_between(_x_hist, 0, bdata, step="post",
                              color=AMBER, alpha=0.28, linewidth=0, zorder=1)

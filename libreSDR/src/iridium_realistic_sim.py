@@ -1,54 +1,54 @@
 #!/usr/bin/env python3
 """
-iridium_realistic_sim.py — Simulazione fedele del downlink Iridium da un singolo satellite
+iridium_realistic_sim.py — Faithful simulation of Iridium downlink from a single satellite
 
-Implementa le specifiche REALI del sistema Iridium ricavate da fonti pubbliche:
+Implements the REAL Iridium system parameters from public sources:
   ┌─────────────────────────────────────────────────────────────────┐
-  │ Sorgenti: gr-iridium (muccc/gr-iridium), iridium-toolkit        │
-  │           (muccc/iridium-toolkit), analisi community SDR        │
-  │           brevetti Motorola / ITU filing pubblici               │
+  │ Sources: gr-iridium (muccc/gr-iridium), iridium-toolkit        │
+  │          (muccc/iridium-toolkit), SDR community analysis       │
+  │          Motorola patents / public ITU filings                  │
   └─────────────────────────────────────────────────────────────────┘
 
-PARAMETRI FISICI:
-  - Modulazione:       π/4-DQPSK  (Differential QPSK ruotato di 45°)
-  - Symbol rate:       25.000 sps (confermato da gr-iridium)
-  - RRC roll-off β:    0,4        (confermato da gr-iridium/community)
-  - Banda operativa:   1616 – 1626,5 MHz (L-band)
-  - Frequenza base:    1.615.604.164 Hz  (da iridium-toolkit util.py)
-  - Spaziatura canale: 41.667 Hz  (FDMA, da iridium-toolkit)
+PHYSICAL PARAMETERS:
+  - Modulation:        π/4-DQPSK  (Differential QPSK rotated 45°)
+  - Symbol rate:       25.000 sps (confirmed by gr-iridium)
+  - RRC roll-off β:    0.4        (confirmed by gr-iridium/community)
+  - Operating band:    1616 – 1626.5 MHz (L-band)
+  - Base frequency:    1,615,604,164 Hz  (from iridium-toolkit util.py)
+  - Channel spacing:   41,667 Hz  (FDMA, from iridium-toolkit)
 
-STRUTTURA TDMA / BURST IRA (Ring Alert):
-  - Superframe:        90 ms  →  8 slot  →  1 slot = 11,25 ms = 281 simboli
-  - Guard pre-burst:   8 simboli  (0,32 ms)
-  - Preamble run-in:   32 simboli (1,28 ms) — rotazione costante +45° (tutti 0x00)
-                       → produce un tono a  fc + 3125 Hz  (Rs/8)
-                       → QUESTO È IL SEGNALE CHE SI DEVE RILEVARE
-  - Unique Word (UW):  12 simboli (24 bit) — da gr-iridium README footnote 2
+TDMA / IRA BURST STRUCTURE (Ring Alert):
+  - Superframe:        90 ms  →  8 slots  →  1 slot = 11.25 ms = 281 symbols
+  - Guard pre-burst:   8 symbols  (0.32 ms)
+  - Preamble run-in:   32 symbols (1.28 ms) — constant +45° phase rotation (all 0x00)
+                       → produces a tone at  fc + 3125 Hz  (Rs/8)
+                       → THIS IS THE SIGNAL TO DETECT
+  - Unique Word (UW):  12 symbols (24 bits) — from gr-iridium README footnote 2
                        ("12-symbol BPSK Iridium sync word")
-  - Frame data:        167 simboli (334 bit) — lunghezza confermata da output
-                       gr-iridium (179 simboli output = 12 UW + 167 data)
-  - Guard post-burst:  8 simboli  (0,32 ms)
-  - Silenzio:          54 simboli per completare lo slot di 281 simboli
+  - Frame data:        167 symbols (334 bits) — length confirmed by gr-iridium output
+                       (179 symbols output = 12 UW + 167 data)
+  - Guard post-burst:  8 symbols  (0.32 ms)
+  - Silence:           54 symbols to complete the 281-symbol slot
 
-MODELLO DOPPLER LEO:
-  - Orbita: circolare a h = 780 km (inclinazione 86,4°, Iridium classic/NEXT)
-  - Velocità orbitale: ~7464 m/s   (calcolata da μ_Terra/r_orbita)
-  - Doppler max:       ±40,2 kHz   (a 1621 MHz, pass al zenith)
-  - Rate di variazione: ~386 Hz/s  (massimo al closest approach, pass overhead)
-  - Modello geometrico: iperbolico → r(t) = √(r_min² + v_sat² × (t−t_ca)²)
-    dove t_ca = istante di closest approach (elevazione massima)
+LEO DOPPLER MODEL:
+  - Orbit: circular at h = 780 km (inclination 86.4°, Iridium classic/NEXT)
+  - Orbital velocity: ~7464 m/s   (derived from μ_Earth/r_orbit)
+  - Max Doppler:       ±40.2 kHz   (at 1621 MHz, overhead pass)
+  - Chirp rate:        ~386 Hz/s   (maximum at closest approach, overhead pass)
+  - Geometric model:   hyperbolic → r(t) = √(r_min² + v_sat² × (t−t_ca)²)
+    where t_ca = instant of closest approach (maximum elevation)
 
-Uso:
-  python3 scripts/iridium_realistic_sim.py                   # file IQ + plot
-  python3 scripts/iridium_realistic_sim.py --pass-dur 30     # 30 s di passo
+Usage:
+  python3 scripts/iridium_realistic_sim.py                   # IQ file + plot
+  python3 scripts/iridium_realistic_sim.py --pass-dur 30     # 30 s pass
   python3 scripts/iridium_realistic_sim.py --elev 45         # max elev. 45°
-  python3 scripts/iridium_realistic_sim.py --pass-dur 60     # trasmetti via LibreSDR (TX on per default)
-  python3 scripts/iridium_realistic_sim.py --no-tx --save out.iq  # genera IQ senza trasmettere
-  python3 scripts/iridium_realistic_sim.py --detect          # mostra correlator
+  python3 scripts/iridium_realistic_sim.py --pass-dur 60     # transmit via LibreSDR (TX on by default)
+  python3 scripts/iridium_realistic_sim.py --no-tx --save out.iq  # generate IQ without TX
+  python3 scripts/iridium_realistic_sim.py --detect          # show correlator
 
-NOTA LEGALE: trasmettere nella banda Iridium (1616-1626,5 MHz) senza licenza
-             è illegale. Usare connessione RF cablata (TX→attenuatore→RX) o
-             frequenza ISM autorizzata per test di laboratorio.
+LEGAL NOTE: transmitting in the Iridium band (1616-1626.5 MHz) without a licence
+            is illegal. Use a wired RF connection (TX→attenuator→RX) or an
+            authorised ISM frequency for lab tests.
 """
 
 import argparse
@@ -61,31 +61,33 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# ── Costanti fisiche ──────────────────────────────────────────────────────────
-C          = 2.99792458e8    # velocità della luce [m/s]
-MU_EARTH   = 3.986004418e14  # parametro gravitazionale Terra [m³/s²]
-R_EARTH    = 6.3710e6        # raggio terrestre medio [m]
+# ── Physical constants ──────────────────────────────────────────────────────────
+C          = 2.99792458e8    # speed of light [m/s]
+MU_EARTH   = 3.986004418e14  # Earth gravitational parameter [m³/s²]
+R_EARTH    = 6.3710e6        # mean Earth radius [m]
 
-# ── Parametri orbita Iridium ──────────────────────────────────────────────────
-IRIDIUM_ALT_M     = 780_000.0   # altitudine [m]
-IRIDIUM_INCL_DEG  = 86.4        # inclinazione [°]
-# Velocità orbitale derivata: v = √(μ/r)
+# ── Iridium orbital parameters ──────────────────────────────────────────────────
+IRIDIUM_ALT_M     = 780_000.0   # altitude [m]
+IRIDIUM_INCL_DEG  = 86.4        # inclination [°]
+# Derived orbital velocity: v = √(μ/r)
 _r_orbit = R_EARTH + IRIDIUM_ALT_M
 V_SAT     = np.sqrt(MU_EARTH / _r_orbit)   # ≈ 7464 m/s
 
-# ── Parametri segnale fisico (tutte le fonti concordi) ───────────────────────
-SYMBOL_RATE  = 25_000      # [sps] — confermato da gr-iridium
-SPS          = 10          # samples/symbol — default gr-iridium (250 ksps totali)
-SAMPLE_RATE  = SYMBOL_RATE * SPS   # 250.000 Hz
-RRC_BETA     = 0.4         # roll-off RRC — da gr-iridium / analisi community
+# ── Physical signal parameters (all sources agree) ────────────────────────
+SYMBOL_RATE  = 25_000      # [sps] — confirmed by gr-iridium
+SPS          = 10          # samples/symbol — gr-iridium default (250 ksps total)
+SAMPLE_RATE  = SYMBOL_RATE * SPS   # 250,000 Hz
+RRC_BETA     = 0.4         # RRC roll-off — from gr-iridium / community analysis
 RRC_NUM_TAPS = 11 * SPS + 1  # 111 taps per β=0.4, sps=10
 
-# ── Piano frequenziale Iridium (da iridium-toolkit/util.py) ──────────────────
+# ── Iridium frequency plan (from iridium-toolkit/util.py) ────────────────────────
 # frequency = 1_615_604_164 + (FA + 8×SB) × 41_667 + offset
 IRDM_FREQ_BASE    = 1_615_604_164   # [Hz]
 IRDM_CHAN_SPACING  = 41_667          # [Hz]
-# Canale IRA (Ring Alert) — Simplex band, SB=0, FA=8
-IRDM_IRA_FREQ     = IRDM_FREQ_BASE + 8 * IRDM_CHAN_SPACING   # ≈ 1.619 GHz
+# IRA channel computed from iridium-toolkit formula (SB=0, FA=8)
+IRDM_IRA_FREQ     = IRDM_FREQ_BASE + 8 * IRDM_CHAN_SPACING   # ≈ 1.616 GHz (formula only)
+# Actual Iridium Ring Alert / Simplex channel used by gr-iridium and iridium-toolkit
+IRDM_RING_ALERT_HZ = 1_626_270_000   # 1626.270 MHz — matches SIMPLEX_RING_CH_HZ
 
 # ── Struttura TDMA ────────────────────────────────────────────────────────────
 # Superframe = 90 ms, 8 slot, 1 slot = 281,25 simboli → arrotondiamo a 281
@@ -138,17 +140,17 @@ def pi4_dqpsk_modulate(bits: np.ndarray, initial_phase: float = np.pi / 4) -> np
     """
     Modulatore π/4-DQPSK fedele alle specifiche Iridium.
 
-    La variante π/4 si distingue dal DQPSK classico per la fase iniziale π/4,
-    che fa sì che la costellazione trasmessa alterne tra due QPSK ruotate di 45°.
-    Questo impedisce la transizione attraverso l'origine → migliore efficienza
-    dell'amplificatore RF in condizioni operative.
+    The π/4 variant differs from classic DQPSK by the initial phase π/4,
+    which causes the transmitted constellation to alternate between two QPSK
+    grids rotated by 45°. This prevents transitions through the origin →
+    better RF amplifier efficiency in operational conditions.
 
     Args:
-        bits:          Array di bit (interi 0/1), deve essere di lunghezza pari.
-        initial_phase: Fase iniziale in rad (default π/4 per la variante π/4)
+        bits:          Bit array (integers 0/1), must have even length.
+        initial_phase: Initial phase in rad (default π/4 for the π/4 variant)
 
     Returns:
-        Array di simboli complessi normalizzati (|s|=1)
+        Array of normalised complex symbols (|s|=1)
     """
     if len(bits) % 2 != 0:
         bits = np.append(bits, 0)
@@ -182,7 +184,7 @@ def pi4_dqpsk_demodulate_differential(samples: np.ndarray) -> np.ndarray:
 def generate_rrc_filter(beta: float, sps: int, num_taps: int) -> np.ndarray:
     """
     Genera il filtro RRC con formula esatta (non approssimata).
-    β=0.4 è il valore usato per Iridium in gr-iridium.
+    β=0.4 is the value used for Iridium in gr-iridium.
     """
     t = (np.arange(num_taps) - (num_taps - 1) // 2) / float(sps)
     h = np.zeros(num_taps)
@@ -210,13 +212,12 @@ def generate_rrc_filter(beta: float, sps: int, num_taps: int) -> np.ndarray:
 def _iridium_scrambler(length: int, seed: int = 0x4A2C) -> np.ndarray:
     """
     Scrambler LFSR semplificato per il payload Iridium.
-    Il polinomio esatto non è pubblicamente documentato; usiamo un LFSR a 16 bit
-    che produce una sequenza pseudo-casuale con buone proprietà statistiche.
+    The exact polynomial is not publicly documented; we use a 16-bit LFSR
+    that produces a pseudo-random sequence with good statistical properties.
 
-    NOTA: il payload reale Iridium usa un codice convoluzionale + scrambling
-          specifico. Qui usiamo solo lo scrambling per realismo della densità
-          spettrale. La struttura del payload non influisce sulla rilevazione
-          del preamble/UW.
+    NOTE: the real Iridium payload uses a convolutional code + specific scrambling.
+          Here we only use scrambling for spectral density realism. The payload
+          structure does not affect preamble/UW detection.
     """
     state = seed & 0xFFFF
     seq = np.zeros(length, dtype=np.uint8)
@@ -235,7 +236,7 @@ def conv_encode_rate_half(bits: np.ndarray) -> np.ndarray:
     G1 = 1011011b = 0x5B  →  1 + D + D³ + D⁴ + D⁶
 
     Ogni bit in ingresso produce 2 bit in uscita (interleaved G0, G1).
-    Nota: l'encoder è inizializzato con shift register = 0 (trellis flushed
+    Note: the encoder is initialised with shift register = 0 (trellis flushed
     aggiungendo K-1=6 bit di tailing).
     """
     K = 7
@@ -263,9 +264,9 @@ def generate_ira_frame_bits(sat_id: int = 0, beam_id: int = 0,
       ┌──────────────────┬──────────────────┬──────────────────────┬──────┐
       │ sat_id  (8 bit)  │ beam_id (6 bit)  │ frame_cnt (16 bit)   │ dati │
       └──────────────────┴──────────────────┴──────────────────────┴──────┘
-    Il payload totale è {(IRA_DATA_SYMS+IRA_TAIL_SYMS)*2} bit (338 bit),
-    che corrisponde a {(IRA_DATA_SYMS+IRA_TAIL_SYMS)*2 // 2} bit informativi
-    dopo la codifica rate 1/2 (con K-1=6 tail bit già inclusi nell'output).
+    Total payload is {(IRA_DATA_SYMS+IRA_TAIL_SYMS)*2} bits (338 bits),
+    corresponding to {(IRA_DATA_SYMS+IRA_TAIL_SYMS)*2 // 2} information bits
+    after rate 1/2 coding (K-1=6 tail bits already included in the output).
     """
     # 338 bit simboli totali dal frame (data + tail simboli × 2 bit/simbolo)
     total_coded_bits = (IRA_DATA_SYMS + IRA_TAIL_SYMS) * 2   # 338
@@ -293,7 +294,7 @@ def generate_ira_frame_bits(sat_id: int = 0, beam_id: int = 0,
 
     # Codifica convoluzionale rate 1/2, K=7
     coded = conv_encode_rate_half(info)
-    # conv_encode_rate_half produce info_bits*2 + (K-1)*2 = 169*2 - già integrati
+    # conv_encode_rate_half produces info_bits*2 + (K-1)*2 = 169*2 — already included
     # Tronca/padda a total_coded_bits per sicurezza
     if len(coded) > total_coded_bits:
         coded = coded[:total_coded_bits]
@@ -318,7 +319,7 @@ def generate_ira_burst(rrc_filter: np.ndarray,
     I dati sono codificati con convoluzionale rate 1/2, K=7 (NASA/CCSDS).
 
     Returns:
-        (slot_iq, markers) dove markers è un dict con gli indici campione di
+        (slot_iq, markers) where markers is a dict with the sample indices of
         inizio/fine di ogni sezione.
     """
     # ── Sezione 1: Guard pre-burst (silenzio) ─────────────────────────────
@@ -326,14 +327,14 @@ def generate_ira_burst(rrc_filter: np.ndarray,
 
     # ── Sezione 2: Preamble run-in (64 simboli) ───────────────────────────
     # Tutti dibits 0x00 → Δφ = +π/4 per simbolo → tono @ +Rs/8 Hz dal carrier
-    # Questa è la "segnatura" che permette di rilevare il burst nel RF
+    # This is the "signature" tone that allows burst detection in RF
     preamble_bits = np.zeros(IRA_PREAMBLE_SYMS * 2, dtype=np.uint8)
     preamble_syms = pi4_dqpsk_modulate(preamble_bits, initial_phase=np.pi / 4)
 
     # ── Sezione 3: Unique Word (12 simboli BPSK assoluti) ─────────────────
     # UW_DL[] da iridium.h: {0,2,2,2,2,0,0,0,2,0,0,2}, quadrante 0=45°, 2=225°
-    # Il UW NON passa per il modulatore differenziale: è inserito direttamente
-    # come fasi assolute. Questo è il comportamento atteso da gr-iridium.
+    # The UW does NOT go through the differential modulator: it is inserted
+    # directly as absolute phases. This is the expected behaviour per gr-iridium.
     uw_syms = UW_DL_SYMBOLS.copy()   # 12 simboli complessi, |s|=1
 
     # ── Sezione 4: Frame data (167+2 simboli, codifica conv. rate 1/2 K=7) ─
@@ -387,7 +388,7 @@ class IridiumLEODoppler:
 
     Il modello approssima il moto del satellite come moto rettilineo uniforme
     a quota costante (valido per finestre di osservazione < 5 minuti).
-    L'effetto della rotazione terrestre è trascurato (errore < 1%).
+    The effect of Earth's rotation is neglected (error < 1%).
 
     Geometria di riferimento:
       - Stazione a terra in (0, 0)
@@ -396,15 +397,15 @@ class IridiumLEODoppler:
       - Per t < 0: satellite si avvicina (Doppler positivo, freq aumenta)
       - Per t > 0: satellite si allontana (Doppler negativo, freq diminuisce)
 
-    La portata istantanea è:
+    The instantaneous range is:
         r(t) = √(r_min² + v_sat² × (t − t_ca)²)
 
-    dove r_min = h / sin(E_max) è la portata minima (slant range al closest approach).
+    where r_min = h / sin(E_max) is the minimum range (slant range at closest approach).
 
-    La portata variabile dà:
+    The varying range gives:
         ṙ(t) = v_sat² × (t − t_ca) / r(t)
 
-    Lo shift Doppler è:
+    The Doppler shift is:
         Δf(t) = −f₀ × ṙ(t) / c    [Hz]
 
     Valori tipici per Iridium a 1621 MHz:
@@ -436,7 +437,7 @@ class IridiumLEODoppler:
               f"chirp={chirp_hz_per_s:.1f} Hz/s  (closest approach)")
 
     def range_rate(self, t: float) -> float:
-        """Velocità radiale [m/s] all'istante t. Segno: >0 = allontanamento."""
+        """Radial velocity [m/s] at time t. Sign: >0 = moving away."""
         dt = t - self.t_ca
         r  = np.sqrt(self.r_min ** 2 + self.v_sat ** 2 * dt ** 2)
         return self.v_sat ** 2 * dt / r
@@ -472,7 +473,7 @@ class IridiumLEODoppler:
 
 def simulate_iridium_pass(
     duration_s: float = 60.0,
-    carrier_hz: float = float(IRDM_IRA_FREQ),
+    carrier_hz: float = float(IRDM_RING_ALERT_HZ),
     max_elev_deg: float = 45.0,
     snr_db: float = 15.0,
     sat_id: int = 47,
@@ -494,7 +495,7 @@ def simulate_iridium_pass(
         snr_db:        SNR in dB (aggiunto come AWGN alla fine)
         sat_id:        ID satellite (0-127)
         beam_id:       ID beam (0-47)
-        t_closest:     Istante del closest approach [s] (default: metà della sim)
+        t_closest:     Instant of closest approach [s] (default: midpoint of sim)
 
     Returns:
         (iq_samples, burst_log, doppler_model, rrc_filter)
@@ -522,7 +523,7 @@ def simulate_iridium_pass(
         el_deg   = doppler.elevation_deg(t_center)
 
         # Calcola Doppler al centro del burst (costante per tutto il burst:
-        # la variazione di Doppler IN un burst da 9 ms è < 3.5 Hz → trascurabile)
+        # Doppler variation WITHIN a 9 ms burst is < 3.5 Hz → negligible)
         f_doppler = doppler.doppler_at_t(t_center)
 
         # Genera il burst IQ @ freq. base (nessun Doppler applicato ancora)
@@ -579,7 +580,7 @@ def simulate_iridium_pass(
 
 def build_preamble_template(rrc: np.ndarray) -> np.ndarray:
     """
-    Costruisce il template IQ del preamble run-in (già filtrato con RRC).
+    Build the IQ template for the preamble run-in (already filtered with RRC).
     Usato per cross-correlazione.
     """
     pm_bits = np.zeros(IRA_PREAMBLE_SYMS * 2, dtype=np.uint8)
@@ -602,9 +603,9 @@ def detect_preamble(iq: np.ndarray, rrc: np.ndarray,
       3. Calcola la correlazione incrociata con il template del preamble
       4. Cerca i picchi sopra soglia
 
-    Questo è sostanzialmente ciò che fa gr-iridium per trovare i burst:
-    cerca energia nel canale FDMA già canalizzato (doppler gestito dal
-    filtro polyphase bank), poi passa al demodulatore QPSK.
+    This is essentially what gr-iridium does to find bursts:
+    it searches for energy in the already channelised FDMA channel (Doppler handled
+    by the polyphase filter bank), then passes to the QPSK demodulator.
 
     Args:
         iq:                  Campioni IQ in ingresso
@@ -641,7 +642,7 @@ def detect_preamble(iq: np.ndarray, rrc: np.ndarray,
         # Compensazione Doppler: ruota il segnale di −f_d
         iq_comp = iq * np.exp(-1j * 2 * np.pi * f_d * t)
 
-        # Cross-correlazione tramite FFT (più veloce della convoluzione diretta)
+        # Cross-correlation via FFT (faster than direct convolution)
         X = np.fft.fft(iq_comp, n=n_fft)
         T = np.fft.fft(np.conj(template[::-1]), n=n_fft)  # matched filter
         corr = np.abs(np.fft.ifft(X * T))[:len(iq)]
@@ -860,7 +861,7 @@ def transmit_via_libresdr(iq: np.ndarray, uri: str, center_freq_hz: int,
     HW_BUF_MAX = 2**20   # 1.048.576 campioni ≈ 1.05 s @ 1 MSPS
 
     if cyclic:
-        # Ritaglia al multiplo di un superframe più vicino sotto HW_BUF_MAX
+        # Trim to nearest superframe multiple below HW_BUF_MAX
         slot_samples_hw = int(SUPERFRAME_S * TX_RATE)   # 90000 campioni
         n_slots_fit = max(1, HW_BUF_MAX // slot_samples_hw)
         cyclic_len = n_slots_fit * slot_samples_hw
@@ -887,18 +888,18 @@ def transmit_via_libresdr(iq: np.ndarray, uri: str, center_freq_hz: int,
         finally:
             sdr.tx_destroy_buffer()
     else:
-        # Per buffer grandi in one-shot: invia a blocchi di HW_BUF_MAX
-        if len(tx_iq) <= HW_BUF_MAX:
-            sdr.tx(tx_iq)
-            print(f"  Trasmesso: {len(tx_iq)} campioni ({len(tx_iq)/TX_RATE*1000:.1f} ms)")
-        else:
-            n_chunks = int(np.ceil(len(tx_iq) / HW_BUF_MAX))
-            print(f"  One-shot in {n_chunks} blocchi da {HW_BUF_MAX} campioni …")
-            for i in range(n_chunks):
-                chunk = tx_iq[i * HW_BUF_MAX:(i + 1) * HW_BUF_MAX]
-                sdr.tx(chunk)
-                print(f"    blocco {i+1}/{n_chunks} trasmesso")
-            print(f"  Completato: {len(tx_iq)} campioni ({len(tx_iq)/TX_RATE:.2f} s)")
+        # One-shot: the AD9363 DMA (over IIO/Ethernet) cannot handle buffers larger than
+        # ~2^20 samples — anything bigger causes BrokenPipe on _txbuf.push().
+        # Cap to HW_BUF_MAX and warn the user if truncation occurs.
+        if len(tx_iq) > HW_BUF_MAX:
+            print(f"  [WARN] IQ block ({len(tx_iq)} samples, "
+                  f"{len(tx_iq)/TX_RATE:.1f} s) exceeds HW limit "
+                  f"({HW_BUF_MAX} samples, {HW_BUF_MAX/TX_RATE:.1f} s). "
+                  f"Truncating. Use --cyclic for longer passes.")
+            tx_iq = tx_iq[:HW_BUF_MAX]
+        sdr.tx_buffer_size = len(tx_iq)
+        sdr.tx(tx_iq)
+        print(f"  Transmitted: {len(tx_iq)} samples ({len(tx_iq)/TX_RATE*1000:.1f} ms)")
 
     return True
 
@@ -937,10 +938,10 @@ Esempi:
                         metavar="dB",
                         help="SNR del canale AWGN [dB] (default: 15). "
                              "Usa 100 per segnale ideale senza rumore")
-    parser.add_argument("--carrier",   type=float, default=float(IRDM_IRA_FREQ),
+    parser.add_argument("--carrier",   type=float, default=float(IRDM_RING_ALERT_HZ),
                         metavar="HZ",
                         help=f"Frequenza portante simulata [Hz] "
-                             f"(default: {IRDM_IRA_FREQ} Hz = ch. IRA Iridium)")
+                             f"(default: {IRDM_RING_ALERT_HZ} Hz = Iridium Ring Alert)")
     parser.add_argument("--sat-id",    type=int, default=47,
                         metavar="ID",
                         help="ID satellite Iridium simulato (0-127, default: 47)")
@@ -964,10 +965,10 @@ Esempi:
     parser.add_argument("--tx-uri",    type=str, default="ip:192.168.1.10",
                         metavar="URI",
                         help="URI IIO del LibreSDR (default: ip:192.168.1.10)")
-    parser.add_argument("--tx-freq",   type=float, default=float(IRDM_IRA_FREQ),
+    parser.add_argument("--tx-freq",   type=float, default=float(IRDM_RING_ALERT_HZ),
                         metavar="HZ",
                         help=f"Frequenza portante TX per LibreSDR [Hz] "
-                             f"(default: {IRDM_IRA_FREQ} Hz = canale IRA Iridium)")
+                             f"(default: {IRDM_RING_ALERT_HZ} Hz = Iridium Ring Alert)")
     parser.add_argument("--tx-gain",   type=float, default=-60.0,
                         metavar="dB",
                         help="Gain TX in dB, range −90…0  (default: −60)")
@@ -1046,7 +1047,7 @@ Esempi:
     detections = []
     if args.detect:
         print(f"\n  Rilevamento preamble (correlatore):")
-        # Analizza solo i primi 10 secondi per velocità
+        # Analyse only the first 10 seconds for speed
         seg_len = min(len(iq), int(10.0 * SAMPLE_RATE))
         detections = detect_preamble(iq[:seg_len], rrc,
                                       doppler_search_hz=45_000,

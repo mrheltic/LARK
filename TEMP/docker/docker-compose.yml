@@ -1,0 +1,278 @@
+# ============================================================
+#  KrakenSDR – Docker Compose
+#
+#  Quick start:
+#    docker compose -f docker/docker-compose.yml up synthetic
+#    docker compose -f docker/docker-compose.yml --profile hardware up
+#
+#  Live development (edit Python/GRC on host, run inside container):
+#    docker compose -f docker/docker-compose.yml --profile dev up dev
+#    docker compose -f docker/docker-compose.yml --profile dev up grc             ← GRC vuoto (no Heimdall)
+#    docker compose -f docker/docker-compose.yml --profile dev up grc-heimdall   ← GRC + Heimdall hardware
+#    docker compose -f docker/docker-compose.yml --profile dev up grc-synth      ← GRC + Heimdall sintetico
+#    docker compose -f docker/docker-compose.yml --profile dev up doa          ← DoA widget (hardware)
+#    docker compose -f docker/docker-compose.yml --profile dev up doa-synth    ← DoA widget (sintetico)
+#
+#    The host directory  krakensdr/workspace/  is bind-mounted read-write
+#    into  /workspace  inside the container.  Any .py or .grc file you save
+#    on the host is immediately visible inside — no rebuild needed.
+#    Run a script:  python3 /workspace/run_doa.py
+#    Or open GRC:   gnuradio-companion  (opens directly in /workspace)
+#
+#  Config override (USB 2.0-optimized profile):
+#    The file docker/config/daq_chain_config.ini is mounted read-only
+#    into the container when it exists.  Edit it to tune sample_rate,
+#    cpi_size, decimation_ratio, etc. without rebuilding the image.
+#
+#  Prerequisite: bash docker/build.sh
+# ============================================================
+
+x-kraken-base: &kraken-base
+  image: krakensdr-docker:latest
+  # Host network: eliminates Docker bridge NAT overhead on the ZeroMQ
+  # pipes between Heimdall and GNU Radio (ports 5000/5001).
+  network_mode: host
+  # Share host IPC namespace: required for X11 MIT-SHM and Qt rendering.
+  ipc: host
+  # Full privileges: real-time scheduling (chrt -f 99), libusb, rmmod.
+  privileged: true
+  # Unlimited /dev/shm for Heimdall DAQ ring buffers.
+  shm_size: '0'
+  # Real-time priority and unlimited memory-lock for DAQ processes.
+  ulimits:
+    rtprio: 99
+    memlock:
+      soft: -1
+      hard: -1
+  environment:
+    - DISPLAY=${DISPLAY:-:0}
+    - QT_X11_NO_MITSHM=1
+    - QT_QPA_PLATFORM=xcb
+    - XDG_RUNTIME_DIR=/tmp/runtime-kraken
+  volumes:
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+  restart: "no"
+
+# Config override anchor — add to any service to mount the USB 2.0 profile.
+# Usage:  <<: *config-override   (mix into a service definition)
+x-config-override: &config-override
+  volumes:
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    - ./config/daq_chain_config.ini:/opt/krakensdr/heimdall_daq_fw/Firmware/daq_chain_config.ini:ro
+
+# Workspace mount anchor — bind-mounts ../workspace/ into /workspace read-write.
+# Any .py / .grc file saved on the host is immediately visible in the container.
+# PYTHONPATH=/workspace is exported by the entrypoint for 'dev' and 'grc' commands.
+# The gr-krakensdr Python blocks and GRC YAML are also live-mounted so that
+# edits to krakensdr_correlator.py, doa_music.py, or the block descriptor take
+# effect on the next container start without needing a full rebuild.
+x-workspace: &workspace
+  - /tmp/.X11-unix:/tmp/.X11-unix:rw
+  - ../workspace:/workspace:rw
+  - ../gr-krakensdr/python/krakensdr/krakensdr_correlator.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/krakensdr_correlator.py:ro
+  - ../gr-krakensdr/python/krakensdr/doa_music.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/doa_music.py:ro
+  - ../gr-krakensdr/grc/krakensdr_doa_music.block.yml:/usr/share/gnuradio/grc/blocks/krakensdr_doa_music.block.yml:ro
+  - ./config/daq_chain_config.ini:/opt/krakensdr/heimdall_daq_fw/Firmware/daq_chain_config.ini:ro
+
+services:
+
+  # ── Synthetic test (no hardware needed) ──────────────────────────────────
+  synthetic:
+    <<: *kraken-base
+    container_name: kraken-synthetic
+    command: synthetic
+    profiles: ["synthetic", "demo"]
+
+  # ── Heimdall DAQ (hardware) ───────────────────────────────────────────────
+  heimdall:
+    <<: *kraken-base
+    container_name: kraken-heimdall
+    command: heimdall
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - heimdall_logs:/opt/krakensdr/heimdall_daq_fw/Firmware/_logs
+      - ./config/daq_chain_config.ini:/opt/krakensdr/heimdall_daq_fw/Firmware/daq_chain_config.ini:ro
+      - ./entrypoint.sh:/entrypoint.sh:ro
+      - ../heimdall_daq_fw/Firmware/_daq_core/delay_sync.py:/opt/krakensdr/heimdall_daq_fw/Firmware/_daq_core/delay_sync.py:ro
+    profiles: ["hardware"]
+
+  # ── Heimdall DAQ synthetic (no hardware) ─────────────────────────────────
+  heimdall-synth:
+    <<: *kraken-base
+    container_name: kraken-heimdall-synth
+    command: heimdall-synth
+    volumes:
+      - ./entrypoint.sh:/entrypoint.sh:ro
+    profiles: ["synth-backend"]
+
+  # ── GNU Radio frontend – 5 channels ──────────────────────────────────────
+  gnuradio:
+    <<: *kraken-base
+    container_name: kraken-gnuradio
+    command: fft
+    depends_on:
+      - heimdall
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    profiles: ["hardware"]
+
+  # ── Quick 2-channel test ──────────────────────────────────────────────────
+  test:
+    <<: *kraken-base
+    container_name: kraken-test
+    command: test
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Uncomment to override config:
+      # - ./config/daq_chain_config.ini:/opt/krakensdr/heimdall_daq_fw/Firmware/daq_chain_config.ini:ro
+    profiles: ["hardware", "test"]
+
+  # ── Dev shell: Heimdall bg + interactive bash, workspace live-mounted ─────
+  #
+  #  Start:  docker compose -f docker/docker-compose.yml --profile dev up dev
+  #  Then:   docker exec -it kraken-dev bash
+  #  Inside: python3 /workspace/run_doa.py
+  #          python3 /workspace/kraken_doa_868mhz.py
+  #
+  #  Edit any file in krakensdr/workspace/ on the host and re-run —
+  #  no rebuild or container restart needed.
+  dev:
+    <<: *kraken-base
+    container_name: kraken-dev
+    command: dev
+    volumes: *workspace
+    profiles: ["dev"]
+
+  # ── GRC GUI: gnuradio-companion – workspace vuoto, nessun Heimdall ────────────
+  #
+  #  Start:  docker compose -f docker/docker-compose.yml --profile dev up grc
+  #
+  #  Apre GNU Radio Companion senza precaricare alcun file e senza avviare
+  #  Heimdall DAQ.  Utile per creare/modificare flowgraph liberamente.
+  grc:
+    <<: *kraken-base
+    container_name: kraken-grc
+    command: grc
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ../workspace:/workspace:rw
+      - ../gr-krakensdr/python/krakensdr/krakensdr_correlator.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/krakensdr_correlator.py:ro
+      - ../gr-krakensdr/python/krakensdr/doa_music.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/doa_music.py:ro
+      - ../gr-krakensdr/python/krakensdr/__init__.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/__init__.py:ro
+      - ../gr-krakensdr/grc/krakensdr_doa_music.block.yml:/usr/share/gnuradio/grc/blocks/krakensdr_doa_music.block.yml:ro
+      - ../gr-krakensdr/grc/krakensdr_music_doa_block.block.yml:/usr/share/gnuradio/grc/blocks/krakensdr_music_doa_block.block.yml:ro
+      - ./entrypoint.sh:/entrypoint.sh:ro
+    profiles: ["dev"]
+
+  # ── GRC + Heimdall hardware: apre kraken_doa_main.grc ───────────────────────
+  #
+  #  Start:  docker compose -f docker/docker-compose.yml --profile dev up grc-heimdall
+  grc-heimdall:
+    <<: *kraken-base
+    container_name: kraken-grc-heimdall
+    command: grc-heimdall
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ../workspace:/workspace:rw
+      - ../gr-krakensdr/python/krakensdr/krakensdr_correlator.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/krakensdr_correlator.py:ro
+      - ../gr-krakensdr/python/krakensdr/doa_music.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/doa_music.py:ro
+      - ../gr-krakensdr/python/krakensdr/__init__.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/__init__.py:ro
+      - ../gr-krakensdr/grc/krakensdr_doa_music.block.yml:/usr/share/gnuradio/grc/blocks/krakensdr_doa_music.block.yml:ro
+      - ../gr-krakensdr/grc/krakensdr_music_doa_block.block.yml:/usr/share/gnuradio/grc/blocks/krakensdr_music_doa_block.block.yml:ro
+      - ./entrypoint.sh:/entrypoint.sh:ro
+      - ./config/daq_chain_config.ini:/opt/krakensdr/heimdall_daq_fw/Firmware/daq_chain_config.ini:ro
+    profiles: ["dev"]
+
+  # ── GRC + Heimdall sintetico: apre kraken_doa_main.grc senza hardware ───────
+  #
+  #  Start:  docker compose -f docker/docker-compose.yml --profile dev up grc-synth
+  grc-synth:
+    <<: *kraken-base
+    container_name: kraken-grc-synth
+    command: grc-synth
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ../workspace:/workspace:rw
+      - ../gr-krakensdr/python/krakensdr/krakensdr_correlator.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/krakensdr_correlator.py:ro
+      - ../gr-krakensdr/python/krakensdr/doa_music.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/doa_music.py:ro
+      - ../gr-krakensdr/python/krakensdr/__init__.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/__init__.py:ro
+      - ../gr-krakensdr/grc/krakensdr_doa_music.block.yml:/usr/share/gnuradio/grc/blocks/krakensdr_doa_music.block.yml:ro
+      - ../gr-krakensdr/grc/krakensdr_music_doa_block.block.yml:/usr/share/gnuradio/grc/blocks/krakensdr_music_doa_block.block.yml:ro
+      - ./entrypoint.sh:/entrypoint.sh:ro
+      - ./config/daq_chain_config.ini:/opt/krakensdr/heimdall_daq_fw/Firmware/daq_chain_config.ini:ro
+    profiles: ["dev"]
+
+  # ── DoA N-antenna with widgets (standalone, real hardware) ──────────────────
+  #
+  #  Start:  docker compose -f docker/docker-compose.yml --profile dev up doa
+  #
+  #  Launches run_doa.py: supports 2-5 antennas, ULA or UCA.
+  #  Configure via environment variables:
+  #    NUM_CHANNELS  (default 2)
+  #    ARRAY_TYPE    (default ULA, auto UCA for >=3)
+  #    CENTER_FREQ   (default 868.0 MHz)
+  #    GAIN_DB       (default 40.2)
+  #    ARRAY_DIST    (default 0.17 m)
+  #
+  #  entrypoint.sh is bind-mounted (ro) so changes are active without rebuild.
+  doa:
+    <<: *kraken-base
+    container_name: kraken-doa
+    command: doa
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+      - QT_QPA_PLATFORM=xcb
+      - XDG_RUNTIME_DIR=/tmp/runtime-kraken
+      - NUM_CHANNELS=${NUM_CHANNELS:-2}
+      - ARRAY_TYPE=${ARRAY_TYPE:-ULA}
+      - CENTER_FREQ=${CENTER_FREQ:-868.0}
+      - GAIN_DB=${GAIN_DB:-40.2}
+      - ARRAY_DIST=${ARRAY_DIST:-0.17}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ../workspace:/workspace:rw
+      - ../gr-krakensdr/python/krakensdr/krakensdr_correlator.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/krakensdr_correlator.py:ro
+      - ../gr-krakensdr/python/krakensdr/doa_music.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/doa_music.py:ro
+      - ../gr-krakensdr/python/krakensdr/__init__.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/__init__.py:ro
+      - ../gr-krakensdr/grc/krakensdr_doa_music.block.yml:/usr/share/gnuradio/grc/blocks/krakensdr_doa_music.block.yml:ro
+      - ../gr-krakensdr/grc/krakensdr_music_doa_block.block.yml:/usr/share/gnuradio/grc/blocks/krakensdr_music_doa_block.block.yml:ro
+      - ./entrypoint.sh:/entrypoint.sh:ro
+      - ./config/daq_chain_config.ini:/opt/krakensdr/heimdall_daq_fw/Firmware/daq_chain_config.ini:ro
+    profiles: ["dev"]
+
+  # ── DoA N-antenna sintetico (senza hardware RTL-SDR) ─────────────────────────
+  #
+  #  Start:  docker compose -f docker/docker-compose.yml --profile dev up doa-synth
+  #
+  #  Come 'doa' ma avvia Heimdall in modalità sintetica (daq_synthetic_start.sh).
+  #  Utile per sviluppo/test senza dongle fisici.
+  doa-synth:
+    <<: *kraken-base
+    container_name: kraken-doa-synth
+    command: doa-synth
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+      - QT_QPA_PLATFORM=xcb
+      - XDG_RUNTIME_DIR=/tmp/runtime-kraken
+      - NUM_CHANNELS=${NUM_CHANNELS:-2}
+      - ARRAY_TYPE=${ARRAY_TYPE:-ULA}
+      - CENTER_FREQ=${CENTER_FREQ:-868.0}
+      - GAIN_DB=${GAIN_DB:-40.2}
+      - ARRAY_DIST=${ARRAY_DIST:-0.17}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ../workspace:/workspace:rw
+      - ../gr-krakensdr/python/krakensdr/krakensdr_correlator.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/krakensdr_correlator.py:ro
+      - ../gr-krakensdr/python/krakensdr/doa_music.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/doa_music.py:ro
+      - ../gr-krakensdr/python/krakensdr/__init__.py:/usr/lib/python3/dist-packages/gnuradio/krakensdr/__init__.py:ro
+      - ../gr-krakensdr/grc/krakensdr_doa_music.block.yml:/usr/share/gnuradio/grc/blocks/krakensdr_doa_music.block.yml:ro
+      - ../gr-krakensdr/grc/krakensdr_music_doa_block.block.yml:/usr/share/gnuradio/grc/blocks/krakensdr_music_doa_block.block.yml:ro
+      - ./entrypoint.sh:/entrypoint.sh:ro
+      - ./config/daq_chain_config.ini:/opt/krakensdr/heimdall_daq_fw/Firmware/daq_chain_config.ini:ro
+    profiles: ["dev"]
+
+volumes:
+  heimdall_logs:
+

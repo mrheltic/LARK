@@ -1,41 +1,41 @@
 """
 krakenSDR.heimdall_manager
 ===========================
-Process manager per Heimdall DAQ Firmware (KrakenSDR).
+Process manager for the Heimdall DAQ Firmware (KrakenSDR).
 
-Responsabilità
---------------
-* Avviare / fermare Heimdall eseguendo ``daq_start_sm.sh`` dalla cartella
-  firmware installata in locale (``~/krakensdr/heimdall_daq_fw/Firmware_new/``
-  oppure il submodulo nel progetto una volta compilato)
-* Opzionalmente copiare la config INI del progetto nella cartella firmware
-  prima dell'avvio (sovrascrive quella di default)
-* Verificare che le porte TCP 5000/5001 siano raggiungibili prima di
-  restituire il controllo all'applicazione
-* Esporre un context-manager pulito
+Responsibilities
+----------------
+* Start / stop Heimdall by running ``daq_start_sm.sh`` from the locally
+  installed firmware directory (``~/krakensdr/heimdall_daq_fw/Firmware_new/``
+  or the project submodule once compiled).
+* Optionally copy the project INI config into the firmware directory
+  before start (overwrites the default config).
+* Wait until TCP ports 5000/5001 are reachable before returning control
+  to the application.
+* Expose a clean context-manager interface.
 
-Prerequisiti hardware/software
--------------------------------
-* RTL-SDR × N antenne collegati via USB
-* Heimdall compilato in ``Firmware_new/`` (tutti i ``.out`` presenti)
-* ``daq_chain_config.ini`` con ``out_data_iface_type = eth``  ← già ok
+Hardware/software prerequisites
+---------------------------------
+* RTL-SDR × N antennas connected via USB
+* Heimdall compiled in ``Firmware_new/`` (all ``.out`` binaries present)
+* ``daq_chain_config.ini`` with ``out_data_iface_type = eth``  ← already set
 
-Uso
----
+Usage
+-----
 ::
 
     from heimdall_manager import HeimdallManager
 
-    # Avvio con config personalizzata del progetto (Iridium 1626.270 MHz):
+    # Start with project config (Iridium 1626.270 MHz):
     with HeimdallManager(config="daq_chain_config.ini") as hdl:
         src = KrakenIQSource(host=hdl.host, port=hdl.data_port)
         ...
 
-    # Avvio sintetico (no RTL-SDR, usa daq_synthetic_start.sh):
+    # Synthetic start (no RTL-SDR, uses daq_synthetic_start.sh):
     with HeimdallManager(synthetic=True) as hdl:
         ...
 
-    # Avvio senza sovrascrivere la config nel firmware:
+    # Start without overwriting the firmware config:
     with HeimdallManager(config=None) as hdl:
         ...
 """
@@ -61,7 +61,7 @@ _HERE       = Path(__file__).parent                     # krakenSDR/src/
 _PROJ_ROOT  = _HERE.parent.parent                       # LARK/
 _CONFIG_DIR = _HERE / "config"
 
-# Cerca la cartella firmware nell'ordine: installazione utente → submodulo locale
+# Search for the firmware directory in order: user installation → local submodule
 _FIRMWARE_CANDIDATES: list[Path] = [
     Path.home() / "krakensdr" / "heimdall_daq_fw" / "Firmware_new",
     _PROJ_ROOT   / "external"  / "heimdall_daq_fw" / "Firmware_new",
@@ -71,7 +71,7 @@ _FIRMWARE_CANDIDATES: list[Path] = [
 
 
 def _find_firmware_dir() -> Optional[Path]:
-    """Restituisce la prima cartella firmware con ``daq_start_sm.sh``."""
+    """Return the first firmware directory that contains ``daq_start_sm.sh``."""
     for d in _FIRMWARE_CANDIDATES:
         if (d / "daq_start_sm.sh").exists():
             return d
@@ -84,28 +84,29 @@ def _find_firmware_dir() -> Optional[Path]:
 
 class HeimdallManager:
     """
-    Avvia e gestisce il processo Heimdall DAQ Firmware (nativo, via script).
+    Start and manage the Heimdall DAQ Firmware process (native, via shell script).
 
     Parameters
     ----------
     config : str | Path | None
-        Path alla config INI del progetto da copiare nella cartella firmware
-        prima dell'avvio.  Se è solo un nome file, viene cercata in
-        ``krakenSDR/src/config/``.  Se ``None``, usa la config già presente
-        nella cartella firmware (non sovrascrive).
+        Path to the project INI config to copy into the firmware directory
+        before starting.  A bare filename is resolved relative to
+        ``krakenSDR/src/config/``.  ``None`` leaves the existing firmware
+        config untouched.
     host : str
-        Hostname su cui Heimdall ascolta (``out_data_iface_type = eth``).
+        Hostname where Heimdall listens (``out_data_iface_type = eth``).
         Default: ``"127.0.0.1"``.
     data_port : int
-        Porta IQ server.  Default: ``5000``.
+        IQ server port.  Default: ``5000``.
     ctrl_port : int
-        Porta hardware controller.  Default: ``5001``.
+        Hardware controller port.  Default: ``5001``.
     synthetic : bool
-        Se ``True``, usa ``daq_synthetic_start.sh`` (nessun RTL-SDR necessario).
+        If ``True``, use ``daq_synthetic_start.sh`` (no RTL-SDR required).
     firmware_dir : Path | None
-        Forza una specifica cartella firmware. Se ``None``, rilevata auto.
+        Force a specific firmware directory. ``None`` = auto-detect.
     verbose : bool
-        Se ``True``, stdout/stderr del processo sono visibili nel terminale.
+        If ``True``, stdout/stderr of the Heimdall process are visible in
+        the terminal.
     """
 
     def __init__(
@@ -125,16 +126,16 @@ class HeimdallManager:
         self.synthetic = synthetic
         self.verbose   = verbose
 
-        # Cartella firmware
+        # Firmware directory
         self._fw: Path = firmware_dir or _find_firmware_dir() or Path()
         if not (self._fw / "daq_start_sm.sh").exists():
             raise FileNotFoundError(
-                "Heimdall DAQ firmware non trovato (daq_start_sm.sh mancante).\n"
-                "  Cercato in:\n"
+                "Heimdall DAQ firmware not found (daq_start_sm.sh missing).\n"
+                "  Searched in:\n"
                 + "\n".join(f"    {p}" for p in _FIRMWARE_CANDIDATES)
             )
 
-        # Config opzionale da copiare nel firmware prima dell'avvio
+        # Optional config to copy into the firmware dir before starting
         self._config_src: Optional[Path] = None
         if config is not None:
             cfg = Path(config)
@@ -144,37 +145,37 @@ class HeimdallManager:
                 self._config_src = cfg
             else:
                 logger.warning(
-                    "[Heimdall] config non trovata: %s — uso quella nel firmware", cfg
+                    "[Heimdall] config not found: %s — using existing firmware config", cfg
                 )
 
         self._proc: Optional[subprocess.Popen] = None
 
-    # ── Avvio ─────────────────────────────────────────────────────────────────
+    # ── Start ─────────────────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """Avvia Heimdall DAQ firmware."""
+        """Start the Heimdall DAQ firmware."""
         if self._proc is not None and self._proc.poll() is None:
-            logger.warning("[Heimdall] già in esecuzione (PID %d)", self._proc.pid)
+            logger.warning("[Heimdall] already running (PID %d)", self._proc.pid)
             return
 
-        # Copia config del progetto nella dir firmware
+        # Copy project config into the firmware directory
         if self._config_src is not None:
             dst = self._fw / "daq_chain_config.ini"
             shutil.copy2(self._config_src, dst)
-            logger.info("[Heimdall] config copiata: %s → %s", self._config_src, dst)
+            logger.info("[Heimdall] config copied: %s → %s", self._config_src, dst)
 
         start_script = "daq_synthetic_start.sh" if self.synthetic else "daq_start_sm.sh"
         script_path  = self._fw / start_script
         if not script_path.exists():
-            raise FileNotFoundError(f"Script non trovato: {script_path}")
+            raise FileNotFoundError(f"Script not found: {script_path}")
 
         sink = None if self.verbose else subprocess.DEVNULL
-        cmd  = ["bash", str(script_path)]
-        logger.info("[Heimdall] avvio: %s (cwd=%s)", " ".join(cmd), self._fw)
+        cmd  = ["sudo", "bash", str(script_path)]
+        logger.info("[Heimdall] starting: %s (cwd=%s)", " ".join(cmd), self._fw)
 
         self._proc = subprocess.Popen(
             cmd,
-            cwd=str(self._fw),      # ← fondamentale: lo script usa path relativi
+            cwd=str(self._fw),      # ← critical: the script uses relative paths
             stdout=sink,
             stderr=sink,
             preexec_fn=os.setsid,
@@ -184,16 +185,16 @@ class HeimdallManager:
     # ── Stop ──────────────────────────────────────────────────────────────────
 
     def stop(self) -> None:
-        """Ferma Heimdall (esegue ``daq_stop.sh`` ufficiale, poi SIGTERM/SIGKILL)."""
+        """Stop Heimdall (runs ``daq_stop.sh``, then SIGTERM/SIGKILL)."""
         if self._proc is None or self._proc.poll() is not None:
             return
         logger.info("[Heimdall] stop (PID %d)", self._proc.pid)
 
-        # Script di stop ufficiale (killa i sottoprocessi correttamente)
+        # Official stop script (correctly kills all Heimdall sub-processes)
         stop_script = self._fw / "daq_stop.sh"
         if stop_script.exists():
             subprocess.run(
-                ["bash", str(stop_script)],
+                ["sudo", "bash", str(stop_script)],
                 cwd=str(self._fw),
                 capture_output=True,
             )
@@ -202,7 +203,7 @@ class HeimdallManager:
             os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
             self._proc.wait(timeout=5.0)
         except subprocess.TimeoutExpired:
-            logger.warning("[Heimdall] SIGTERM ignorato → SIGKILL")
+            logger.warning("[Heimdall] SIGTERM ignored → SIGKILL")
             os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
             self._proc.wait()
         except ProcessLookupError:
@@ -216,18 +217,18 @@ class HeimdallManager:
     # ── Port polling ──────────────────────────────────────────────────────────
 
     def wait_ready(self, timeout: float = 20.0, poll_interval: float = 0.5) -> bool:
-        """Blocca finché le porte TCP 5000/5001 sono pronte o scade il timeout."""
+        """Block until TCP ports 5000/5001 are ready or the timeout expires."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not self.is_running():
-                raise RuntimeError("[Heimdall] processo terminato inaspettatamente")
+                raise RuntimeError("[Heimdall] process terminated unexpectedly")
             if self._port_open(self.data_port) and self._port_open(self.ctrl_port):
                 logger.info(
-                    "[Heimdall] porte %d/%d pronte", self.data_port, self.ctrl_port
+                    "[Heimdall] ports %d/%d ready", self.data_port, self.ctrl_port
                 )
                 return True
             time.sleep(poll_interval)
-        logger.error("[Heimdall] timeout attesa porte (%.1f s)", timeout)
+        logger.error("[Heimdall] timeout waiting for ports (%.1f s)", timeout)
         return False
 
     def _port_open(self, port: int, timeout: float = 0.2) -> bool:
@@ -243,7 +244,7 @@ class HeimdallManager:
         self.start()
         if not self.wait_ready():
             self.stop()
-            raise RuntimeError("[Heimdall] non pronto entro il timeout")
+            raise RuntimeError("[Heimdall] not ready within timeout")
         return self
 
     def __exit__(self, *_) -> None:
@@ -252,7 +253,7 @@ class HeimdallManager:
     def __repr__(self) -> str:
         mode  = "synth" if self.synthetic else "hw"
         proc  = self._proc
-        state = f"PID={proc.pid}" if proc is not None and proc.poll() is None else "fermo"
+        state = f"PID={proc.pid}" if proc is not None and proc.poll() is None else "stopped"
         return (
             f"HeimdallManager(mode={mode!r}, fw={self._fw.name!r}, "
             f"host={self.host!r}, data={self.data_port}, ctrl={self.ctrl_port}, "

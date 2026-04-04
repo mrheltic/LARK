@@ -69,45 +69,45 @@ VERBOSE_FRAMES = 0              # print Heimdall diagnostics every N frames (0 =
 #  ──────────────────────────────────────────────────────────────────────
 #
 #  ── Outdoor 5-antenna setup (current config) ─────────────────────────
-#  Meno multipath → cond(R) atteso < 20, σ angolare < 5°
-#  ROOT-MUSIC + FBTOEP: massima precisione sub-griglia con N=5
-#  COV_ALPHA ridotto a 0.80 per risposta più rapida
-#  GAIN_DB: controllare pannello F (PAPR) — se > 15 dB abbassare il gain
-#  Calibrare PHASE_OFFSETS_DEG sul campo prima delle misure
+#  Less multipath → expected cond(R) < 20, angle σ < 5°
+#  ROOT-MUSIC + FBTOEP: maximum sub-grid precision with N=5
+#  COV_ALPHA reduced to 0.80 for faster response
+#  GAIN_DB: check panel F (PAPR) — if > 15 dB lower the gain
+#  Calibrate PHASE_OFFSETS_DEG in the field before measurements
 #  ──────────────────────────────────────────────────────────────────────
 
 DOA_ALGORITHM  = "MUSIC"        # "MUSIC" | "ROOT-MUSIC" | "CAPON" | "ML" | "ESPRIT"
-#                                #  MUSIC      : subspace pseudospectrum — RACCOMANDATO,
-#                                #               robusto a ogni decorrelazione e N
-#                                #  ROOT-MUSIC : radici polinomiali su VULA — precisione sub-griglia
+#                                #  MUSIC      : subspace pseudospectrum — RECOMMENDED,
+#                                #               robust to any decorrelation and N
+#                                #  ROOT-MUSIC : polynomial roots on VULA — sub-grid precision
 #                                #  CAPON      : MVDR beamformer (P = 1/a^H R^{-1} a)
-#                                #  ML         : maximum likelihood stocastico, picchi nitidi
-#                                #  ESPRIT     : invarianza rotazionale su VULA — no scan angolare
-#                                #  NOTA: Capon/ML sono sensibili a TOEP/FBTOEP su UCA 5-ant;
+#                                #  ML         : stochastic maximum likelihood, sharp peaks
+#                                #  ESPRIT     : rotational invariance on VULA — no angle scan
+#                                #  NOTE: Capon/ML are sensitive to TOEP/FBTOEP on 5-ant UCA;
 
 DECORRELATION  = "FBA"          # Covariance decorrelation method
-#                                #  "Off"    : nessuna decorrelazione
-#                                #  "FBA"    : Forward-Backward Averaging — RACCOMANDATO
-#                                #             funziona correttamente nello spazio VULA per UCA
+#                                #  "Off"    : no decorrelation
+#                                #  "FBA"    : Forward-Backward Averaging — RECOMMENDED
+#                                #             works correctly in the VULA space for UCA
 #                                #  "TOEP"   : Toeplitz Rectification
 #                                #  "FBTOEP" : FBA + Toeplitz
-#                                #  NOTA: TOEP/FBTOEP richiedono R_vula Toeplitz; con 5 antenne
-#                                #  e r_lambda=0.358 la VULA non e' accuratamente Toeplitz
-#                                #  (J_0(2.25) ~ 0.08, primo zero a 2.40).  Usare solo FBA.
+#                                #  NOTE: TOEP/FBTOEP require a Toeplitz R_vula; with 5 antennas
+#                                #  and r_lambda=0.358 the VULA is not accurately Toeplitz
+#                                #  (J_0(2.25) ~ 0.08, first zero at 2.40).  Use FBA only.
 
 COV_ALPHA      = 0.95            # Covariance EMA between consecutive frames
-#                                #  0.80 → costante di tempo ~5 frame (~0.6 s @ 9 fps)
-#                                #  Outdoor: meno multipath → meno memoria necessaria,
-#                                #  risposta più rapida a variazioni di angolo.
-#                                #  Per sorgente fissa: alzare a 0.90–0.95.
-#                                #  Per sorgente in moto: abbassare a 0.5–0.7.
+#                                #  0.80 → time constant ~5 frames (~0.6 s @ 9 fps)
+#                                #  Outdoor: less multipath → less memory needed,
+#                                #  faster response to angle changes.
+#                                #  Fixed source: raise to 0.90–0.95.
+#                                #  Moving source: lower to 0.5–0.7.
 
 ANGLE_SMOOTH_ALPHA = 0.80        # Circular EMA on estimated angle (final output)
-#                                #  Opera su fasori: gestisce correttamente il wrap 0°/360°.
-#                                #  0.55 → ~2 frame di damping — più reattivo outdoor.
-#                                #  Per sorgente in moto: 0.3–0.5.
-#                                #  Per sorgente fissa: 0.7–0.85.
-#                                #  0.0 = disabilitato.
+#                                #  Operates on phasors: correctly handles 0°/360° wrap.
+#                                #  0.55 → ~2 frames of damping — more responsive outdoors.
+#                                #  Moving source: 0.3–0.5.
+#                                #  Fixed source: 0.7–0.85.
+#                                #  0.0 = disabled.
 
 AMPLITUDE_NORMALIZE  = True     # Normalize each channel amplitude to unit power
 #                                #  before covariance computation.
@@ -124,6 +124,6 @@ SQUELCH_THRESHOLD_DB = -60.0    # Absolute power threshold [dBW] measured on raw
 
 PHASE_OFFSETS_DEG = [0.0, 0.0, 0.0]
 #                                # Per-channel hardware phase correction [degrees]
-#                                # Deve avere N_ANTENNAS elementi (ora 5).
-#                                # Misura: phi[k] = -arg(R[0,k]) sul pannello H,
-#                                # puntando le antenne verso una sorgente in campo lontano.
+#                                # Must have N_ANTENNAS elements (currently 3).
+#                                # Measure: phi[k] = -arg(R[0,k]) on the H panel,
+#                                # pointing antennas towards a far-field source.

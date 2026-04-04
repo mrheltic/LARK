@@ -1,8 +1,9 @@
 # =============================================================================
 #  LARK – Python dependencies
-#  Installa con:  pip3 install --user -r requirements.txt
+#  Install with:  pip install -r requirements.txt
+#               (setup.sh installs these into .venv automatically)
 #
-#  Dipendenze di sistema (apt) → installate da setup.sh:
+#  System dependencies (apt) → installed by setup.sh:
 #    sudo apt install python3-libiio libiio-utils libad9361-dev
 #    sudo apt install python3-pyqt5 rtl-sdr soapysdr-module-rtlsdr
 # =============================================================================
@@ -14,16 +15,16 @@ scipy>=1.11
 # ── Plotting ─────────────────────────────────────────────────────────────────
 matplotlib>=3.7
 
-# ── PyQt5 (backend matplotlib + GUI KrakenSDR) ───────────────────────────────
-# Preferire: sudo apt install python3-pyqt5
-# Fallback pip:
+# ── PyQt5 (matplotlib backend + KrakenSDR GUI) ───────────────────────────────
+# Prefer: sudo apt install python3-pyqt5
+# pip fallback (uncomment if not installed via apt):
 # PyQt5>=5.15
 
 # ── LibreSDR / AD9363 via pyadi-iio ──────────────────────────────────────────
-# Nota: richiede libiio installato via apt (python3-libiio) o pip
+# Requires libiio installed via apt (python3-libiio) or pip
 pyadi-iio>=0.0.17
 
-# ── Protobuf — monitoraggio gnss-sdr via UDP ─────────────────────────────────
+# ── Protobuf — gnss-sdr UDP monitoring ───────────────────────────────────────
 protobuf>=4.21
 
 # ── Test runner ──────────────────────────────────────────────────────────────

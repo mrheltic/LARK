@@ -5,7 +5,7 @@
         // SETUP
         // ═══════════════════════════════════════════════════════════════════
         {
-            "label": "Setup: Installazione completa",
+            "label": "Setup: Full install",
             "type": "shell",
             "command": "bash setup.sh",
             "options": { "cwd": "${workspaceFolder}" },
@@ -14,66 +14,34 @@
             "problemMatcher": []
         },
         {
-            "label": "Setup: Solo dipendenze apt+pip",
+            "label": "Setup: Heimdall sudoers (run once)",
+            "detail": "Installs NOPASSWD sudoers rules so Heimdall DAQ scripts run as root without a password prompt. Requires sudo password once.",
             "type": "shell",
-            "command": "bash setup.sh --deps-only",
+            "command": "bash setup.sh --sudoers",
             "options": { "cwd": "${workspaceFolder}" },
             "group": "build",
-            "presentation": { "reveal": "always", "panel": "new" },
-            "problemMatcher": []
-        },
-        {
-            "label": "Setup: Compila Heimdall DAQ",
-            "type": "shell",
-            "command": "bash setup.sh --heimdall",
-            "options": { "cwd": "${workspaceFolder}" },
-            "group": "build",
-            "presentation": { "reveal": "always", "panel": "new" },
-            "problemMatcher": []
-        },
-        {
-            "label": "Setup: Aggiorna submoduli git",
-            "type": "shell",
-            "command": "bash setup.sh --submodules",
-            "options": { "cwd": "${workspaceFolder}" },
-            "group": "build",
-            "presentation": { "reveal": "always", "panel": "new" },
-            "problemMatcher": []
-        },
-        {
-            "label": "Setup: Heimdall sudoers (una volta)",
-            "detail": "Aggiunge regola NOPASSWD per i comandi kernel usati da Heimdall. Richiede password sudo UNA VOLTA.",
-            "type": "shell",
-            "command": "echo 'mrheltic ALL=(ALL) NOPASSWD: /usr/sbin/sysctl -w kernel.sched_rt_runtime_us=*, /usr/bin/tee /proc/sys/vm/drop_caches, /bin/sh -c echo 0 > /sys/module/usbcore/parameters/usbfs_memory_mb, /usr/bin/env PATH=* python3 /home/mrheltic/krakensdr/heimdall_daq_fw/Firmware_new/_daq_core/hw_controller.py, /usr/bin/chrt *' | sudo tee /etc/sudoers.d/heimdall-daq && sudo chmod 440 /etc/sudoers.d/heimdall-daq && echo 'Sudoers Heimdall configurato OK'",
-            "options": { "cwd": "${workspaceFolder}" },
-            "group": "build",
-            "presentation": { "reveal": "always", "panel": "shared" },
-            "problemMatcher": []
-        },
-        {
-            "label": "Setup: Verifica ambiente",
-            "type": "shell",
-            "command": "bash setup.sh --check",
-            "options": { "cwd": "${workspaceFolder}" },
-            "group": "test",
-            "presentation": { "reveal": "always", "panel": "shared" },
+            "presentation": { "reveal": "always", "panel": "new", "focus": true },
             "problemMatcher": []
         },
 
         // ═══════════════════════════════════════════════════════════════════
-        // HEIMDALL DAQ  (nativo — ~/krakensdr/heimdall_daq_fw/Firmware_new/)
-        // porte TCP: 5000 (IQ) + 5001 (hw ctrl) — out_data_iface_type=eth
+        // HEIMDALL DAQ
+        // TCP ports: 5000 (IQ data) + 5001 (hw ctrl) — out_data_iface_type=eth
+        // start_heimdall.sh auto-detects the firmware dir (~/krakensdr/…/Firmware_new
+        // first, then external/heimdall_daq_fw/Firmware) and installs the sudoers
+        // rule on first run so sudo bash daq_start_sm.sh never asks for a password.
         // ═══════════════════════════════════════════════════════════════════
         {
-            "label": "Heimdall: Avvia — hardware reale (Iridium 1626.270 MHz)",
-            "detail": "Copia config Iridium nel firmware e avvia daq_start_sm.sh. Richiede RTL-SDR.",
+            "label": "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
+            "detail": "Auto-detects firmware path, copies Iridium config, installs sudoers if needed, then runs daq_start_sm.sh as root.",
             "type": "shell",
-            "command": "cp ${workspaceFolder}/krakenSDR/src/config/daq_chain_config.ini ~/krakensdr/heimdall_daq_fw/Firmware_new/ && bash ~/krakensdr/heimdall_daq_fw/Firmware_new/daq_start_sm.sh",
-            "options": { "cwd": "/home/mrheltic/krakensdr/heimdall_daq_fw/Firmware_new" },
+            "command": "LARK_ROOT=${workspaceFolder} bash ${workspaceFolder}/krakenSDR/src/start_heimdall.sh",
+            "options": { "cwd": "${workspaceFolder}" },
             "isBackground": true,
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated"
+                "panel": "dedicated",
+                "focus": true
             },
             "problemMatcher": {
                 "pattern": { "regexp": "^(.*)$", "message": 1 },
@@ -85,15 +53,16 @@
             }
         },
         {
-            "label": "Heimdall: Avvia — sintetico (no hardware)",
-            "detail": "Avvia daq_synthetic_start.sh. Non richiede RTL-SDR. Utile per sviluppo/test.",
+            "label": "Heimdall: Start — synthetic (no hardware)",
+            "detail": "Auto-detects firmware path, installs sudoers if needed, then runs daq_synthetic_start.sh as root.",
             "type": "shell",
-            "command": "bash ~/krakensdr/heimdall_daq_fw/Firmware_new/daq_synthetic_start.sh",
-            "options": { "cwd": "/home/mrheltic/krakensdr/heimdall_daq_fw/Firmware_new" },
+            "command": "LARK_ROOT=${workspaceFolder} bash ${workspaceFolder}/krakenSDR/src/start_heimdall.sh --synthetic",
+            "options": { "cwd": "${workspaceFolder}" },
             "isBackground": true,
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated"
+                "panel": "dedicated",
+                "focus": true
             },
             "problemMatcher": {
                 "pattern": { "regexp": "^(.*)$", "message": 1 },
@@ -106,10 +75,10 @@
         },
         {
             "label": "Heimdall: Stop",
-            "detail": "Esegue daq_stop.sh per terminare tutti i sottoprocessi Heimdall",
+            "detail": "Kills all Heimdall sub-processes via daq_stop.sh (auto-detects firmware path).",
             "type": "shell",
-            "command": "bash ~/krakensdr/heimdall_daq_fw/Firmware_new/daq_stop.sh",
-            "options": { "cwd": "/home/mrheltic/krakensdr/heimdall_daq_fw/Firmware_new" },
+            "command": "FW=$(bash -c 'for d in ~/krakensdr/heimdall_daq_fw/Firmware_new ~/krakensdr/heimdall_daq_fw/Firmware ${workspaceFolder}/external/heimdall_daq_fw/Firmware_new ${workspaceFolder}/external/heimdall_daq_fw/Firmware; do [ -f \"$d/daq_stop.sh\" ] && echo $d && break; done'); cd \"$FW\" && sudo bash \"$FW/daq_stop.sh\"",
+            "options": { "cwd": "${workspaceFolder}" },
             "presentation": {
                 "reveal": "always",
                 "panel": "shared"
@@ -118,11 +87,11 @@
         },
 
         // ═══════════════════════════════════════════════════════════════════
-        // KRAKENSDR — Ricezione Iridium
+        // KRAKENSDR — Iridium reception
         // ═══════════════════════════════════════════════════════════════════
         {
-            "label": "KrakenSDR: Iridium — Rilevamento burst (1 canale)",
-            "detail": "Detector Iridium su singola antenna. Verifica la catena HW prima del DoA.",
+            "label": "KrakenSDR: Iridium — burst detect (single channel)",
+            "detail": "Iridium burst detector on a single antenna. Validates the HW chain before DoA.",
             "type": "shell",
             "command": "python3 pysdr_iridium_detect.py",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
@@ -134,10 +103,10 @@
             "problemMatcher": "$python"
         },
         {
-            "label": "KrakenSDR: Iridium — Ricevitore RAW lines",
-            "detail": "Demodula bursts Iridium e produce RAW: lines su stdout (pipe a iridium-parser).",
+            "label": "KrakenSDR: Iridium — receiver → parser (pipe)",
+            "detail": "Demodulates Iridium bursts and pipes RAW: lines to iridium-toolkit/iridium-parser.py for full protocol decode.",
             "type": "shell",
-            "command": "python3 iridium_receiver.py --freq 1626270000 --verbose",
+            "command": "python3 iridium_receiver.py --freq 1626270000 | python3 ~/krakensdr/iridium-toolkit/iridium-parser.py -p",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
             "group": "test",
             "presentation": {
@@ -147,26 +116,13 @@
             "problemMatcher": "$python"
         },
         {
-            "label": "KrakenSDR: Iridium — Ricevitore → Parser (pipe)",
-            "detail": "Demodula + porta in iridium-toolkit/iridium-parser.py per decodifica completa del protocollo.",
-            "type": "shell",
-            "command": "IRIDIUM_TOOLKIT=$([ -d '${workspaceFolder}/external/iridium-toolkit' ] && echo '${workspaceFolder}/external/iridium-toolkit' || echo ~/krakensdr/iridium-toolkit); python3 iridium_receiver.py --freq 1626270000 | python3 \"$IRIDIUM_TOOLKIT/iridium-parser.py\" -p",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": "$python"
-        },
-        {
-            "label": "KrakenSDR: Iridium — DoA L-band (multi-canale)",
-            "detail": "DoA su burst Iridium con MUSIC + Doppler tracking. Richiede Heimdall attivo.",
+            "label": "KrakenSDR: Iridium — DoA L-band (multi-channel)",
+            "detail": "DoA on Iridium bursts with MUSIC + Doppler tracking. Requires Heimdall active.",
             "type": "shell",
             "command": "python3 pysdr_doa_iridium.py",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
             "group": "test",
-            "dependsOn": "Heimdall: Avvia — hardware reale (Iridium 1626.270 MHz)",
+            "dependsOn": "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated"
@@ -174,34 +130,8 @@
             "problemMatcher": "$python"
         },
         {
-            "label": "KrakenSDR: DoA realtime (generico)",
-            "detail": "DoA real-time su qualsiasi frequenza. Avvia il config dialog all'avvio.",
-            "type": "shell",
-            "command": "python3 pysdr_doa_realtime.py",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": "$python"
-        },
-        {
-            "label": "KrakenSDR: DoA playback",
-            "detail": "Riproduci offline una registrazione .npz. Apre file-picker se nessun argomento.",
-            "type": "shell",
-            "command": "python3 pysdr_doa_playback.py",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": "$python"
-        },
-        {
-            "label": "KrakenSDR: Esegui test suite",
-            "detail": "Test unitari algoritmi DoA (MUSIC, ESPRIT, Capon, ML). No hardware necessario.",
+            "label": "KrakenSDR: Run test suite",
+            "detail": "Unit tests for DoA algorithms (MUSIC, ESPRIT, Capon, ML). No hardware needed.",
             "type": "shell",
             "command": "python3 -m pytest test_doa.py -v --tb=short",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
@@ -214,11 +144,11 @@
         },
 
         // ═══════════════════════════════════════════════════════════════════
-        // LIBRESDR — Trasmissione Iridium-like
+        // LIBRESDR — Iridium transmission
         // ═══════════════════════════════════════════════════════════════════
         {
-            "label": "LibreSDR: Verifica connessione AD9363",
-            "detail": "Diagnostica IIO: mostra canali, frequenze, gain attuali dell'AD9363.",
+            "label": "LibreSDR: Check AD9363 connection",
+            "detail": "IIO diagnostics: shows channels, frequencies and current gain of the AD9363.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 check_device.py",
             "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
@@ -230,8 +160,8 @@
             "problemMatcher": "$python"
         },
         {
-            "label": "LibreSDR: TX simulazione realistica Iridium",
-            "detail": "Genera e trasmette burst π/4-DQPSK con Doppler LEO realistico.",
+            "label": "LibreSDR: TX realistic Iridium sim (1626.270 MHz)",
+            "detail": "Generates and transmits π/4-DQPSK bursts with realistic LEO Doppler at 1626.270 MHz.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 iridium_realistic_sim.py --pass-dur 60",
             "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
@@ -243,84 +173,29 @@
             "problemMatcher": "$python"
         },
         {
-            "label": "LibreSDR: TX burst semplici (test loopback)",
-            "detail": "Trasmette burst DQPSK base senza effetti di canale. Utile per test loopback cablato.",
+            "label": "LibreSDR: TX cyclic (continuous loop, 1626.270 MHz)",
+            "detail": "Transmits a single IQ frame in a continuous cyclic DMA loop via AD9363.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 iridium_tx_libresdr.py",
+            "command": "${workspaceFolder}/.venv/bin/python3 iridium_realistic_sim.py --pass-dur 60 --cyclic",
             "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
             "group": "test",
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated"
-            },
-            "problemMatcher": "$python"
-        },
-        {
-            "label": "LibreSDR: TX ciclico (loop continuo)",
-            "detail": "Trasmette un frame IQ in loop continuo tramite DMA ciclico del AD9363.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 iridium_tx_libresdr.py --cyclic",
-            "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": "$python"
-        },
-        {
-            "label": "LibreSDR: Genera file IQ (no TX)",
-            "detail": "Genera burst Iridium-like e salva come file .iq complex64. Nessun hardware necessario.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 iridium_burst_gen.py --save output.iq --num-bursts 8 --no-plot",
-            "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            },
-            "problemMatcher": "$python"
-        },
-        {
-            "label": "LibreSDR: Selftest loopback",
-            "detail": "Test encode→decode GPS loopback (senza hardware).",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 selftest_loopback.py",
-            "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
             },
             "problemMatcher": "$python"
         },
 
         // ═══════════════════════════════════════════════════════════════════
-        // SESSIONI COMPLETE (TX + RX simultanei)
+        // FULL SESSIONS (TX + RX simultaneous)
         // ═══════════════════════════════════════════════════════════════════
         {
-            "label": "LARK: Sessione completa — Heimdall + Iridium DoA + LibreSDR TX",
-            "detail": "Avvia Heimdall, poi Iridium DoA e LibreSDR TX in pannelli separati.",
+            "label": "LARK: Full session — Heimdall + Iridium DoA + LibreSDR TX",
+            "detail": "Starts Heimdall, then Iridium DoA receiver and LibreSDR TX in separate panels.",
             "dependsOn": [
-                "Heimdall: Avvia (Iridium 1626.270 MHz)",
-                "KrakenSDR: Iridium — DoA L-band (multi-canale)",
-                "LibreSDR: TX simulazione realistica Iridium"
-            ],
-            "dependsOrder": "sequence",
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "new"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "LARK: Loopback cablato — TX + Rilevamento singolo canale",
-            "detail": "LibreSDR TX + KrakenSDR single-channel detect. Usa cavo RF + attenuatore.",
-            "dependsOn": [
-                "Heimdall: Avvia (Iridium 1626.270 MHz)",
-                "KrakenSDR: Iridium — Rilevamento burst (1 canale)",
-                "LibreSDR: TX burst semplici (test loopback)"
+                "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
+                "KrakenSDR: Iridium — DoA L-band (multi-channel)",
+                "LibreSDR: TX realistic Iridium sim (1626.270 MHz)"
             ],
             "dependsOrder": "sequence",
             "group": "test",
@@ -335,23 +210,10 @@
         // IRIDIUM TOOLKIT
         // ═══════════════════════════════════════════════════════════════════
         {
-            "label": "iridium-toolkit: Parser da file .bits",
-            "detail": "Analizza un file di RAW: lines con iridium-parser.py.",
+            "label": "iridium-toolkit: Parse .bits file",
+            "detail": "Parses a RAW: lines file with iridium-parser.py from ~/krakensdr/iridium-toolkit/.",
             "type": "shell",
-            "command": "python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p ${input:bitsFile}",
-            "options": { "cwd": "${workspaceFolder}" },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            },
-            "problemMatcher": "$python"
-        },
-        {
-            "label": "iridium-toolkit: Statistiche da file .bits",
-            "detail": "Mostra statistiche aggregate sui messaggi Iridium decodificati.",
-            "type": "shell",
-            "command": "python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p ${input:bitsFile} | python3 ${workspaceFolder}/external/iridium-toolkit/stats.py",
+            "command": "python3 ~/krakensdr/iridium-toolkit/iridium-parser.py -p ${input:bitsFile}",
             "options": { "cwd": "${workspaceFolder}" },
             "group": "test",
             "presentation": {
@@ -365,7 +227,7 @@
     "inputs": [
         {
             "id": "bitsFile",
-            "description": "Path al file .bits di RAW: lines",
+            "description": "Path to the .bits RAW: lines file",
             "default": "session.bits",
             "type": "promptString"
         }

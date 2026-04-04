@@ -71,7 +71,7 @@ SAMPLE_RATE_GRIB: int = SYMBOL_RATE * SPS_GRIB   # 250_000 Hz
 SAMPLE_RATE_TX:   int = SYMBOL_RATE * SPS_TX     # 200_000 Hz
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TDMA frame structure (IRA – Ring Alert, Simplex downlink)
+# TDMA frame structure (IRA – Ring Alert, Simplex downlink  )
 # ─────────────────────────────────────────────────────────────────────────────
 SUPERFRAME_S:    float = 0.090       # super-frame period [s]
 SLOT_S:          float = 0.008280   # slot duration [s]  (= 207 sym @ 25 ksps)

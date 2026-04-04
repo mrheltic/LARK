@@ -1,39 +1,45 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  LARK – setup.sh
-#  Ambiente di sviluppo completo per KrakenSDR + LibreSDR (Iridium DoA)
+#  Full development environment for KrakenSDR + LibreSDR (Iridium DoA)
 #
-#  Uso:
-#    ./setup.sh              # installazione completa
-#    ./setup.sh --deps-only  # solo dipendenze apt/pip (non compila Heimdall)
-#    ./setup.sh --heimdall   # solo inizializza e compila Heimdall
-#    ./setup.sh --submodules # solo aggiorna i submoduli git
-#    ./setup.sh --check      # controlla ambiente senza installare nulla
+#  Usage:
+#    ./setup.sh              # full install
+#    ./setup.sh --deps-only  # apt + pip only (skip Heimdall build)
+#    ./setup.sh --heimdall   # only build Heimdall DAQ firmware
+#    ./setup.sh --submodules # only clone/update git submodules
+#    ./setup.sh --sudoers    # only install the Heimdall sudoers rule
+#    ./setup.sh --check      # check environment without installing anything
 # =============================================================================
 set -euo pipefail
 
-# ── Colori ────────────────────────────────────────────────────────────────────
+# ── Colour helpers ────────────────────────────────────────────────────────────
 RED='\033[0;31m'; YEL='\033[1;33m'; GRN='\033[0;32m'; CYA='\033[0;36m'; RST='\033[0m'
 ok()   { echo -e "${GRN}[✓]${RST} $*"; }
 info() { echo -e "${CYA}[→]${RST} $*"; }
 warn() { echo -e "${YEL}[!]${RST} $*"; }
 fail() { echo -e "${RED}[✗]${RST} $*" >&2; exit 1; }
 
-# ── Directory progetto ────────────────────────────────────────────────────────
+# ── Project root ──────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+VENV="$SCRIPT_DIR/.venv"
+VENV_PY="$VENV/bin/python3"
+VENV_PIP="$VENV/bin/pip"
 
 MODE="full"
 [[ "${1:-}" == "--deps-only"  ]] && MODE="deps"
 [[ "${1:-}" == "--heimdall"   ]] && MODE="heimdall"
 [[ "${1:-}" == "--submodules" ]] && MODE="submodules"
+[[ "${1:-}" == "--sudoers"    ]] && MODE="sudoers"
 [[ "${1:-}" == "--check"      ]] && MODE="check"
 
 # =============================================================================
-# 1. Dipendenze di sistema (apt)
+# 1. System dependencies (apt)
 # =============================================================================
 install_apt_deps() {
-    info "Installazione dipendenze apt..."
+    info "Installing system dependencies (apt)..."
     sudo apt-get update -qq
     sudo apt-get install -y --no-install-recommends \
         build-essential cmake git pkg-config \
@@ -48,98 +54,130 @@ install_apt_deps() {
         libad9361-dev \
         tk-dev python3-tk \
         screen tmux
-    ok "Dipendenze apt installate"
+    ok "System dependencies installed"
 }
 
 # =============================================================================
-# 2. Dipendenze Python (pip)
+# 2. Python virtual environment + pip dependencies
+#
+# --system-site-packages lets the venv access apt-installed packages
+# (python3-libiio, python3-pyqt5, python3-numpy, etc.) that cannot be
+# replaced by pip equivalents.  Packages listed in requirements.txt are
+# installed on top inside the venv.
 # =============================================================================
+create_venv() {
+    if [[ ! -x "$VENV_PY" ]]; then
+        info "Creating virtual environment: $VENV"
+        python3 -m venv --system-site-packages "$VENV"
+        ok "Virtual environment created: $VENV"
+    else
+        ok "Virtual environment already exists: $VENV"
+    fi
+}
+
 install_pip_deps() {
-    info "Installazione dipendenze Python..."
-    pip3 install --user --upgrade pip
-    pip3 install --user -r "$SCRIPT_DIR/requirements.txt"
-    ok "Dipendenze Python installate"
+    create_venv
+    info "Installing Python packages into $VENV ..."
+    "$VENV_PIP" install --upgrade pip
+    "$VENV_PIP" install -r "$SCRIPT_DIR/requirements.txt"
+    ok "Python packages installed"
 }
 
 # =============================================================================
-# 3. Submoduli git
+# 3. Git submodules
 # =============================================================================
 init_submodules() {
-    info "Inizializzazione submoduli git..."
+    info "Initialising git submodules..."
 
-    # Verifica che siamo in un repo git
     if [[ ! -d "$SCRIPT_DIR/.git" ]]; then
-        warn "Non sembra un repo git. Inizializzazione..."
-        git -C "$SCRIPT_DIR" init
-    fi
-
-    # Aggiungi i submoduli se non esistono già
-    add_submodule() {
-        local url="$1" path="$2"
-        if [[ ! -f "$SCRIPT_DIR/$path/.git" && ! -d "$SCRIPT_DIR/$path/.git" ]]; then
-            info "Aggiunta submodulo: $path"
-            git -C "$SCRIPT_DIR" submodule add --depth 1 "$url" "$path" || \
-                warn "Submodulo $path già presente o non raggiungibile."
-        fi
-    }
-
-    mkdir -p "$SCRIPT_DIR/external"
-
-    add_submodule \
-        "https://github.com/krakenrf/heimdall_daq_fw.git" \
-        "external/heimdall_daq_fw"
-
-    add_submodule \
-        "https://github.com/muccc/iridium-toolkit.git" \
-        "external/iridium-toolkit"
-
-    add_submodule \
-        "https://github.com/muccc/gr-iridium.git" \
-        "external/gr-iridium"
-
-    git -C "$SCRIPT_DIR" submodule update --init --recursive --depth 1 || \
-        warn "Aggiornamento submoduli parziale (rete assente?)."
-
-    ok "Submoduli git pronti"
-}
-
-# =============================================================================
-# 4. Heimdall DAQ firmware – build
-# =============================================================================
-build_heimdall() {
-    local src="$SCRIPT_DIR/external/heimdall_daq_fw"
-    local bld="$src/build"
-
-    if [[ ! -d "$src" ]]; then
-        warn "Submodulo heimdall_daq_fw non trovato in $src"
-        warn "Esegui: ./setup.sh --submodules  prima di --heimdall"
-        return 1
-    fi
-
-    # Se il submodulo è vuoto (solo .git), fai un checkout
-    if [[ ! -f "$src/CMakeLists.txt" ]]; then
-        git -C "$SCRIPT_DIR" submodule update --init "$src" || \
-            fail "Impossibile inizializzare heimdall_daq_fw"
-    fi
-
-    if [[ -f "$bld/daq_server" ]]; then
-        ok "Heimdall già compilato: $bld/daq_server"
+        warn "Not a git repository — cannot initialise submodules."
         return 0
     fi
 
-    info "Compilazione Heimdall DAQ firmware..."
-    mkdir -p "$bld"
-    cmake -S "$src" -B "$bld" -DCMAKE_BUILD_TYPE=Release
-    cmake --build "$bld" --parallel "$(nproc)"
-    ok "Heimdall compilato: $bld/daq_server"
+    # Sync URLs from .gitmodules → .git/config (required when .git/config
+    # does not yet have the submodule entries, e.g. after a fresh clone).
+    git -C "$SCRIPT_DIR" submodule sync --recursive
+
+    # Clone / update all registered submodules (shallow, 1 commit depth)
+    git -C "$SCRIPT_DIR" submodule update --init --recursive --depth 1 || \
+        warn "Submodule update partially failed (network unavailable?). Re-run when online."
+
+    ok "Git submodules initialised"
 }
 
 # =============================================================================
-# 5. Check ambiente
+# 4. Heimdall DAQ firmware – build (from external/heimdall_daq_fw)
+#
+# If Heimdall is already compiled at the default user path the build is
+# skipped — the existing installation is used as-is.
+# =============================================================================
+build_heimdall() {
+    # Prefer the native user installation
+    if [[ -f "$HOME/krakensdr/heimdall_daq_fw/Firmware_new/daq_start_sm.sh" ]]; then
+        ok "Heimdall already installed at ~/krakensdr/heimdall_daq_fw/Firmware_new/ — skipping build."
+        return 0
+    fi
+
+    local src="$SCRIPT_DIR/external/heimdall_daq_fw"
+
+    if [[ ! -d "$src" ]] || [[ -z "$(ls -A "$src" 2>/dev/null)" ]]; then
+        warn "Submodule external/heimdall_daq_fw is empty."
+        warn "Run:  ./setup.sh --submodules   then retry:  ./setup.sh --heimdall"
+        return 1
+    fi
+
+    local fw="$src/Firmware_new"
+    if [[ ! -d "$fw" ]]; then
+        warn "Firmware_new/ not found inside heimdall_daq_fw — unexpected repo layout."
+        return 1
+    fi
+
+    info "Building Heimdall DAQ firmware from external/heimdall_daq_fw/Firmware_new ..."
+    make -C "$fw" -j"$(nproc)" 2>&1 | tail -10
+    ok "Heimdall built: $fw"
+}
+
+# =============================================================================
+# 5. Heimdall sudoers rule (NOPASSWD for DAQ scripts)
+#
+# Without this rule the VS Code task runs `sudo bash daq_start_sm.sh` in a
+# non-interactive panel — sudo cannot prompt for a password and the task
+# exits immediately.
+# =============================================================================
+setup_heimdall_sudoers() {
+    local SUDOERS_FILE="/etc/sudoers.d/heimdall-daq"
+    local EXT="$SCRIPT_DIR/external/heimdall_daq_fw"
+    info "Installing Heimdall sudoers rule ($SUDOERS_FILE) ..."
+    # Covers both the user's compiled install (~/krakensdr/…/Firmware_new) and
+    # the in-tree submodule (external/…/Firmware and Firmware_new).
+    {
+        echo "mrheltic ALL=(ALL) NOPASSWD: \\"
+        echo "  /bin/bash $HOME/krakensdr/heimdall_daq_fw/Firmware_new/daq_start_sm.sh, \\"
+        echo "  /bin/bash $HOME/krakensdr/heimdall_daq_fw/Firmware_new/daq_synthetic_start.sh, \\"
+        echo "  /bin/bash $HOME/krakensdr/heimdall_daq_fw/Firmware_new/daq_stop.sh, \\"
+        echo "  /bin/bash $HOME/krakensdr/heimdall_daq_fw/Firmware/daq_start_sm.sh, \\"
+        echo "  /bin/bash $HOME/krakensdr/heimdall_daq_fw/Firmware/daq_synthetic_start.sh, \\"
+        echo "  /bin/bash $HOME/krakensdr/heimdall_daq_fw/Firmware/daq_stop.sh, \\"
+        echo "  /bin/bash $EXT/Firmware_new/daq_start_sm.sh, \\"
+        echo "  /bin/bash $EXT/Firmware_new/daq_synthetic_start.sh, \\"
+        echo "  /bin/bash $EXT/Firmware_new/daq_stop.sh, \\"
+        echo "  /bin/bash $EXT/Firmware/daq_start_sm.sh, \\"
+        echo "  /bin/bash $EXT/Firmware/daq_synthetic_start.sh, \\"
+        echo "  /bin/bash $EXT/Firmware/daq_stop.sh, \\"
+        echo "  /usr/bin/chrt *, \\"
+        echo "  /usr/sbin/sysctl -w kernel.sched_rt_runtime_us=*, \\"
+        echo "  /usr/bin/tee /proc/sys/vm/drop_caches"
+    } | sudo tee "$SUDOERS_FILE" > /dev/null
+    sudo chmod 440 "$SUDOERS_FILE"
+    ok "Heimdall sudoers rule installed ($SUDOERS_FILE)"
+}
+
+# =============================================================================
+# 6. Environment check
 # =============================================================================
 check_env() {
     echo ""
-    info "=== Verifica ambiente LARK ==="
+    info "=== LARK environment check ==="
     local ok_count=0 fail_count=0
 
     chk() {
@@ -147,34 +185,34 @@ check_env() {
         if eval "$cmd" &>/dev/null; then
             ok "$label"; (( ok_count++ )) || true
         else
-            warn "NON TROVATO: $label"; (( fail_count++ )) || true
+            warn "MISSING: $label"; (( fail_count++ )) || true
         fi
     }
 
-    chk "Python 3"          "python3 --version"
-    chk "pip3"              "pip3 --version"
-    chk "numpy"             "python3 -c 'import numpy'"
-    chk "scipy"             "python3 -c 'import scipy'"
-    chk "matplotlib"        "python3 -c 'import matplotlib'"
-    chk "pyadi-iio (adi)" \
-        "python3 -c 'import adi' || \
-         [[ -x '$SCRIPT_DIR/.venv/bin/python3' ]] && '$SCRIPT_DIR/.venv/bin/python3' -c 'import adi'"
-    chk "libiio (iio)"      "python3 -c 'import iio'"
-    chk "PyQt5"             "python3 -c 'from PyQt5 import Qt'"
-    chk "rtl-sdr (rtl_test)" "command -v rtl_test"
-    chk "iio_info"          "command -v iio_info"
-    chk "Heimdall (daq_start_sm.sh)" \
+    chk "Python 3"              "python3 --version"
+    chk "pip3"                  "pip3 --version"
+    chk ".venv"                 "[[ -x '$VENV_PY' ]]"
+    chk "numpy  (venv)"         "'$VENV_PY' -c 'import numpy'"
+    chk "scipy  (venv)"         "'$VENV_PY' -c 'import scipy'"
+    chk "matplotlib (venv)"     "'$VENV_PY' -c 'import matplotlib'"
+    chk "pyadi-iio / adi (venv)" "'$VENV_PY' -c 'import adi'"
+    chk "libiio / iio (venv)"   "'$VENV_PY' -c 'import iio'"
+    chk "PyQt5 (system)"        "python3 -c 'from PyQt5 import Qt'"
+    chk "rtl-sdr (rtl_test)"    "command -v rtl_test"
+    chk "iio_info"              "command -v iio_info"
+    chk "sudoers (heimdall)"    "[[ -f /etc/sudoers.d/heimdall-daq ]]"
+    chk "Heimdall firmware" \
         "[[ -f \"\$HOME/krakensdr/heimdall_daq_fw/Firmware_new/daq_start_sm.sh\" ]] || \
          [[ -f '$SCRIPT_DIR/external/heimdall_daq_fw/Firmware_new/daq_start_sm.sh' ]]"
     chk "iridium-toolkit" \
         "[[ -f '$SCRIPT_DIR/external/iridium-toolkit/iridium-parser.py' ]] || \
          [[ -f \"\$HOME/krakensdr/iridium-toolkit/iridium-parser.py\" ]]"
-    chk "gr-iridium" \
-        "[[ -d '$SCRIPT_DIR/external/gr-iridium' ]] || python3 -c 'import iridium' 2>/dev/null || \
-         command -v grgsm_decode 2>/dev/null || python3 -c 'import gnuradio' 2>/dev/null"
+    chk "gr-iridium (submodule)" \
+        "[[ -d '$SCRIPT_DIR/external/gr-iridium' ]] && \
+         [[ -n \"\$(ls -A '$SCRIPT_DIR/external/gr-iridium' 2>/dev/null)\" ]]"
 
     echo ""
-    echo -e "  ${GRN}OK: $ok_count${RST}   ${YEL}Mancanti: $fail_count${RST}"
+    echo -e "  ${GRN}OK: $ok_count${RST}   ${YEL}Missing: $fail_count${RST}"
     echo ""
 }
 
@@ -192,7 +230,8 @@ case "$MODE" in
         install_apt_deps
         install_pip_deps
         init_submodules
-        build_heimdall || warn "Build Heimdall fallita (forse offline); riprova con rete."
+        setup_heimdall_sudoers
+        build_heimdall || warn "Heimdall build failed (maybe offline or already installed). Retry: ./setup.sh --heimdall"
         check_env
         ;;
     deps)
@@ -206,16 +245,20 @@ case "$MODE" in
     submodules)
         init_submodules
         ;;
+    sudoers)
+        setup_heimdall_sudoers
+        ;;
     check)
         check_env
         ;;
 esac
 
-echo -e "${GRN}Setup completato.${RST}"
+echo -e "${GRN}Setup complete.${RST}"
 echo ""
-echo "  Prossimi passi:"
-echo "  1. Verifica la config: krakenSDR/src/config.py"
-echo "  2. Verifica i parametri Heimdall: krakenSDR/src/config/daq_chain_config.ini"
-echo "  3. Verifica la config LibreSDR: libreSDR/src/config.py"
-echo "  4. Avvia tutto con VS Code Tasks (Ctrl+Shift+P → Run Task)"
+echo "  Next steps:"
+echo "  1. Activate venv:       source .venv/bin/activate"
+echo "  2. Check KrakenSDR:     krakenSDR/src/config.py"
+echo "  3. Check Heimdall DAQ:  krakenSDR/src/config/daq_chain_config.ini"
+echo "  4. Check LibreSDR:      libreSDR/src/config.py"
+echo "  5. Run via VS Code:     Ctrl+Shift+P → Tasks: Run Task"
 echo ""

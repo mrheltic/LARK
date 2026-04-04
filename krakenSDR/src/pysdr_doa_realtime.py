@@ -25,16 +25,50 @@ if __name__ == '__main__':
 
 from PyQt5 import Qt
 from PyQt5.QtCore import QObject, pyqtSlot
-from gnuradio import gr
-from gnuradio.filter import firdes
-from gnuradio.fft import window
 import sys
 import signal
 from argparse import ArgumentParser
-from gnuradio.eng_arg import eng_float, intx
-from gnuradio import eng_notation
-from gnuradio.qtgui import Range, RangeWidget
 from PyQt5 import QtCore
+
+try:
+    from gnuradio import gr
+    from gnuradio.filter import firdes
+    from gnuradio.fft import window
+    from gnuradio.eng_arg import eng_float, intx
+    from gnuradio import eng_notation
+    from gnuradio.qtgui import Range, RangeWidget
+    _GR_AVAILABLE = True
+except ImportError:
+    _GR_AVAILABLE = False
+    # ── Minimal gnuradio stubs (no actual signal processing used) ─────────
+    class _TopBlock:
+        """Stub replacing gr.top_block — the real DoA work runs via
+        snipfcn_realtime_doa_snippet() which uses KrakenIQSource directly."""
+        def __init__(self, title="", catch_exceptions=True): pass
+        def start(self): pass
+        def stop(self): pass
+        def wait(self): pass
+
+    class _Prefs:
+        def get_string(self, section, key, default=""): return default
+
+    class _GR:
+        top_block = _TopBlock
+        def prefs(self): return _Prefs()
+
+    gr = _GR()
+
+    class firdes: pass
+    class window: pass
+    class eng_notation: pass
+    def eng_float(x): return float(x)
+    def intx(x): return int(x)
+
+    class Range:
+        def __init__(self, *a, **kw): pass
+
+    class RangeWidget(Qt.QWidget):
+        def __init__(self, *a, **kw): super().__init__()
 
 
 def snipfcn_realtime_doa_snippet(self):
@@ -883,7 +917,22 @@ def snipfcn_realtime_doa_snippet(self):
 def snippets_main_after_init(tb):
     snipfcn_realtime_doa_snippet(tb)
 
-from gnuradio import qtgui
+try:
+    from gnuradio import qtgui as _qtgui_gr
+    class _QtguiUtil:
+        @staticmethod
+        def check_set_qss(): _qtgui_gr.util.check_set_qss()
+    class _Qtgui:
+        util = _QtguiUtil()
+    qtgui = _Qtgui()
+except ImportError:
+    class _QtguiUtil:
+        @staticmethod
+        def check_set_qss(): pass
+    class _Qtgui:
+        util = _QtguiUtil()
+    qtgui = _Qtgui()
+
 
 class pysdr_doa_realtime(gr.top_block, Qt.QWidget):
 

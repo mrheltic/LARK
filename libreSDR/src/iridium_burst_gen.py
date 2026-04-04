@@ -1,48 +1,48 @@
 #!/usr/bin/env python3
 """
-Generatore di burst simili a Iridium usando tecniche PySDR.
+Iridium-like burst generator using PySDR techniques.
 
-Parametri del sistema Iridium (da specifiche pubbliche):
-  - Banda: 1616–1626.5 MHz (L-band)
-  - Larghezza canale: ~41.667 kHz
+Iridium system parameters (from public specifications):
+  - Band: 1616–1626.5 MHz (L-band)
+  - Channel width: ~41.667 kHz
   - Symbol rate: 25 ksps
-  - Modulazione: DQPSK (Differential QPSK)
-  - Struttura burst TDMA: preamble + unique word + payload + guard
+  - Modulation: DQPSK (Differential QPSK)
+  - TDMA burst structure: preamble + unique word + payload + guard
 
-Questo script genera burst DQPSK in banda base con pulse shaping RRC,
-li visualizza e salva come file IQ (complex64).
+This script generates baseband DQPSK bursts with RRC pulse shaping,
+plots them, and saves them as IQ files (complex64).
 
-Uso:
-  python3 iridium_burst_gen.py                  # genera e plotta
-  python3 iridium_burst_gen.py --save burst.iq  # salva file IQ
-  python3 iridium_burst_gen.py --num-bursts 5   # genera 5 burst
-  python3 iridium_burst_gen.py --no-plot         # niente GUI
+Usage:
+  python3 iridium_burst_gen.py                  # generate and plot
+  python3 iridium_burst_gen.py --save burst.iq  # save IQ file
+  python3 iridium_burst_gen.py --num-bursts 5   # generate 5 bursts
+  python3 iridium_burst_gen.py --no-plot         # no GUI
 """
 
 import argparse
 import numpy as np
 from scipy import signal as sp_signal
 import matplotlib
-matplotlib.use("Agg")  # backend non-interattivo di default
+matplotlib.use("Agg")  # non-interactive backend by default
 import matplotlib.pyplot as plt
 
 
-# ── Parametri Iridium-like ──────────────────────────────────────────────
+# ── Iridium-like parameters ──────────────────────────────────────────────
 SYMBOL_RATE = 25_000          # 25 ksps
 SAMPLES_PER_SYMBOL = 8        # oversampling
 SAMPLE_RATE = SYMBOL_RATE * SAMPLES_PER_SYMBOL  # 200 kHz
-RRC_BETA = 0.35               # roll-off RRC
-RRC_NUM_TAPS = 101            # lunghezza filtro RRC
+RRC_BETA = 0.35               # RRC roll-off
+RRC_NUM_TAPS = 101            # RRC filter length
 
-# Struttura burst (in simboli)
-PREAMBLE_LEN = 64             # simboli di preambolo (pattern alternante)
-UNIQUE_WORD_LEN = 12          # simboli di unique word (sincronizzazione frame)
-HEADER_LEN = 12               # header burst
-PAYLOAD_LEN = 156             # payload dati
-GUARD_SYMBOLS = 20            # guard time tra burst (silenzio)
+# Burst structure (in symbols)
+PREAMBLE_LEN = 64             # preamble symbols (alternating pattern)
+UNIQUE_WORD_LEN = 12          # unique word symbols (frame synchronization)
+HEADER_LEN = 12               # burst header
+PAYLOAD_LEN = 156             # data payload
+GUARD_SYMBOLS = 20            # guard time between bursts (silence)
 
 # Unique Word noto (12 dibit → 24 bit, pattern fisso Iridium-like)
-# Pattern scelto per buone proprietà di autocorrelazione
+# Pattern chosen for good autocorrelation properties
 UNIQUE_WORD_BITS = np.array([
     0, 0, 1, 1, 0, 1, 1, 0, 1, 0, 0, 1,
     1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 0,
@@ -50,9 +50,9 @@ UNIQUE_WORD_BITS = np.array([
 
 
 def generate_rrc_filter(beta, sps, num_taps):
-    """Genera filtro Root Raised Cosine (RRC)."""
+    """Generate Root Raised Cosine (RRC) filter."""
     t = np.arange(num_taps) - (num_taps - 1) // 2
-    t = t / sps  # normalizza al periodo di simbolo
+    t = t / sps  # normalize to symbol period
 
     h = np.zeros(num_taps)
     for i, ti in enumerate(t):
@@ -69,15 +69,15 @@ def generate_rrc_filter(beta, sps, num_taps):
             den = np.pi * ti * (1.0 - (4.0 * beta * ti) ** 2)
             h[i] = num / den
 
-    h /= np.sqrt(np.sum(h**2))  # normalizza energia
+    h /= np.sqrt(np.sum(h**2))  # normalize energy
     return h
 
 
 def dqpsk_modulate(bits):
     """
-    Modulazione DQPSK: mappa coppie di bit in rotazioni di fase differenziali.
+    DQPSK modulation: maps bit pairs into differential phase rotations.
 
-    Mapping dibit → rotazione di fase:
+    Dibit → phase rotation mapping:
       00 → +π/4
       01 → +3π/4
       10 → -π/4
@@ -89,7 +89,7 @@ def dqpsk_modulate(bits):
     dibits = bits.reshape(-1, 2)
     num_symbols = len(dibits)
 
-    # Mappa dibit → rotazione di fase (Gray coding)
+    # Map dibit → phase rotation (Gray coding)
     phase_map = {
         (0, 0): np.pi / 4,
         (0, 1): 3 * np.pi / 4,
@@ -97,7 +97,7 @@ def dqpsk_modulate(bits):
         (1, 1): -3 * np.pi / 4,
     }
 
-    # Fase iniziale di riferimento
+    # Initial reference phase
     phase = 0.0
     symbols = np.zeros(num_symbols, dtype=np.complex128)
 
@@ -112,8 +112,8 @@ def dqpsk_modulate(bits):
 
 def generate_preamble(length):
     """
-    Genera preambolo Iridium-like: pattern alternante 01 01 01...
-    che produce una rotazione di fase costante (tono singolo in DQPSK).
+    Generate Iridium-like preamble: alternating pattern 01 01 01...
+    that produces a constant phase rotation (single tone in DQPSK).
     """
     bits = np.tile([0, 1], length)  # 2 bit per simbolo
     return bits
@@ -121,33 +121,33 @@ def generate_preamble(length):
 
 def generate_burst(payload_bits=None, burst_type="data"):
     """
-    Genera un singolo burst Iridium-like.
+    Generate a single Iridium-like burst.
 
-    Struttura:
+    Structure:
       [Preamble | Unique Word | Header | Payload]
 
     Args:
-        payload_bits: bit del payload (se None, generati random)
-        burst_type: "data" (simplex data) o "ring_alert" (burst corto)
+        payload_bits: payload bits (if None, generated randomly)
+        burst_type: "data" (simplex data) or "ring_alert" (shorter burst)
 
     Returns:
-        symbols: array di simboli DQPSK complessi
-        sections: dict con indici delle sezioni del burst
+        symbols: array of complex DQPSK symbols
+        sections: dict with indices of each burst section
     """
     if burst_type == "ring_alert":
-        preamble_len = 32   # Ring Alert ha preambolo più corto
+        preamble_len = 32   # Ring Alert has a shorter preamble
         payload_len = 48
     else:
         preamble_len = PREAMBLE_LEN
         payload_len = PAYLOAD_LEN
 
-    # Preambolo
+    # Preamble
     preamble_bits = generate_preamble(preamble_len)
 
     # Unique Word
     uw_bits = UNIQUE_WORD_BITS.copy()
 
-    # Header (semplificato: tipo burst + canale)
+    # Header (simplified: burst type + channel)
     header_bits = np.random.randint(0, 2, HEADER_LEN * 2).astype(np.int8)
 
     # Payload
@@ -156,10 +156,10 @@ def generate_burst(payload_bits=None, burst_type="data"):
     else:
         payload_bits = np.array(payload_bits, dtype=np.int8)
 
-    # Concatena tutti i bit
+    # Concatenate all bits
     all_bits = np.concatenate([preamble_bits, uw_bits, header_bits, payload_bits])
 
-    # Modula DQPSK
+    # DQPSK modulate
     symbols = dqpsk_modulate(all_bits)
 
     sections = {
@@ -176,40 +176,40 @@ def generate_burst(payload_bits=None, burst_type="data"):
 
 def apply_pulse_shaping(symbols, rrc_filter, sps):
     """
-    Applica pulse shaping RRC: upsampling + filtro.
+    Apply RRC pulse shaping: upsampling + filtering.
 
-    1. Inserisce zeri tra i simboli (upsampling)
-    2. Convolve con filtro RRC
+    1. Insert zeros between symbols (upsampling)
+    2. Convolve with RRC filter
     """
-    # Upsampling: inserisci sps-1 zeri tra ogni simbolo
+    # Upsampling: insert sps-1 zeros between each symbol
     upsampled = np.zeros(len(symbols) * sps, dtype=np.complex128)
     upsampled[::sps] = symbols
 
-    # Filtra con RRC
+    # Filter with RRC
     shaped = np.convolve(upsampled, rrc_filter, mode="same")
     return shaped
 
 
 def add_frequency_offset(signal, freq_offset_hz, sample_rate):
-    """Aggiunge un offset di frequenza (simula spostamento Doppler o canale)."""
+    """Add a frequency offset (simulates Doppler shift or channel offset)."""
     t = np.arange(len(signal)) / sample_rate
     return signal * np.exp(1j * 2 * np.pi * freq_offset_hz * t)
 
 
 def generate_tdma_frame(num_bursts=4, burst_types=None, freq_offsets=None):
     """
-    Genera un frame TDMA con più burst, simile a Iridium.
+    Generate a TDMA frame with multiple bursts, Iridium-like.
 
-    Un frame Iridium è ~90 ms e contiene fino a 4 timeslot.
+    An Iridium frame is ~90 ms and contains up to 4 timeslots.
 
     Args:
-        num_bursts: numero di burst nel frame
-        burst_types: lista di tipi burst (default: tutti "data")
-        freq_offsets: offset di frequenza per burst (Hz), per simulare FDMA
+        num_bursts: number of bursts in the frame
+        burst_types: list of burst types (default: all "data")
+        freq_offsets: per-burst frequency offsets (Hz), to simulate FDMA
 
     Returns:
-        frame_signal: segnale IQ complesso del frame intero
-        burst_info: lista di dizionari con info per ogni burst
+        frame_signal: complex IQ signal of the entire frame
+        burst_info: list of dicts with info for each burst
     """
     if burst_types is None:
         burst_types = ["data"] * num_bursts
@@ -222,20 +222,20 @@ def generate_tdma_frame(num_bursts=4, burst_types=None, freq_offsets=None):
     burst_info = []
 
     for i in range(num_bursts):
-        # Genera burst
+        # Generate burst
         symbols, sections = generate_burst(burst_type=burst_types[i])
 
         # Pulse shaping
         shaped = apply_pulse_shaping(symbols, rrc, SAMPLES_PER_SYMBOL)
 
-        # Offset di frequenza (FDMA)
+        # Frequency offset (FDMA)
         if freq_offsets[i] != 0.0:
             shaped = add_frequency_offset(shaped, freq_offsets[i], SAMPLE_RATE)
 
-        # Guard time (silenzio tra burst)
+        # Guard time (silence between bursts)
         guard = np.zeros(GUARD_SYMBOLS * SAMPLES_PER_SYMBOL, dtype=np.complex128)
 
-        # Salva info burst
+        # Save burst info
         start_sample = len(frame_signal)
         frame_signal = np.concatenate([frame_signal, shaped, guard])
 
@@ -255,21 +255,21 @@ def generate_tdma_frame(num_bursts=4, burst_types=None, freq_offsets=None):
 def add_channel_effects(signal, snr_db=20.0, phase_offset=0.0,
                         freq_drift_hz=0.0, sample_rate=SAMPLE_RATE):
     """
-    Aggiunge effetti di canale realistici.
+    Add realistic channel effects.
 
     Args:
-        signal: segnale IQ
-        snr_db: rapporto segnale-rumore in dB
-        phase_offset: rotazione di fase costante (rad)
-        freq_drift_hz: drift di frequenza lineare (Hz)
+        signal: IQ signal
+        snr_db: signal-to-noise ratio in dB
+        phase_offset: constant phase rotation (rad)
+        freq_drift_hz: linear frequency drift (Hz)
     """
     out = signal.copy()
 
-    # Rotazione di fase
+    # Phase rotation
     if phase_offset != 0.0:
         out *= np.exp(1j * phase_offset)
 
-    # Drift di frequenza
+    # Frequency drift
     if freq_drift_hz != 0.0:
         t = np.arange(len(out)) / sample_rate
         out *= np.exp(1j * 2 * np.pi * freq_drift_hz * t)
@@ -286,13 +286,13 @@ def add_channel_effects(signal, snr_db=20.0, phase_offset=0.0,
 
 
 def plot_burst(frame_signal, burst_info, snr_db=None, save_path=None):
-    """Genera plot di analisi del burst."""
+    """Generate burst analysis plot."""
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle("Iridium-like DQPSK Burst Analysis", fontsize=14, fontweight="bold")
 
     t_ms = np.arange(len(frame_signal)) / SAMPLE_RATE * 1000  # tempo in ms
 
-    # 1) Ampiezza nel tempo
+    # 1) Amplitude over time
     ax = axes[0, 0]
     ax.plot(t_ms, np.abs(frame_signal), linewidth=0.5, color="steelblue")
     for info in burst_info:
@@ -302,16 +302,16 @@ def plot_burst(frame_signal, burst_info, snr_db=None, save_path=None):
         ax.text((t_start + t_end) / 2, ax.get_ylim()[0],
                 f"Burst {info['index']}\n({info['type']})",
                 ha="center", va="bottom", fontsize=8)
-    ax.set_xlabel("Tempo (ms)")
-    ax.set_ylabel("Ampiezza")
-    ax.set_title("Inviluppo del segnale")
+    ax.set_xlabel("Time (ms)")
+    ax.set_ylabel("Amplitude")
+    ax.set_title("Signal envelope")
     ax.grid(True, alpha=0.3)
 
-    # 2) Spettro
+    # 2) Spectrum
     ax = axes[0, 1]
     nfft = 1024
     f_axis = np.linspace(-SAMPLE_RATE / 2, SAMPLE_RATE / 2, nfft) / 1000
-    # Usa solo il primo burst per lo spettro
+    # Use only the first burst for the spectrum
     if len(burst_info) > 0:
         b = burst_info[0]
         burst_samples = frame_signal[b["start_sample"]:b["end_sample"]]
@@ -322,50 +322,50 @@ def plot_burst(frame_signal, burst_info, snr_db=None, save_path=None):
             psd = 20 * np.log10(np.abs(spectrum) + 1e-12)
             psd -= np.max(psd)  # normalizza
             ax.plot(f_axis, psd, linewidth=0.8, color="darkgreen")
-    ax.set_xlabel("Frequenza (kHz)")
+    ax.set_xlabel("Frequency (kHz)")
     ax.set_ylabel("PSD (dB)")
-    ax.set_title(f"Spettro burst (BW ≈ {SYMBOL_RATE * (1 + RRC_BETA) / 1000:.1f} kHz)")
+    ax.set_title(f"Burst spectrum (BW ≈ {SYMBOL_RATE * (1 + RRC_BETA) / 1000:.1f} kHz)")
     ax.set_ylim([-60, 5])
     ax.grid(True, alpha=0.3)
 
-    # 3) Costellazione DQPSK
+    # 3) DQPSK constellation
     ax = axes[1, 0]
-    # Campiona ai punti di decisione (ogni sps campioni)
+    # Sample at decision points (every sps samples)
     if len(burst_info) > 0:
         b = burst_info[0]
         burst_samples = frame_signal[b["start_sample"]:b["end_sample"]]
         decision_points = burst_samples[SAMPLES_PER_SYMBOL // 2::SAMPLES_PER_SYMBOL]
-        # Normalizza per visualizzare meglio
+        # Normalize for better display
         if len(decision_points) > 0:
             decision_points /= np.max(np.abs(decision_points))
             ax.scatter(np.real(decision_points), np.imag(decision_points),
                        s=8, alpha=0.6, c="crimson", edgecolors="none")
     ax.set_xlabel("I (In-Phase)")
     ax.set_ylabel("Q (Quadrature)")
-    ax.set_title("Costellazione DQPSK")
+    ax.set_title("DQPSK Constellation")
     ax.set_aspect("equal")
     ax.grid(True, alpha=0.3)
-    # Cerchio unitario
+    # Unit circle
     theta = np.linspace(0, 2 * np.pi, 100)
     ax.plot(np.cos(theta), np.sin(theta), "k--", alpha=0.2, linewidth=0.5)
 
-    # 4) Fase nel tempo (differenziale)
+    # 4) Phase over time (differential)
     ax = axes[1, 1]
     if len(burst_info) > 0:
         b = burst_info[0]
         burst_samples = frame_signal[b["start_sample"]:b["end_sample"]]
         decision_points = burst_samples[SAMPLES_PER_SYMBOL // 2::SAMPLES_PER_SYMBOL]
         if len(decision_points) > 1:
-            # Fase differenziale
+            # Differential phase
             diff_phase = np.angle(decision_points[1:] * np.conj(decision_points[:-1]))
             ax.plot(np.degrees(diff_phase), ".", markersize=3, color="purple")
-            # Linee di riferimento per i 4 livelli DQPSK
+            # Reference lines for the 4 DQPSK levels
             for level in [45, 135, -45, -135]:
                 ax.axhline(y=level, color="gray", linestyle="--",
                            alpha=0.4, linewidth=0.8)
-    ax.set_xlabel("Indice simbolo")
-    ax.set_ylabel("ΔΦ (gradi)")
-    ax.set_title("Fase differenziale (livelli DQPSK)")
+    ax.set_xlabel("Symbol index")
+    ax.set_ylabel("ΔΦ (degrees)")
+    ax.set_title("Differential phase (DQPSK levels)")
     ax.set_ylim([-180, 180])
     ax.grid(True, alpha=0.3)
 
@@ -373,82 +373,82 @@ def plot_burst(frame_signal, burst_info, snr_db=None, save_path=None):
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"Plot salvato in: {save_path}")
+        print(f"Plot saved to: {save_path}")
     else:
         plt.savefig("iridium_burst_plot.png", dpi=150, bbox_inches="tight")
-        print("Plot salvato in: iridium_burst_plot.png")
+        print("Plot saved to: iridium_burst_plot.png")
 
 
 def save_iq_file(signal, filepath):
-    """Salva segnale IQ come file complex64 (formato SDR standard)."""
+    """Save IQ signal as a complex64 file (standard SDR format)."""
     signal_32 = signal.astype(np.complex64)
     signal_32.tofile(filepath)
     duration_ms = len(signal) / SAMPLE_RATE * 1000
-    print(f"File IQ salvato: {filepath}")
-    print(f"  Campioni: {len(signal)}")
+    print(f"IQ file saved: {filepath}")
+    print(f"  Samples: {len(signal)}")
     print(f"  Sample rate: {SAMPLE_RATE} Hz")
-    print(f"  Durata: {duration_ms:.1f} ms")
-    print(f"  Dimensione: {signal_32.nbytes} byte")
+    print(f"  Duration: {duration_ms:.1f} ms")
+    print(f"  Size: {signal_32.nbytes} bytes")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generatore di burst Iridium-like con modulazione DQPSK"
+        description="Iridium-like burst generator with DQPSK modulation"
     )
     parser.add_argument("--num-bursts", type=int, default=4,
-                        help="Numero di burst nel frame TDMA (default: 4)")
+                        help="Number of bursts in the TDMA frame (default: 4)")
     parser.add_argument("--snr", type=float, default=25.0,
-                        help="SNR del canale in dB (default: 25)")
+                        help="Channel SNR in dB (default: 25)")
     parser.add_argument("--save", type=str, default=None,
-                        help="Percorso file IQ output (complex64)")
+                        help="Output IQ file path (complex64)")
     parser.add_argument("--save-plot", type=str, default=None,
-                        help="Percorso file PNG per il plot")
+                        help="PNG file path for the plot")
     parser.add_argument("--no-plot", action="store_true",
-                        help="Disabilita generazione plot")
+                        help="Disable plot generation")
     parser.add_argument("--fdma", action="store_true",
-                        help="Simula canali FDMA (offset di frequenza diversi)")
+                        help="Simulate FDMA channels (different frequency offsets)")
     parser.add_argument("--doppler", type=float, default=0.0,
-                        help="Drift Doppler in Hz (default: 0)")
+                        help="Doppler drift in Hz (default: 0)")
     parser.add_argument("--ring-alert", action="store_true",
-                        help="Genera burst di tipo Ring Alert (più corti)")
+                        help="Generate Ring Alert burst type (shorter)")
     args = parser.parse_args()
 
     print("=" * 60)
-    print("  Generatore Burst Iridium-like (DQPSK)")
+    print("  Iridium-like Burst Generator (DQPSK)")
     print("=" * 60)
-    print(f"  Symbol rate:     {SYMBOL_RATE / 1000:.0f} ksps")
-    print(f"  Sample rate:     {SAMPLE_RATE / 1000:.0f} kHz")
-    print(f"  Campioni/simbolo: {SAMPLES_PER_SYMBOL}")
-    print(f"  Filtro RRC:      β={RRC_BETA}, {RRC_NUM_TAPS} tap")
-    print(f"  Burst richiesti: {args.num_bursts}")
-    print(f"  SNR canale:      {args.snr} dB")
+    print(f"  Symbol rate:      {SYMBOL_RATE / 1000:.0f} ksps")
+    print(f"  Sample rate:      {SAMPLE_RATE / 1000:.0f} kHz")
+    print(f"  Samples/symbol:   {SAMPLES_PER_SYMBOL}")
+    print(f"  RRC filter:       β={RRC_BETA}, {RRC_NUM_TAPS} taps")
+    print(f"  Bursts requested: {args.num_bursts}")
+    print(f"  Channel SNR:      {args.snr} dB")
     print()
 
-    # Tipi di burst
+    # Burst types
     if args.ring_alert:
         burst_types = ["ring_alert"] * args.num_bursts
     else:
         burst_types = ["data"] * args.num_bursts
 
-    # Offset FDMA (canali adiacenti spaziati ~41.667 kHz)
+    # FDMA offsets (adjacent channels spaced ~41.667 kHz)
     if args.fdma:
         channel_spacing = 41667  # Hz
         freq_offsets = [
             (i - args.num_bursts // 2) * channel_spacing
             for i in range(args.num_bursts)
         ]
-        print(f"  Modalità FDMA: offset = {freq_offsets} Hz")
+        print(f"  FDMA mode: offset = {freq_offsets} Hz")
     else:
         freq_offsets = [0.0] * args.num_bursts
 
-    # Genera frame TDMA
+    # Generate TDMA frame
     frame_signal, burst_info = generate_tdma_frame(
         num_bursts=args.num_bursts,
         burst_types=burst_types,
         freq_offsets=freq_offsets,
     )
 
-    # Effetti di canale
+    # Channel effects
     frame_signal = add_channel_effects(
         frame_signal,
         snr_db=args.snr,
@@ -456,12 +456,12 @@ def main():
         freq_drift_hz=args.doppler,
     )
 
-    # Stampa info burst
+    # Print burst info
     for info in burst_info:
         t_start = info["start_sample"] / SAMPLE_RATE * 1000
         t_end = info["end_sample"] / SAMPLE_RATE * 1000
-        print(f"  Burst {info['index']}: tipo={info['type']}, "
-              f"{info['num_symbols']} simboli, "
+        print(f"  Burst {info['index']}: type={info['type']}, "
+              f"{info['num_symbols']} symbols, "
               f"t=[{t_start:.1f}–{t_end:.1f}] ms"
               + (f", Δf={info['freq_offset']:.0f} Hz"
                  if info['freq_offset'] != 0 else ""))
@@ -472,11 +472,11 @@ def main():
         plot_burst(frame_signal, burst_info,
                    snr_db=args.snr, save_path=args.save_plot)
 
-    # Salva file IQ
+    # Save IQ file
     if args.save:
         save_iq_file(frame_signal, args.save)
 
-    print("Fatto!")
+    print("Done!")
 
 
 if __name__ == "__main__":
