@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-KrakenSDR DoA N-antenna -- standalone application with display widgets
-======================================================================
-Supports 2-5 antenna channels with ULA or UCA array geometry.
-Standalone file: does not depend on any GRC-generated script.
+KrakenSDR DoA N-antenna – standalone application
+=================================================
+Direction-of-Arrival estimation without GNU Radio dependencies.
+Uses KrakenIQSource (TCP) + doa_algorithms.py for signal processing
+and matplotlib for visualisation.
 
-Configuration (environment variables or defaults)
---------------------------------------------------
-  NUM_CHANNELS  number of antennas/channels  (default: 2)
-  ARRAY_TYPE    'ULA' or 'UCA'               (default: ULA)
-  CENTER_FREQ   centre frequency in MHz       (default: 868.0)
-  GAIN_DB       RF gain in dB                 (default: 40.2)
-  ARRAY_DIST    antenna spacing in metres     (default: 0.17)
+Configuration via environment variables or config.py defaults:
+  NUM_CHANNELS  number of antennas/channels  (default: config.N_ANTENNAS)
+  ARRAY_TYPE    'ULA' or 'UCA'               (default: config.GEOMETRY)
+  CENTER_FREQ   centre frequency in MHz       (default: config.FREQ_HZ/1e6)
+  GAIN_DB       RF gain in dB                 (default: config.GAIN_DB)
+  ARRAY_DIST    antenna spacing in metres     (ULA: overrides d_lambda)
 
-Launch (inside the container):
-    python3 /workspace/run_doa.py
+Launch:
+    python3 krakenSDR/src/run_doa.py
+    NUM_CHANNELS=5 ARRAY_TYPE=UCA CENTER_FREQ=868 python3 krakenSDR/src/run_doa.py
 
 UI Layout
 ---------
@@ -37,485 +37,393 @@ expected from the cross-correlation phase.  Values <= 5 deg indicate
 a well-calibrated array with a dominant source.
 """
 
-import sys
-import os
-import math
-import json
-import signal
-import statistics
-from collections import deque
+from __future__ import annotations
 
-import numpy as np
-
-# -- add workspace to Python path
-_WORKSPACE = os.path.dirname(os.path.abspath(__file__))
-if _WORKSPACE not in sys.path:
-    sys.path.insert(0, _WORKSPACE)
-
-from packaging.version import Version as StrictVersion
-
+import collections
 import ctypes
-if sys.platform.startswith('linux'):
+import json
+import math
+import os
+import signal
+import sys
+import time
+from types import SimpleNamespace
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+if sys.platform.startswith("linux"):
     try:
-        ctypes.cdll.LoadLibrary('libX11.so').XInitThreads()
+        ctypes.cdll.LoadLibrary("libX11.so").XInitThreads()
     except Exception:
         pass
 
-from PyQt5 import Qt, QtCore
-from gnuradio import blocks, filter, gr, qtgui
-from gnuradio.fft import window
-from gnuradio.filter import firdes
-from gnuradio.qtgui import Range, RangeWidget
-from gnuradio import eng_notation
-from gnuradio.eng_arg import eng_float, intx
-import sip
-from gnuradio import krakensdr
+import numpy as np
+import matplotlib
+matplotlib.use("Qt5Agg")
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+import matplotlib.gridspec as gridspec
+from matplotlib.widgets import Button
 
-from doa_display_widgets import (
-    PolarSpectrumWidget,
-    CompassWidget, DoAMapWidget, SignalQualityWidget,
-    BearingHistoryWidget, CalibrationWidget,
+import config as C
+from kraken_iq_source import KrakenIQSource
+from doa_algorithms import (
+    ArrayConfig, Geometry,
+    doa_music, doa_root_music, doa_capon, doa_ml, doa_esprit,
+    apply_phase_correction,
+    measure_power_db, snr_from_covariance, papr_db,
+    condition_number, CovarianceAccumulator,
+    apply_decorrelation, covariance,
+)
+from ui.theme import (
+    apply_mpl_style,
+    BG, BG2, BG3, BORDER, DIM,
+    BLUE, TEAL, AMBER, VIOLET, ROSE, LIME,
+    TEXT, MUTED,
 )
 
-_CAL_FILE = os.path.join(_WORKSPACE, ".doa_calibration.json")
+# ── Config from env vars (override config.py defaults) ────────────────────────
+NUM_CHANNELS = int(os.environ.get("NUM_CHANNELS",  str(C.N_ANTENNAS)))
+ARRAY_TYPE   = os.environ.get("ARRAY_TYPE",  C.GEOMETRY).upper()
+CENTER_FREQ  = float(os.environ.get("CENTER_FREQ", str(C.FREQ_HZ / 1e6))) * 1e6
+GAIN_DB      = float(os.environ.get("GAIN_DB",  str(C.GAIN_DB)))
 
-# -- configuration from environment variables
-NUM_CHANNELS = int(os.environ.get("NUM_CHANNELS", "2"))
-ARRAY_TYPE   = os.environ.get("ARRAY_TYPE", "ULA").upper()
-CENTER_FREQ  = float(os.environ.get("CENTER_FREQ", "868.0"))
-GAIN_DB      = float(os.environ.get("GAIN_DB", "40.2"))
-ARRAY_DIST   = float(os.environ.get("ARRAY_DIST", "0.17"))
+if "ARRAY_DIST" in os.environ:            # metres → lambda-normalised
+    _dist_m  = float(os.environ["ARRAY_DIST"])
+    _lam_m   = 3e8 / CENTER_FREQ
+    D_LAMBDA = _dist_m / _lam_m
+    R_LAMBDA = _dist_m / _lam_m
+else:
+    D_LAMBDA = C.D_LAMBDA
+    R_LAMBDA = C.RADIUS_LAMBDA
+
+_CAL_FILE = os.path.join(_HERE, ".doa_calibration.json")
 
 
-# --- Flowgraph + Widget -------------------------------------------------------
+def main() -> None:
+    apply_mpl_style()
 
-class KrakenDoA(gr.top_block, Qt.QWidget):
-    """
-    KrakenSDR N-antenna MUSIC DoA with display widgets.
-    Supports 2-5 channels, ULA or UCA array.
-    """
+    GEOM = Geometry.UCA if ARRAY_TYPE == "UCA" else Geometry.ULA
+    cfg  = ArrayConfig(
+        Nr=NUM_CHANNELS, geometry=GEOM,
+        d_lambda=D_LAMBDA, radius_lambda=R_LAMBDA,
+        num_expected_signals=C.NUM_SIGNALS,
+        num_scan_points=C.SCAN_POINTS,
+    )
+    theta_scan = cfg.scan_range()
 
-    def __init__(self):
-        gr.top_block.__init__(self, "KrakenSDR DoA", catch_exceptions=True)
-        Qt.QWidget.__init__(self)
-        self.setWindowTitle(
-            f"KrakenSDR DoA {NUM_CHANNELS}-Ant  |  {ARRAY_TYPE}  |  {CENTER_FREQ} MHz")
-        qtgui.util.check_set_qss()
+    HIST  = 120
+    FFT_N = 512
+    _flat     = np.full(C.SCAN_POINTS, -40.0)
+    _fft_freqs = np.fft.fftshift(np.fft.fftfreq(FFT_N)) * C.SAMPLE_RATE_HZ / 1e3
+    _x_hist   = np.arange(HIST)
+    WARMUP    = max(10, int(1.0 / max(0.01, 1.0 - C.COV_ALPHA)))
+
+    # ── Persistent state ──────────────────────────────────────────────────────
+    S = SimpleNamespace(
+        angle_phasor = complex(1.0, 0.0),
+        last_fft     = np.full(FFT_N, -80.0),
+        warmup_count = 0,
+        cov_acc      = CovarianceAccumulator(alpha=C.COV_ALPHA),
+        h_angle      = collections.deque([float("nan")] * HIST, maxlen=HIST),
+        h_snr        = collections.deque([0.0] * HIST, maxlen=HIST),
+        est_deg      = 0.0,
+        cal_offset   = 0.0,
+        fps          = 0.0,
+        t_last       = time.time(),
+    )
+
+    # Load saved calibration
+    try:
+        with open(_CAL_FILE) as _f:
+            _cal = json.load(_f)
+        S.cal_offset = float(_cal.get("offset_deg", 0.0))
+    except Exception:
+        pass
+
+    # ── Heimdall connection ────────────────────────────────────────────────────
+    kraken = KrakenIQSource(
+        host=C.HEIMDALL_HOST, port=C.HEIMDALL_PORT, ctrl_port=C.HEIMDALL_CTRL,
+        num_channels=NUM_CHANNELS, freq_hz=CENTER_FREQ, gain_db=GAIN_DB,
+    )
+    kraken.start()
+
+    # ── Figure layout ──────────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(17, 9), facecolor=BG)
+    fig.patch.set_facecolor(BG)
+    gs = gridspec.GridSpec(
+        2, 3, figure=fig,
+        left=0.05, right=0.97, top=0.92, bottom=0.12,
+        hspace=0.48, wspace=0.40,
+    )
+
+    ax_music = fig.add_subplot(gs[0, 0], polar=True)
+    ax_comp  = fig.add_subplot(gs[0, 1], polar=True)
+    ax_hist  = fig.add_subplot(gs[0, 2])
+    ax_fft   = fig.add_subplot(gs[1, 0])
+    ax_snr   = fig.add_subplot(gs[1, 1])
+    ax_info  = fig.add_subplot(gs[1, 2])
+
+    # ── Style helpers ──────────────────────────────────────────────────────────
+    def _sty(ax, title="", xlabel="", ylabel=""):
+        ax.set_facecolor(BG2)
+        for sp in ax.spines.values():
+            sp.set_color(BORDER); sp.set_linewidth(0.8)
+        ax.tick_params(colors=MUTED, labelsize=7)
+        if title:  ax.set_title(title,  color=TEXT,  fontsize=8.5, pad=5, fontweight="semibold")
+        if xlabel: ax.set_xlabel(xlabel, color=MUTED, fontsize=7)
+        if ylabel: ax.set_ylabel(ylabel, color=MUTED, fontsize=7)
+
+    def _sty_pol(ax, title=""):
+        ax.set_facecolor(BG2)
+        ax.spines["polar"].set_color(BORDER)
+        ax.tick_params(colors=MUTED, labelsize=7)
+        ax.set_theta_zero_location("N"); ax.set_theta_direction(-1)
+        if title: ax.set_title(title, color=TEXT, fontsize=8.5, pad=8, fontweight="semibold")
+
+    # ── Panel A: MUSIC pseudospectrum ──────────────────────────────────────────
+    _sty_pol(ax_music, "Pseudospectrum")
+    ax_music.set_ylim([-40, 2]); ax_music.set_rlabel_position(45)
+    ax_music.set_yticks([-30, -20, -10, 0])
+    ax_music.set_yticklabels(["-30", "-20", "-10", "0"], fontsize=6, color=MUTED)
+    line_spec,  = ax_music.plot(theta_scan, _flat.copy(), color=BLUE, linewidth=1.5)
+    line_est_m, = ax_music.plot([0, 0], [-40, 2], color=TEAL, linewidth=2.0, alpha=0.85)
+    txt_algo    = ax_music.text(0.5, -0.07, "", transform=ax_music.transAxes,
+                                ha="center", fontsize=8, color=TEXT)
+
+    # ── Panel B: compass ───────────────────────────────────────────────────────
+    _sty_pol(ax_comp, "DoA Compass")
+    ax_comp.set_yticks([])
+    ax_comp.set_xticks(np.linspace(0, 2 * np.pi, 8, endpoint=False))
+    ax_comp.set_xticklabels(["N", "NE", "E", "SE", "S", "SW", "W", "NW"],
+                             color=MUTED, fontsize=8)
+    ax_comp.set_ylim([0, 1])
+    ax_comp.plot(np.linspace(0, 2*np.pi, 360), np.ones(360)*0.92, color=BORDER, linewidth=0.8)
+    needle,   = ax_comp.plot([0, 0], [0, 0.85], color=TEAL, linewidth=3.5)
+    needle_b, = ax_comp.plot([0, 0], [0, 0.38], color=TEAL, linewidth=2.0, alpha=0.30)
+    txt_est    = ax_comp.text(0.5, -0.07, "", transform=ax_comp.transAxes,
+                              ha="center", va="top", fontsize=14, fontweight="bold",
+                              color=TEAL,
+                              bbox=dict(facecolor=BG3, edgecolor=BORDER, boxstyle="round,pad=0.4"))
+    txt_status = ax_comp.text(0.02, 1.05, "", transform=ax_comp.transAxes,
+                               ha="left", va="bottom", fontsize=8, fontweight="bold")
+    txt_fps    = ax_comp.text(0.98, 1.05, "", transform=ax_comp.transAxes,
+                               ha="right", va="bottom", fontsize=7, color=DIM)
+
+    # ── Panel C: Bearing history ───────────────────────────────────────────────
+    _sty(ax_hist, "Bearing History", "", "deg")
+    ax_hist.set_xlim(0, HIST - 1); ax_hist.set_ylim(-5, 365)
+    ax_hist.set_yticks(range(0, 361, 90))
+    line_ahist, = ax_hist.plot(_x_hist, list(S.h_angle), color=TEAL, linewidth=1.4)
+    txt_sigma   = ax_hist.text(0.02, 0.96, "", transform=ax_hist.transAxes,
+                               fontsize=7.5, color=TEAL, va="top")
+
+    # ── Panel D: IQ Spectrum ───────────────────────────────────────────────────
+    _sty(ax_fft, "IQ Spectrum  (CH0)", "offset [kHz]", "dB")
+    line_fft, = ax_fft.plot(_fft_freqs, S.last_fft.copy(), color=BLUE, linewidth=0.9)
+    ax_fft.set_xlim(_fft_freqs[0], _fft_freqs[-1]); ax_fft.set_ylim(-65, 5)
+    ax_fft.axvline(0, color=ROSE, linewidth=0.8, linestyle="--", alpha=0.55)
+
+    # ── Panel E: SNR history ───────────────────────────────────────────────────
+    _sty(ax_snr, "SNR History", "", "dB")
+    ax_snr.set_xlim(0, HIST - 1); ax_snr.set_ylim(-2, 36)
+    ax_snr.axhline(10, color=VIOLET, linewidth=0.8, linestyle=":", alpha=0.5, label="10 dB")
+    line_snr, = ax_snr.plot(_x_hist, list(S.h_snr), color=VIOLET, linewidth=1.4)
+    ax_snr.legend(fontsize=6.5, labelcolor=MUTED, framealpha=0, loc="upper right")
+
+    # ── Panel F: System info ───────────────────────────────────────────────────
+    _sty(ax_info, "System Info")
+    ax_info.axis("off")
+    txt_info = ax_info.text(0.05, 0.92, "", transform=ax_info.transAxes,
+                            fontsize=8, color=TEXT, va="top", fontfamily="monospace")
+
+    # ── Title ─────────────────────────────────────────────────────────────────
+    fig.suptitle(
+        f"KrakenSDR DoA  │  {NUM_CHANNELS}-ant {ARRAY_TYPE}"
+        f"  │  {C.DOA_ALGORITHM}/{C.DECORRELATION}"
+        f"  │  {CENTER_FREQ/1e6:.3f} MHz",
+        color=TEXT, fontsize=10, fontweight="semibold", y=0.97,
+    )
+
+    # ── Calibration buttons ────────────────────────────────────────────────────
+    _BTN_Y = 0.015; _BTN_H = 0.048
+    ax_btn_cal = fig.add_axes([0.35, _BTN_Y, 0.12, _BTN_H])
+    ax_btn_rst = fig.add_axes([0.48, _BTN_Y, 0.10, _BTN_H])
+    txt_cal    = fig.text(0.60, 0.030, f"Offset: {S.cal_offset:.1f}°",
+                          color=AMBER, fontsize=8, va="center",
+                          bbox=dict(facecolor=BG3, edgecolor=BORDER, boxstyle="round,pad=0.3"))
+    btn_cal = Button(ax_btn_cal, "Set Zero",  color=BG3, hovercolor="#3a4060")
+    btn_rst = Button(ax_btn_rst, "Reset Cal", color=BG3, hovercolor="#3a4060")
+    for _b in (btn_cal, btn_rst):
+        _b.label.set_color(TEXT); _b.label.set_fontsize(8)
+
+    def _save_cal():
         try:
-            self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
+            with open(_CAL_FILE, "w") as _f:
+                json.dump({"offset_deg": S.cal_offset, "freq_hz": CENTER_FREQ}, _f)
         except Exception:
             pass
 
-        self.top_scroll_layout = Qt.QVBoxLayout()
-        self.setLayout(self.top_scroll_layout)
-        self.top_scroll = Qt.QScrollArea()
-        self.top_scroll.setFrameStyle(Qt.QFrame.NoFrame)
-        self.top_scroll_layout.addWidget(self.top_scroll)
-        self.top_scroll.setWidgetResizable(True)
-        self.top_widget = Qt.QWidget()
-        self.top_scroll.setWidget(self.top_widget)
-        self.top_layout = Qt.QVBoxLayout(self.top_widget)
-        self.top_grid_layout = Qt.QGridLayout()
-        self.top_layout.addLayout(self.top_grid_layout)
+    def _on_set_zero(_):
+        S.cal_offset = S.est_deg
+        txt_cal.set_text(f"Offset: {S.cal_offset:.1f}°")
+        txt_cal.set_color(LIME)
+        S.angle_phasor = complex(1.0, 0.0)
+        _save_cal()
 
-        self.settings = Qt.QSettings("GNU Radio", "kraken_doa_n_ant")
-        try:
-            self.restoreGeometry(self.settings.value("geometry"))
-        except Exception:
-            pass
+    def _on_reset_cal(_):
+        S.cal_offset = 0.0
+        txt_cal.set_text("Offset: 0.0°")
+        txt_cal.set_color(AMBER)
+        S.angle_phasor = complex(1.0, 0.0)
+        _save_cal()
 
-        # dark stylesheet
-        self.setStyleSheet("background-color: #0a0c14; color: #b0b8d8;")
+    btn_cal.on_clicked(_on_set_zero)
+    btn_rst.on_clicked(_on_reset_cal)
 
-        # -- flowgraph variables
-        self.num_channels = NUM_CHANNELS
-        self.array_type   = ARRAY_TYPE
-        self.samp_rate    = 1024000
-        self.gain         = GAIN_DB
-        self.freq         = CENTER_FREQ
-        self.fft_cut      = 512
-        self.decimation   = 8
-        self.cpi_size     = 131072
-        self.array_dist   = ARRAY_DIST
-        self.est_range_m  = 100.0
-
-        # calibration
-        self._cal_offset  = 0
-        self._bear_buffer: deque[float] = deque(maxlen=15)   # ~3 s @ 5 Hz
-        self._load_calibration()
-
-        # convenience
-        self._use_correlator = (self.num_channels == 2)
-
-        ##################################################
-        # Row 0: sliders
-        ##################################################
-        self._freq_range = Range(80.0, 1700.0, 0.001, self.freq, 200)
-        self._freq_win   = RangeWidget(self._freq_range, self.set_freq,
-                                       "Frequency (MHz)", "counter_slider",
-                                       float, QtCore.Qt.Horizontal)
-        self.top_grid_layout.addWidget(self._freq_win, 0, 0, 1, 1)
-
-        self._gain_range = Range(0, 49.6, 0.1, self.gain, 200)
-        self._gain_win   = RangeWidget(self._gain_range, self.set_gain,
-                                       "Gain (dB)", "counter_slider",
-                                       float, QtCore.Qt.Horizontal)
-        self.top_grid_layout.addWidget(self._gain_win, 0, 1, 1, 1)
-
-        self._array_dist_range = Range(0.05, 1.00, 0.005, self.array_dist, 200)
-        self._array_dist_win   = RangeWidget(self._array_dist_range, self.set_array_dist,
-                                             "Antenna spacing (m)", "counter_slider",
-                                             float, QtCore.Qt.Horizontal)
-        self.top_grid_layout.addWidget(self._array_dist_win, 0, 2, 1, 1)
-
-        self._range_range = Range(10.0, 5000.0, 10.0, self.est_range_m, 200)
-        self._range_win   = RangeWidget(self._range_range, self.set_est_range_m,
-                                        "Estimated TX range (m)", "counter_slider",
-                                        float, QtCore.Qt.Horizontal)
-        self.top_grid_layout.addWidget(self._range_win, 0, 3, 1, 2)
-
-        for c in range(5):
-            self.top_grid_layout.setColumnStretch(c, 1)
-
-        ##################################################
-        # Row 1-2: decimated FFT (col 0-2) + Polar MUSIC spectrum (col 3-4)
-        ##################################################
-        self.qtgui_fft_ch0 = qtgui.freq_sink_c(
-            2048, window.WIN_BLACKMAN_hARRIS,
-            self.freq * 1e6, self.samp_rate / self.decimation,
-            "CH0 Decimated Spectrum", 1, None)
-        self.qtgui_fft_ch0.set_update_time(0.10)
-        self.qtgui_fft_ch0.set_y_axis(-80, 10)
-        self.qtgui_fft_ch0.set_y_label("Relative gain", "dB")
-        self.qtgui_fft_ch0.enable_autoscale(True)
-        self.qtgui_fft_ch0.enable_grid(True)
-        self.qtgui_fft_ch0.set_fft_average(1.0)
-        self.qtgui_fft_ch0.enable_axis_labels(True)
-        self.qtgui_fft_ch0.enable_control_panel(False)
-        self.qtgui_fft_ch0.set_fft_window_normalized(False)
-        self.qtgui_fft_ch0.set_line_label(0, "CH0")
-        self.qtgui_fft_ch0.set_line_width(0, 1)
-        self.qtgui_fft_ch0.set_line_color(0, "blue")
-        self.qtgui_fft_ch0.set_line_alpha(0, 1.0)
-        self._qtgui_fft_ch0_win = sip.wrapinstance(
-            self.qtgui_fft_ch0.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._qtgui_fft_ch0_win, 1, 0, 2, 3)
-
-        self._polar_widget = PolarSpectrumWidget()
-        self._polar_widget.setMinimumSize(200, 200)
-        self.top_grid_layout.addWidget(self._polar_widget, 1, 3, 2, 2)
-
-        for r in range(1, 3):
-            self.top_grid_layout.setRowStretch(r, 1)
-
-        ##################################################
-        # KrakenSDR source
-        ##################################################
-        gain_list = [self.gain] * self.num_channels
-        self.krakensdr_src = krakensdr.krakensdr_source(
-            '127.0.0.1', 5000, 5001,
-            self.num_channels, self.freq, gain_list, False)
-
-        ##################################################
-        # N FIR decimation filters + stream-to-vector for MUSIC
-        ##################################################
-        vec_len = self.cpi_size // self.decimation
-        self.fir_filters = []
-        self.s2v_doa = []
-        for ch in range(self.num_channels):
-            fir = filter.fir_filter_ccc(self.decimation,
-                                        [self.decimation * self.num_channels])
-            fir.declare_sample_delay(0)
-            self.fir_filters.append(fir)
-
-            s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, vec_len)
-            self.s2v_doa.append(s2v)
-
-        ##################################################
-        # MUSIC DoA block
-        ##################################################
-        self.doa_music = krakensdr.doa_music(
-            vec_len, self.freq, self.array_dist,
-            self.num_channels, self.array_type)
-
-        ##################################################
-        # Probe block for Python polling of MUSIC vector
-        ##################################################
-        self.probe_music = blocks.probe_signal_vf(360)
-
-        ##################################################
-        # Correlator + phase probe (2-antenna only)
-        ##################################################
-        if self._use_correlator:
-            self.s2v_corr = []
-            for ch in range(2):
-                s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, self.cpi_size)
-                self.s2v_corr.append(s2v)
-            self.corr = krakensdr.krakensdr_correlator(self.cpi_size, self.fft_cut)
-            self.probe_phase = blocks.probe_signal_f()
-
-        ##################################################
-        # Row 3: Compass + Map + Quality gauge
-        ##################################################
-        self._compass_widget = CompassWidget(
-            num_elements=self.num_channels, array_type=self.array_type)
-        self._compass_widget.setMinimumSize(200, 200)
-        self.top_grid_layout.addWidget(self._compass_widget, 3, 0, 1, 2)
-
-        self._map_widget = DoAMapWidget(
-            num_elements=self.num_channels, array_type=self.array_type)
-        self._map_widget.set_range(self.est_range_m)
-        self._map_widget.setMinimumSize(240, 200)
-        self.top_grid_layout.addWidget(self._map_widget, 3, 2, 1, 2)
-
-        self._quality_widget = SignalQualityWidget()
-        self._quality_widget.setMinimumSize(100, 100)
-        self.top_grid_layout.addWidget(self._quality_widget, 3, 4, 1, 1)
-
-        for r in range(3, 4):
-            self.top_grid_layout.setRowStretch(r, 1)
-
-        ##################################################
-        # Row 4: Bearing history + Calibration
-        ##################################################
-        self._history_widget = BearingHistoryWidget()
-        self._history_widget.setMinimumSize(200, 100)
-        self.top_grid_layout.addWidget(self._history_widget, 4, 0, 1, 3)
-
-        self._cal_widget = CalibrationWidget()
-        self._cal_widget.setMinimumSize(180, 140)
-        self._cal_widget.on_calibrate_requested = self._do_calibrate
-        self._cal_widget.on_reset_requested     = self._reset_calibration
-        self.top_grid_layout.addWidget(self._cal_widget, 4, 3, 1, 2)
-
-        for r in range(4, 5):
-            self.top_grid_layout.setRowStretch(r, 1)
-
-        # restore calibration status
-        self._cal_widget.set_calibration_status(
-            self._cal_offset if self._cal_offset != 0 else None)
-
-        ##################################################
-        # Timer for widget polling (200 ms = 5 Hz)
-        ##################################################
-        self._doa_timer = QtCore.QTimer()
-        self._doa_timer.setInterval(200)
-        self._doa_timer.timeout.connect(self._update_widgets)
-        self._doa_timer.start()
-
-        ##################################################
-        # GNU Radio Connections
-        ##################################################
-        # source -> FIR -> s2v -> MUSIC
-        for ch in range(self.num_channels):
-            self.connect((self.krakensdr_src, ch), (self.fir_filters[ch], 0))
-            self.connect((self.fir_filters[ch], 0), (self.s2v_doa[ch], 0))
-            self.connect((self.s2v_doa[ch], 0), (self.doa_music, ch))
-
-        # CH0 decimated -> FFT display
-        self.connect((self.fir_filters[0], 0), (self.qtgui_fft_ch0, 0))
-
-        # MUSIC output -> probe
-        self.connect((self.doa_music, 0), (self.probe_music, 0))
-
-        # Correlator connections (2-antenna only)
-        if self._use_correlator:
-            for ch in range(2):
-                self.connect((self.krakensdr_src, ch), (self.s2v_corr[ch], 0))
-            self.connect((self.s2v_corr[0], 0), (self.corr, 0))
-            self.connect((self.s2v_corr[1], 0), (self.corr, 1))
-            self.connect((self.corr, 1), (self.probe_phase, 0))
-
-    # -- widget update callback (called by timer) --------------------------------
-
-    def _update_widgets(self):
-        raw = self.probe_music.level()
-        if raw is None or len(raw) < 360:
+    # ── Animation update ───────────────────────────────────────────────────────
+    def update(_frame):
+        frame = kraken.get_frame(timeout=0.005)
+        if frame is None:
             return
-        music_vec = np.array(raw, dtype=np.float32)
 
-        # apply calibration offset (vector rotation)
-        if self._cal_offset != 0:
-            music_vec = np.roll(music_vec, self._cal_offset)
+        nr = min(NUM_CHANNELS, frame.shape[0])
+        X  = frame[:nr, :].astype(np.complex128)
+        if C.HW_NUM_SAMPLES > 0:
+            X = X[:, :C.HW_NUM_SAMPLES]
 
-        bearing_idx = int(np.argmax(music_vec))
-        quality_dbfs = float(music_vec[bearing_idx])
+        # Phase correction
+        ph_offs = (C.PHASE_OFFSETS_DEG + [0.0] * nr)[:nr]
+        X = apply_phase_correction(X, ph_offs)
 
-        self._bear_buffer.append(float(bearing_idx))
+        # Amplitude normalise
+        if C.AMPLITUDE_NORMALIZE:
+            pwr = np.sqrt(np.maximum(np.mean(np.abs(X) ** 2, axis=1, keepdims=True), 1e-15))
+            X   = X / pwr
 
-        # update all widgets
-        self._polar_widget.set_spectrum(music_vec)
-        self._polar_widget.set_bearing(bearing_idx, quality_dbfs)
-        self._compass_widget.set_bearing(bearing_idx, quality_dbfs)
-        self._map_widget.set_bearing(bearing_idx, quality_dbfs)
-        self._quality_widget.set_bearing(bearing_idx, quality_dbfs)
-        self._history_widget.set_bearing(bearing_idx, quality_dbfs)
-
-        # phase consistency (2-antenna ULA only)
-        consistency_deg = None
-        if self._use_correlator:
-            consistency_deg = self._phase_consistency(bearing_idx)
-        if len(self._bear_buffer) >= 3:
-            mean_b = statistics.mean(self._bear_buffer)
-            std_b  = statistics.pstdev(self._bear_buffer)
-            self._cal_widget.set_stats(mean_b, std_b, consistency_deg)
-
-    def _phase_consistency(self, bearing_deg: float) -> float | None:
-        """
-        Estimates consistency between MUSIC peak and cross-correlation phase.
-        Returns the deviation in degrees (None if unavailable).
-        Only valid for 2-element ULA.
-        """
-        try:
-            phase_deg = float(self.probe_phase.level())
-        except Exception:
-            return None
-        lam = 300.0 / self.freq          # wavelength in m
-        # expected phase from ULA formula: phase_diff = 2*pi*d*sin(theta)/lambda
-        expected_phase = math.degrees(
-            2 * math.pi * self.array_dist
-            * math.sin(math.radians(bearing_deg)) / lam)
-        diff = ((expected_phase - phase_deg + 180) % 360) - 180
-        return min(180.0, abs(diff))
-
-    # -- calibration ---------------------------------------------------------------
-
-    def _do_calibrate(self, known_angle_deg: float):
-        """Called by CalibrationWidget when the user presses 'Calibrate'."""
-        if len(self._bear_buffer) < 3:
+        # Squelch gate
+        pwr_dbw = float(measure_power_db(X[0]))
+        if C.SQUELCH_ENABLED and pwr_dbw < C.SQUELCH_THRESHOLD_DB:
+            txt_status.set_text("SQUELCH"); txt_status.set_color(DIM)
             return
-        avg = statistics.mean(self._bear_buffer)
-        self._cal_offset = int(round(known_angle_deg - avg)) % 360
-        self._cal_widget.set_calibration_status(self._cal_offset)
-        self._save_calibration()
 
-    def _reset_calibration(self):
-        self._cal_offset = 0
-        self._cal_widget.set_calibration_status(None)
-        try:
-            os.remove(_CAL_FILE)
-        except FileNotFoundError:
-            pass
+        # FFT (CH0 preview)
+        fft_mag = np.abs(np.fft.fftshift(np.fft.fft(X[0, :FFT_N], FFT_N)))
+        fft_db  = 20 * np.log10(np.maximum(fft_mag / FFT_N, 1e-10))
+        S.last_fft = 0.7 * S.last_fft + 0.3 * fft_db
 
-    def _save_calibration(self):
-        try:
-            with open(_CAL_FILE, "w") as f:
-                json.dump({"cal_offset_deg": self._cal_offset,
-                           "freq_mhz": self.freq,
-                           "array_dist_m": self.array_dist,
-                           "num_channels": self.num_channels,
-                           "array_type": self.array_type}, f)
-        except OSError:
-            pass
+        # Covariance EMA + decorrelation
+        R      = S.cov_acc.update(covariance(X))
+        R_proc = apply_decorrelation(R, C.DECORRELATION)
 
-    def _load_calibration(self):
-        try:
-            with open(_CAL_FILE) as f:
-                data = json.load(f)
-            self._cal_offset = int(data.get("cal_offset_deg", 0))
-        except (FileNotFoundError, ValueError, KeyError):
-            self._cal_offset = 0
+        S.warmup_count += 1
+        if S.warmup_count < WARMUP:
+            txt_status.set_text("WARM UP"); txt_status.set_color(AMBER)
+            return
 
-    # -- teardown ------------------------------------------------------------------
+        # ── DoA estimation ────────────────────────────────────────────────────
+        algo = C.DOA_ALGORITHM.upper()
+        spec = _flat.copy()
+        est_rad = 0.0
 
-    def closeEvent(self, event):
-        self.settings.setValue("geometry", self.saveGeometry())
-        self._doa_timer.stop()
-        self.stop()
-        self.wait()
-        event.accept()
+        if algo == "MUSIC":
+            th, sp    = doa_music(R_proc, cfg)
+            idx       = int(np.argmax(sp)); spec = sp; est_rad = float(th[idx])
+        elif algo == "ROOT-MUSIC":
+            est_rad, spec, _ = doa_root_music(R_proc, cfg)
+            est_rad = float(est_rad)
+        elif algo == "CAPON":
+            th, sp    = doa_capon(R_proc, cfg)
+            idx       = int(np.argmax(sp)); spec = sp; est_rad = float(th[idx])
+        elif algo == "ML":
+            th, sp    = doa_ml(R_proc, cfg)
+            idx       = int(np.argmax(sp)); spec = sp; est_rad = float(th[idx])
+        elif algo == "ESPRIT":
+            est_rad, spec, _ = doa_esprit(R_proc, cfg)
+            est_rad = float(est_rad)
 
-    # -- GNU Radio setters (called by sliders) -------------------------------------
+        # Circular EMA on phasor
+        alpha        = float(C.ANGLE_SMOOTH_ALPHA)
+        S.angle_phasor = alpha * S.angle_phasor + (1.0 - alpha) * np.exp(1j * est_rad)
+        smooth_rad   = float(np.angle(S.angle_phasor))
+        smooth_deg   = (float(np.degrees(smooth_rad)) - S.cal_offset) % 360.0
+        S.est_deg    = smooth_deg
 
-    def get_samp_rate(self):
-        return self.samp_rate
+        snr_db = float(snr_from_covariance(R, cfg.Nr - cfg.num_expected_signals))
+        S.h_angle.append(smooth_deg)
+        S.h_snr.append(snr_db)
 
-    def set_samp_rate(self, samp_rate):
-        self.samp_rate = samp_rate
-        self.qtgui_fft_ch0.set_frequency_range(
-            self.freq * 1e6, self.samp_rate / self.decimation)
+        # FPS
+        now    = time.time()
+        S.fps  = 0.9 * S.fps + 0.1 / max(0.001, now - S.t_last)
+        S.t_last = now
 
-    def get_gain(self):
-        return self.gain
+        # ── Plot updates ───────────────────────────────────────────────────────
+        ang_arr   = np.array(list(S.h_angle))
+        valid     = ang_arr[~np.isnan(ang_arr)]
+        sigma_deg = float(np.std(valid)) if len(valid) > 1 else 0.0
 
-    def set_gain(self, gain):
-        self.gain = gain
-        self.krakensdr_src.set_gain([self.gain] * self.num_channels)
+        line_spec.set_ydata(spec)
+        line_est_m.set_xdata([smooth_rad, smooth_rad])
+        txt_algo.set_text(f"{C.DOA_ALGORITHM}/{C.DECORRELATION}  {smooth_deg:.1f}°")
 
-    def get_freq(self):
-        return self.freq
+        needle.set_xdata([smooth_rad, smooth_rad])
+        needle_b.set_xdata([smooth_rad + np.pi, smooth_rad + np.pi])
+        txt_est.set_text(f"{smooth_deg:.1f}°")
 
-    def set_freq(self, freq):
-        self.freq = freq
-        self.krakensdr_src.set_freq(self.freq)
-        self.doa_music.set_freq(self.freq)
-        self.qtgui_fft_ch0.set_frequency_range(
-            self.freq * 1e6, self.samp_rate / self.decimation)
+        ok = snr_db >= 8.0
+        txt_status.set_text("LOCK" if ok else "SEARCH")
+        txt_status.set_color(TEAL if ok else AMBER)
+        txt_fps.set_text(f"{S.fps:.1f} fps")
 
-    def get_fft_cut(self):
-        return self.fft_cut
+        line_ahist.set_ydata(list(S.h_angle))
+        txt_sigma.set_text(f"σ = {sigma_deg:.1f}°")
 
-    def set_fft_cut(self, fft_cut):
-        self.fft_cut = fft_cut
+        line_fft.set_ydata(S.last_fft)
+        line_snr.set_ydata(list(S.h_snr))
 
-    def get_decimation(self):
-        return self.decimation
+        txt_info.set_text(
+            f"Heimdall:   {C.HEIMDALL_HOST}:{C.HEIMDALL_PORT}\n"
+            f"Antennas:   {NUM_CHANNELS}  [{ARRAY_TYPE}]\n"
+            f"Frequency:  {CENTER_FREQ/1e6:.3f} MHz\n"
+            f"Gain:       {GAIN_DB} dB\n"
+            f"Power CH0:  {pwr_dbw:.1f} dBW\n"
+            f"SNR:        {snr_db:.1f} dB\n"
+            f"Bearing:    {smooth_deg:.1f}°\n"
+            f"σ bearing:  {sigma_deg:.1f}°\n"
+            f"Algorithm:  {C.DOA_ALGORITHM}\n"
+            f"Decorr:     {C.DECORRELATION}\n"
+            f"Calibr.:    {S.cal_offset:.1f}°"
+        )
 
-    def set_decimation(self, decimation):
-        self.decimation = decimation
-        for fir in self.fir_filters:
-            fir.set_taps([self.decimation * self.num_channels])
-        self.qtgui_fft_ch0.set_frequency_range(
-            self.freq * 1e6, self.samp_rate / self.decimation)
+    # ── Event handlers ─────────────────────────────────────────────────────────
+    def _on_close(_evt):
+        kraken.stop()
 
-    def get_cpi_size(self):
-        return self.cpi_size
+    fig.canvas.mpl_connect("close_event", _on_close)
 
-    def set_cpi_size(self, cpi_size):
-        self.cpi_size = cpi_size
+    def _sig_handler(*_):
+        kraken.stop()
+        plt.close("all")
+        sys.exit(0)
 
-    def get_array_dist(self):
-        return self.array_dist
+    signal.signal(signal.SIGINT,  _sig_handler)
+    signal.signal(signal.SIGTERM, _sig_handler)
 
-    def set_array_dist(self, array_dist):
-        self.array_dist = array_dist
-        self.doa_music.set_array_dist(self.array_dist)
+    ani = animation.FuncAnimation(
+        fig, update,
+        interval=max(40, C.INTERVAL_MS),
+        blit=False,
+        cache_frame_data=False,
+    )
 
-    def get_est_range_m(self):
-        return self.est_range_m
-
-    def set_est_range_m(self, est_range_m):
-        self.est_range_m = est_range_m
-        self._map_widget.set_range(self.est_range_m)
-
-
-# --- main ---------------------------------------------------------------------
-
-def main():
-    if StrictVersion("4.5.0") <= StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
-        style = gr.prefs().get_string('qtgui', 'style', 'raster')
-        Qt.QApplication.setGraphicsSystem(style)
-
-    qapp = Qt.QApplication(sys.argv)
-    tb = KrakenDoA()
-    tb.start()
-    tb.show()
-
-    def sig_handler(sig=None, frame=None):
-        tb.stop()
-        tb.wait()
-        Qt.QApplication.quit()
-
-    signal.signal(signal.SIGINT, sig_handler)
-    signal.signal(signal.SIGTERM, sig_handler)
-
-    # dummy timer tick to allow SIGINT to reach Python
-    _tick = Qt.QTimer()
-    _tick.start(500)
-    _tick.timeout.connect(lambda: None)
-
-    qapp.exec_()
+    print(f"[run_doa] {NUM_CHANNELS}-ant {ARRAY_TYPE}  "
+          f"{CENTER_FREQ/1e6:.3f} MHz  gain={GAIN_DB} dB  "
+          f"algo={C.DOA_ALGORITHM}/{C.DECORRELATION}")
+    plt.show()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

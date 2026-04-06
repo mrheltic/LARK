@@ -27,8 +27,8 @@
         // ═══════════════════════════════════════════════════════════════════
         // HEIMDALL DAQ
         // TCP ports: 5000 (IQ data) + 5001 (hw ctrl) — out_data_iface_type=eth
-        // start_heimdall.sh auto-detects the firmware dir (~/krakensdr/…/Firmware_new
-        // first, then external/heimdall_daq_fw/Firmware) and installs the sudoers
+        // start_heimdall.sh auto-detects the firmware dir
+        // (external/heimdall_daq_fw/Firmware) and installs the sudoers
         // rule on first run so sudo bash daq_start_sm.sh never asks for a password.
         // ═══════════════════════════════════════════════════════════════════
         {
@@ -77,7 +77,7 @@
             "label": "Heimdall: Stop",
             "detail": "Kills all Heimdall sub-processes via daq_stop.sh (auto-detects firmware path).",
             "type": "shell",
-            "command": "FW=$(bash -c 'for d in ~/krakensdr/heimdall_daq_fw/Firmware_new ~/krakensdr/heimdall_daq_fw/Firmware ${workspaceFolder}/external/heimdall_daq_fw/Firmware_new ${workspaceFolder}/external/heimdall_daq_fw/Firmware; do [ -f \"$d/daq_stop.sh\" ] && echo $d && break; done'); cd \"$FW\" && sudo bash \"$FW/daq_stop.sh\"",
+            "command": "FW=$(bash -c 'for d in ${workspaceFolder}/external/heimdall_daq_fw/Firmware ${workspaceFolder}/external/heimdall_daq_fw/Firmware_new; do [ -f \"$d/daq_stop.sh\" ] && echo $d && break; done'); cd \"$FW\" && sudo bash \"$FW/daq_stop.sh\"",
             "options": { "cwd": "${workspaceFolder}" },
             "presentation": {
                 "reveal": "always",
@@ -106,7 +106,7 @@
             "label": "KrakenSDR: Iridium — receiver → parser (pipe)",
             "detail": "Demodulates Iridium bursts and pipes RAW: lines to iridium-toolkit/iridium-parser.py for full protocol decode.",
             "type": "shell",
-            "command": "python3 iridium_receiver.py --freq 1626270000 | python3 ~/krakensdr/iridium-toolkit/iridium-parser.py -p",
+            "command": "python3 iridium_receiver.py --freq 1626270000 | python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
             "group": "test",
             "presentation": {
@@ -211,9 +211,9 @@
         // ═══════════════════════════════════════════════════════════════════
         {
             "label": "iridium-toolkit: Parse .bits file",
-            "detail": "Parses a RAW: lines file with iridium-parser.py from ~/krakensdr/iridium-toolkit/.",
+            "detail": "Parses a RAW: lines file with iridium-parser.py from external/iridium-toolkit/.",
             "type": "shell",
-            "command": "python3 ~/krakensdr/iridium-toolkit/iridium-parser.py -p ${input:bitsFile}",
+            "command": "python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p ${input:bitsFile}",
             "options": { "cwd": "${workspaceFolder}" },
             "group": "test",
             "presentation": {

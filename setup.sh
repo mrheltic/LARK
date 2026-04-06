@@ -107,17 +107,8 @@ init_submodules() {
 
 # =============================================================================
 # 4. Heimdall DAQ firmware – build (from external/heimdall_daq_fw)
-#
-# If Heimdall is already compiled at the default user path the build is
-# skipped — the existing installation is used as-is.
 # =============================================================================
 build_heimdall() {
-    # Prefer the native user installation
-    if [[ -f "$HOME/krakensdr/heimdall_daq_fw/Firmware_new/daq_start_sm.sh" ]]; then
-        ok "Heimdall already installed at ~/krakensdr/heimdall_daq_fw/Firmware_new/ — skipping build."
-        return 0
-    fi
-
     local src="$SCRIPT_DIR/external/heimdall_daq_fw"
 
     if [[ ! -d "$src" ]] || [[ -z "$(ls -A "$src" 2>/dev/null)" ]]; then
@@ -126,15 +117,23 @@ build_heimdall() {
         return 1
     fi
 
-    local fw="$src/Firmware_new"
-    if [[ ! -d "$fw" ]]; then
-        warn "Firmware_new/ not found inside heimdall_daq_fw — unexpected repo layout."
+    # Try Firmware first, then Firmware_new
+    local fw=""
+    for d in "$src/Firmware" "$src/Firmware_new"; do
+        if [[ -d "$d/_daq_core" && -f "$d/_daq_core/Makefile" ]]; then
+            fw="$d"
+            break
+        fi
+    done
+    if [[ -z "$fw" ]]; then
+        warn "No buildable Firmware directory found in heimdall_daq_fw."
         return 1
     fi
 
-    info "Building Heimdall DAQ firmware from external/heimdall_daq_fw/Firmware_new ..."
-    make -C "$fw" -j"$(nproc)" 2>&1 | tail -10
-    ok "Heimdall built: $fw"
+    info "Building Heimdall DAQ firmware from ${fw}/_daq_core ..."
+    make -C "$fw/_daq_core" clean
+    make -C "$fw/_daq_core" -j"$(nproc)" 2>&1 | tail -20
+    ok "Heimdall built: $fw/_daq_core"
 }
 
 # =============================================================================
@@ -148,25 +147,34 @@ setup_heimdall_sudoers() {
     local SUDOERS_FILE="/etc/sudoers.d/heimdall-daq"
     local EXT="$SCRIPT_DIR/external/heimdall_daq_fw"
     info "Installing Heimdall sudoers rule ($SUDOERS_FILE) ..."
-    # Covers both the user's compiled install (~/krakensdr/…/Firmware_new) and
-    # the in-tree submodule (external/…/Firmware and Firmware_new).
+    # Only covers the in-tree submodule (external/…/Firmware and Firmware_new).
+    # Also covers all additional operations in start_heimdall.sh:
+    #   sysctl (kernel/net buffer tuning), kill (leftover DAQ pids),
+    #   lsof (port checks), rm /dev/shm (stale shm), rmmod (rtlsdr drivers),
+    #   tee /sys/bus/usb (USB authorized toggle for LIBUSB_ERROR_PIPE reset),
+    #   tee /sys/module/usbcore (usbfs_memory_mb = unlimited for multi-dongle).
     {
         echo "mrheltic ALL=(ALL) NOPASSWD: \\"
-        echo "  /bin/bash $HOME/krakensdr/heimdall_daq_fw/Firmware_new/daq_start_sm.sh, \\"
-        echo "  /bin/bash $HOME/krakensdr/heimdall_daq_fw/Firmware_new/daq_synthetic_start.sh, \\"
-        echo "  /bin/bash $HOME/krakensdr/heimdall_daq_fw/Firmware_new/daq_stop.sh, \\"
-        echo "  /bin/bash $HOME/krakensdr/heimdall_daq_fw/Firmware/daq_start_sm.sh, \\"
-        echo "  /bin/bash $HOME/krakensdr/heimdall_daq_fw/Firmware/daq_synthetic_start.sh, \\"
-        echo "  /bin/bash $HOME/krakensdr/heimdall_daq_fw/Firmware/daq_stop.sh, \\"
         echo "  /bin/bash $EXT/Firmware_new/daq_start_sm.sh, \\"
+        echo "  /bin/bash $EXT/Firmware_new/_lark_daq_start_sm.sh, \\"
         echo "  /bin/bash $EXT/Firmware_new/daq_synthetic_start.sh, \\"
         echo "  /bin/bash $EXT/Firmware_new/daq_stop.sh, \\"
         echo "  /bin/bash $EXT/Firmware/daq_start_sm.sh, \\"
+        echo "  /bin/bash $EXT/Firmware/_lark_daq_start_sm.sh, \\"
         echo "  /bin/bash $EXT/Firmware/daq_synthetic_start.sh, \\"
         echo "  /bin/bash $EXT/Firmware/daq_stop.sh, \\"
         echo "  /usr/bin/chrt *, \\"
-        echo "  /usr/sbin/sysctl -w kernel.sched_rt_runtime_us=*, \\"
-        echo "  /usr/bin/tee /proc/sys/vm/drop_caches"
+        echo "  /usr/sbin/sysctl *, \\"
+        echo "  /usr/bin/kill *, \\"
+        echo "  /bin/kill *, \\"
+        echo "  /usr/bin/lsof *, \\"
+        echo "  /usr/sbin/rmmod *, \\"
+        echo "  /usr/bin/python3 *, \\"
+        echo "  /bin/sh -c echo 0 > /sys/module/usbcore/parameters/usbfs_memory_mb, \\"
+        echo "  /usr/bin/tee /proc/sys/vm/drop_caches, \\"
+        echo "  /usr/bin/tee /proc/sys/vm/drop_caches *, \\"
+        echo "  /usr/bin/tee /sys/module/usbcore/parameters/usbfs_memory_mb, \\"
+        echo "  /usr/bin/tee /sys/bus/usb/devices/*/*"
     } | sudo tee "$SUDOERS_FILE" > /dev/null
     sudo chmod 440 "$SUDOERS_FILE"
     ok "Heimdall sudoers rule installed ($SUDOERS_FILE)"
@@ -202,11 +210,13 @@ check_env() {
     chk "iio_info"              "command -v iio_info"
     chk "sudoers (heimdall)"    "[[ -f /etc/sudoers.d/heimdall-daq ]]"
     chk "Heimdall firmware" \
-        "[[ -f \"\$HOME/krakensdr/heimdall_daq_fw/Firmware_new/daq_start_sm.sh\" ]] || \
+        "[[ -f '$SCRIPT_DIR/external/heimdall_daq_fw/Firmware/daq_start_sm.sh' ]] || \
          [[ -f '$SCRIPT_DIR/external/heimdall_daq_fw/Firmware_new/daq_start_sm.sh' ]]"
+    chk "Heimdall binaries" \
+        "[[ -f '$SCRIPT_DIR/external/heimdall_daq_fw/Firmware/_daq_core/rtl_daq.out' ]] || \
+         [[ -f '$SCRIPT_DIR/external/heimdall_daq_fw/Firmware_new/_daq_core/rtl_daq.out' ]]"
     chk "iridium-toolkit" \
-        "[[ -f '$SCRIPT_DIR/external/iridium-toolkit/iridium-parser.py' ]] || \
-         [[ -f \"\$HOME/krakensdr/iridium-toolkit/iridium-parser.py\" ]]"
+        "[[ -f '$SCRIPT_DIR/external/iridium-toolkit/iridium-parser.py' ]]"
     chk "gr-iridium (submodule)" \
         "[[ -d '$SCRIPT_DIR/external/gr-iridium' ]] && \
          [[ -n \"\$(ls -A '$SCRIPT_DIR/external/gr-iridium' 2>/dev/null)\" ]]"

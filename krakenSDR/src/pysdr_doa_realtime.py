@@ -82,9 +82,9 @@ def snipfcn_realtime_doa_snippet(self):
     import threading as _threading, collections as _collections
     from types import SimpleNamespace as _NS
 
-    _WORKSPACE = '/workspace'
-    _PYSDR_DIR = _os.path.join(_WORKSPACE, 'pysdr_doa')
-    for _p in (_WORKSPACE, _PYSDR_DIR):
+    _WORKSPACE = _os.path.dirname(_os.path.abspath(__file__))
+    _PYSDR_DIR = _WORKSPACE
+    for _p in (_WORKSPACE,):
         if _p not in _sys.path:
             _sys.path.insert(0, _p)
 
