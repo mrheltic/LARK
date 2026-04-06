@@ -12,22 +12,20 @@ HEIMDALL_PORT  = 5000           # IQ data port
 HEIMDALL_CTRL  = 5001           # control port
 
 # ── Antenna array ─────────────────────────────────────────────────────────────
-N_ANTENNAS     = 3              # number of KrakenSDR antennas
+N_ANTENNAS     = 5              # number of KrakenSDR antennas
 
 GEOMETRY       = "UCA"          # "UCA" = circular (recommended, full 360° coverage)
 #                                # "ULA" = linear
 
-RADIUS_LAMBDA  = 0.289          # [UCA] array radius in fractions of lambda
-#                                #  KrakenSDR 3-ant @ 868 MHz → radius ~9.98 cm → 0.289λ
-#                                #  KrakenSDR 5-ant @ 868 MHz → radius ~12.35 cm → 0.358λ
+RADIUS_LAMBDA  = 0.358          # [UCA] array radius in fractions of lambda
+#                                #  KrakenSDR 5-ant @ 1626 MHz → radius ~6.63 cm → 0.358λ
 
 D_LAMBDA       = 0.5            # [ULA] inter-element spacing in fractions of lambda
 #                                #  (used only when GEOMETRY = "ULA")
 
 # ── RF ────────────────────────────────────────────────────────────────────────
-FREQ_HZ        = 865.21e6          # carrier frequency [Hz]
-#                                #  Examples: 433e6 (433 MHz), 868e6 (868 MHz),
-#                                #            915e6 (915 MHz), 2.4e9 (Wi-Fi 2.4 GHz)
+FREQ_HZ        = 1_626_270_000     # carrier frequency [Hz] — Iridium ring alerts
+#                                #  Standard Iridium simplex downlink channel
 
 SAMPLE_RATE_HZ = 1.024e6        # ADC sample rate [Hz] — must match daq_chain_config.ini
 #                                #  docker/config/daq_chain_config.ini: sample_rate = 1024000
@@ -122,8 +120,8 @@ SQUELCH_THRESHOLD_DB = -60.0    # Absolute power threshold [dBW] measured on raw
 #                                #  -60 dBW is conservative; indoor 865 MHz signal
 #                                #  typically reads -30...-10 dBW at gain 40 dB.
 
-PHASE_OFFSETS_DEG = [0.0, 0.0, 0.0]
+PHASE_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
 #                                # Per-channel hardware phase correction [degrees]
-#                                # Must have N_ANTENNAS elements (currently 3).
+#                                # Must have N_ANTENNAS elements (currently 5).
 #                                # Measure: phi[k] = -arg(R[0,k]) on the H panel,
 #                                # pointing antennas towards a far-field source.

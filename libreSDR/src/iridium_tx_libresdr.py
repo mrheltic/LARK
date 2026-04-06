@@ -15,7 +15,7 @@ Usage:
   python3 scripts/iridium_tx_libresdr.py
   python3 scripts/iridium_tx_libresdr.py --freq 433920000 --gain -40
   python3 scripts/iridium_tx_libresdr.py --uri ip:192.168.1.10 --cyclic
-  python3 scripts/iridium_tx_libresdr.py --num-bursts 8 --no-channel-effects
+  python3 scripts/iridium_tx_libresdr.py --num-bursts 8
 
 WARNING: transmitting at 1616-1626 MHz (Iridium band) without a licence is illegal.
          Always use an authorised frequency (e.g. ISM band, RF test bench)
@@ -33,28 +33,24 @@ from scipy import signal as sp_signal
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from iridium_burst_gen import (
     generate_tdma_frame,
-    add_channel_effects,
     SAMPLE_RATE as BURST_SAMPLE_RATE,   # 200 kHz
     SYMBOL_RATE,
     SAMPLES_PER_SYMBOL,
     RRC_BETA,
 )
 
-# ── Parametri hardware ────────────────────────────────────────────────────────
+# ── Hardware parameters ──────────────────────────────────────────────────────
 DEFAULT_URI = "ip:192.168.1.10"
-DEFAULT_CENTER_FREQ = 1_626_270_000    # Iridium Ring Alert channel
+DEFAULT_CENTER_FREQ = 1_626_270_000    # Iridium Ring Alert channel [Hz]
 TX_SAMPLE_RATE = 1_000_000             # 1 MSPS — practical minimum for AD9363 over Ethernet
-TX_RF_BANDWIDTH = 200_000              # 200 kHz — matches signal bandwidth
-DEFAULT_TX_GAIN_DB = -60               # TX attenuation (range: -90 … 0 dB)
-                                        # Start low and increase as needed!
-# Fattore di upsampling: da BURST_SAMPLE_RATE (200 kHz) a TX_SAMPLE_RATE (1 MHz)
-UPSAMPLE_NUM = TX_SAMPLE_RATE          # numeratore
-UPSAMPLE_DEN = BURST_SAMPLE_RATE       # denominatore
-# scipy.resample_poly vuole interi ridotti ai minimi termini
+TX_RF_BANDWIDTH = 200_000              # 200 kHz — matches Iridium signal bandwidth
+DEFAULT_TX_GAIN_DB = -60               # TX attenuation [dB] (range: -90 … 0). Start low!
+
+# Upsampling ratio: BURST_SAMPLE_RATE (200 kHz) → TX_SAMPLE_RATE (1 MHz)
 from math import gcd as _gcd
-_g = _gcd(UPSAMPLE_NUM, UPSAMPLE_DEN)
-_UP = UPSAMPLE_NUM // _g               # 5
-_DOWN = UPSAMPLE_DEN // _g             # 1
+_g   = _gcd(TX_SAMPLE_RATE, BURST_SAMPLE_RATE)
+_UP   = TX_SAMPLE_RATE   // _g           # 5
+_DOWN = BURST_SAMPLE_RATE // _g          # 1
 
 
 def resample_to_hw(baseband_iq: np.ndarray) -> np.ndarray:
@@ -138,11 +134,11 @@ def configure_tx(sdr, center_freq_hz: int, gain_db: float):
     sdr.tx_lo = int(center_freq_hz)
     sdr.tx_hardwaregain_chan0 = float(gain_db)
 
-    print(f"  TX configurato:")
-    print(f"    Centro:       {center_freq_hz / 1e6:.3f} MHz")
+    print(f"  TX configured:")
+    print(f"    Centre freq:  {center_freq_hz / 1e6:.3f} MHz")
     print(f"    Sample rate:  {TX_SAMPLE_RATE / 1e6:.1f} MSPS")
     print(f"    RF bandwidth: {TX_RF_BANDWIDTH / 1e3:.0f} kHz")
-    print(f"    Gain TX:      {gain_db:+.0f} dB")
+    print(f"    TX gain:      {gain_db:+.0f} dB")
 
 
 def transmit_once(sdr, samples: np.ndarray, num_repetitions: int = 1):
@@ -197,15 +193,11 @@ def main():
     parser.add_argument("--repeat", type=int, default=1,
                         help="Frame repetitions (without --cyclic)")
     parser.add_argument("--fdma", action="store_true",
-                        help="Simulate FDMA channels (per-burst frequency offsets)")
+                        help="Assign per-burst FDMA frequency offsets")
     parser.add_argument("--ring-alert", action="store_true",
-                        help="Generate Ring Alert bursts (shorter)")
-    parser.add_argument("--no-channel-effects", action="store_true",
-                        help="Disable AWGN noise/offset (ideal signal)")
-    parser.add_argument("--snr", type=float, default=40.0,
-                        help="Simulated SNR in dB (ignored with --no-channel-effects)")
+                        help="Use Ring Alert burst type (shorter preamble)")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Generate and show info, but do NOT transmit")
+                        help="Generate and print frame info, but do NOT transmit")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -230,17 +222,8 @@ def main():
         burst_types=burst_types,
         freq_offsets=freq_offsets,
     )
-    print(f"  Frame generated: {len(frame_iq)} samples @ {BURST_SAMPLE_RATE / 1e3:.0f} kHz "
+    print(f"  Frame: {len(frame_iq)} samples @ {BURST_SAMPLE_RATE / 1e3:.0f} kHz "
           f"({len(frame_iq) / BURST_SAMPLE_RATE * 1e3:.1f} ms)")
-
-    # ── Channel effects (optional) ───────────────────────────────────────────
-    if not args.no_channel_effects:
-        frame_iq = add_channel_effects(
-            frame_iq,
-            snr_db=args.snr,
-            phase_offset=0.0,  # no artificial phase offset in TX
-            freq_drift_hz=0.0,
-        )
 
     # ── Resample to TX_SAMPLE_RATE ──────────────────────────────────────────
     print(f"  Resampling: {BURST_SAMPLE_RATE / 1e3:.0f} kHz → "

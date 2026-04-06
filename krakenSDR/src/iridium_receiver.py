@@ -186,10 +186,15 @@ def main() -> None:
             sign = "+" if pr.burst.doppler_hz >= 0 else ""
 
             if verbose or not demod_en:
+                _pilot = (
+                    f"  PILOT {pr.burst.pilot_snr_db:+.1f} dB "
+                    f"{'[\u2713]' if pr.burst.pilot_detected else '[ ]'}"
+                )
                 _eprint(
                     f"[BURST #{bursts_total:05d}]"
-                    f"  Δf {sign}{pr.burst.doppler_hz/1e3:+.2f} kHz"
+                    f"  \u0394f {sign}{pr.burst.doppler_hz/1e3:+.2f} kHz"
                     f"  SNR {pr.burst.burst_snr_db:.1f} dB"
+                    f"{_pilot}"
                     f"  PAPR {pr.burst.burst_papr_db:.1f} dB"
                     f"  pwr {pr.burst.abs_pwr_db:.1f} dBW"
                     f"  pass #{pipeline.tracker.pass_count}"

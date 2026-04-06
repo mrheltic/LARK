@@ -391,30 +391,13 @@ fi
 #   Delay track statistic   = per-frame verbose stats (use delay_sync.log directly
 #                             if you need them)
 echo ""
-ok "Heimdall running. Tailing logs — Ctrl+C to stop."
+ok "Heimdall running — logs silenced. Ctrl+C to stop."
 echo ""
-# -n 0: skip historical lines (init USB noise, shm warnings, etc.).
-# Only content written after the 15s stabilisation period is shown.
-# _FILTER: suppress low-level USB / verbose patterns that are not actionable.
-#   failed with -9   = LIBUSB_ERROR_PIPE (transient init stall, auto-recovered)
-#   cb transfer status: 5 = LIBUSB_TRANSFER_CANCELLED (normal shutdown flush)
-#   rtlsdr_demod_*   = librtlsdr raw register I/O noise
-#   r82xx_write_arr  = R820T tuner I2C write noise
-#   ERROR setting I2C = librtlsdr I2C stall (benign during init)
-#   Allocating / Found Rafael = librtlsdr init banner
-#   Shared memory not exist   = delay_sync wait on shm (transient)
-#   IQ adjustment vector      = delay_sync startup dump (not useful at runtime)
-#   Delay track statistic     = per-frame verbose stats (always 0 sync fails when OK)
-_FILTER='Delay track statistic|Circular buffer|race condition|Likely race'
-_FILTER+='|rtlsdr_demod_write_reg|rtlsdr_demod_read_reg|r82xx_write_arr'
-_FILTER+='|failed with -9|cb transfer status: [15],|ERROR setting I2C'
-_FILTER+='|Allocating.*user-space|Found Rafael Micro|Shared memory not exist'
-_FILTER+='|INFO:__main__:IQ adjustment|INFO:__main__:Antenna channel'
-_FILTER+='|INFO:__main__:IQ samples per|INFO:__main__:Delay synchronizer'
-_FILTER+='|^==>'
+# All DAQ log output is discarded here.  To inspect logs in real time run:
+#   tail -f krakenSDR/heimdall/_logs/{rtl_daq,delay_sync,iq_server}.log
 tail -n 0 -f \
     "$FW_DIR/_logs/rtl_daq.log" \
     "$FW_DIR/_logs/delay_sync.log" \
-    "$FW_DIR/_logs/iq_server.log" 2>/dev/null | \
-    grep --line-buffered -vE "$_FILTER" &
+    "$FW_DIR/_logs/iq_server.log" 2>/dev/null \
+    >/dev/null &
 wait

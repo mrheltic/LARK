@@ -77,7 +77,7 @@
             "label": "Heimdall: Stop",
             "detail": "Kills all Heimdall sub-processes via daq_stop.sh (auto-detects firmware path).",
             "type": "shell",
-            "command": "FW=$(bash -c 'for d in ${workspaceFolder}/external/heimdall_daq_fw/Firmware ${workspaceFolder}/external/heimdall_daq_fw/Firmware_new; do [ -f \"$d/daq_stop.sh\" ] && echo $d && break; done'); cd \"$FW\" && sudo bash \"$FW/daq_stop.sh\"",
+            "command": "FW=$(bash -c 'for d in \"${workspaceFolder}/krakenSDR/heimdall\" \"${workspaceFolder}/external/heimdall_daq_fw/Firmware\" \"${workspaceFolder}/external/heimdall_daq_fw/Firmware_new\"; do [ -f \"$d/daq_stop.sh\" ] && echo $d && break; done'); cd \"$FW\" && sudo bash \"$FW/daq_stop.sh\"",
             "options": { "cwd": "${workspaceFolder}" },
             "presentation": {
                 "reveal": "always",
@@ -160,10 +160,10 @@
             "problemMatcher": "$python"
         },
         {
-            "label": "LibreSDR: TX realistic Iridium sim (1626.270 MHz)",
-            "detail": "Generates and transmits π/4-DQPSK bursts with realistic LEO Doppler at 1626.270 MHz.",
+            "label": "LibreSDR: TX Iridium bursts (4 x IRA, single pass)",
+            "detail": "Generates 4 IRA DQPSK bursts and transmits them once at 1626.270 MHz via AD9363.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 iridium_realistic_sim.py --pass-dur 60",
+            "command": "${workspaceFolder}/.venv/bin/python3 iridium_tx_libresdr.py",
             "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
             "group": "test",
             "presentation": {
@@ -174,9 +174,9 @@
         },
         {
             "label": "LibreSDR: TX cyclic (continuous loop, 1626.270 MHz)",
-            "detail": "Transmits a single IQ frame in a continuous cyclic DMA loop via AD9363.",
+            "detail": "Transmits IRA DQPSK bursts in a continuous cyclic DMA loop via AD9363.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 iridium_realistic_sim.py --pass-dur 60 --cyclic",
+            "command": "${workspaceFolder}/.venv/bin/python3 iridium_tx_libresdr.py --cyclic",
             "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
             "group": "test",
             "presentation": {
@@ -184,26 +184,6 @@
                 "panel": "dedicated"
             },
             "problemMatcher": "$python"
-        },
-
-        // ═══════════════════════════════════════════════════════════════════
-        // FULL SESSIONS (TX + RX simultaneous)
-        // ═══════════════════════════════════════════════════════════════════
-        {
-            "label": "LARK: Full session — Heimdall + Iridium DoA + LibreSDR TX",
-            "detail": "Starts Heimdall, then Iridium DoA receiver and LibreSDR TX in separate panels.",
-            "dependsOn": [
-                "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
-                "KrakenSDR: Iridium — DoA L-band (multi-channel)",
-                "LibreSDR: TX realistic Iridium sim (1626.270 MHz)"
-            ],
-            "dependsOrder": "sequence",
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "new"
-            },
-            "problemMatcher": []
         },
 
         // ═══════════════════════════════════════════════════════════════════

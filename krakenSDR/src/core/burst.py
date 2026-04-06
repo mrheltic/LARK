@@ -40,6 +40,12 @@ MAX_DOP_HZ     = 40_000.0      # maximum Doppler shift from LEO orbit [Hz]
 NEW_PASS_HZ    = 12_000.0      # Doppler jump that marks a new satellite [Hz]
 PASS_TIMEOUT_S = 6.0           # silence after which a new pass is assumed [s]
 
+# Pilot tone produced by the Iridium IRA preamble (64 symbols, all-zero
+# dibits → Δφ = +π/4 per symbol → pure tone at carrier + Rs/8).
+PILOT_TONE_OFFSET_HZ = 25_000.0 / 8.0   # = 3125.0 Hz above carrier
+PILOT_TONE_BW_HZ     = 500.0            # ±500 Hz search window around pilot
+PILOT_SNR_THRESHOLD  = 6.0              # default pilot SNR threshold [dB]
+
 
 # ---------------------------------------------------------------------------
 # BurstResult — immutable output of BurstDetector.process()
@@ -47,13 +53,15 @@ PASS_TIMEOUT_S = 6.0           # silence after which a new pass is assumed [s]
 @dataclass
 class BurstResult:
     """Per-frame output of :class:`BurstDetector`. All fields are read-only."""
-    spec_db:       np.ndarray   # float32[fft_n] — normalised full-BW spectrum [dB]
-    zoom_db:       np.ndarray   # float32[n_spec_cols] — zoom spectrum for spectrogram
-    doppler_hz:    float        # FFT peak relative to centre [Hz]
-    burst_snr_db:  float        # peak vs noise floor [dB]
-    burst_papr_db: float        # in-band peak-to-average [dB]
-    abs_pwr_db:    float        # absolute frame power [dBW]
-    is_burst:      bool
+    spec_db:        np.ndarray   # float32[fft_n] — normalised full-BW spectrum [dB]
+    zoom_db:        np.ndarray   # float32[n_spec_cols] — zoom spectrum for spectrogram
+    doppler_hz:     float        # FFT peak relative to centre [Hz]
+    burst_snr_db:   float        # peak vs noise floor [dB]
+    burst_papr_db:  float        # in-band peak-to-average [dB]
+    abs_pwr_db:     float        # absolute frame power [dBW]
+    is_burst:       bool
+    pilot_snr_db:   float = 0.0  # preamble pilot tone SNR vs noise floor [dB]
+    pilot_detected: bool  = False # True when pilot_snr_db ≥ detector threshold
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +90,7 @@ class BurstDetector:
         burst_papr:  float = 5.0,
         burst_pwr:   float = -90.0,
         zoom_factor: float = 1.6,
+        pilot_snr:   float = PILOT_SNR_THRESHOLD,
     ) -> None:
         self.fs          = fs
         self.burst_n     = burst_n
@@ -91,6 +100,7 @@ class BurstDetector:
         self.burst_snr   = burst_snr
         self.burst_papr  = burst_papr
         self.burst_pwr   = burst_pwr
+        self.pilot_snr   = pilot_snr
 
         # ── Precomputed frequency axes (immutable after construction) ──────
         self.fft_freqs_kHz  = np.fft.fftshift(np.fft.fftfreq(fft_n)) * fs / 1e3
@@ -108,6 +118,11 @@ class BurstDetector:
         self._noise_mask = np.abs(self.burst_freqs_hz) >  max_dop_hz * 2.5
         if not np.any(self._noise_mask):
             self._noise_mask = ~self._sig_mask
+
+        # ── Pilot tone mask (absolute offset; Doppler-corrected at runtime) ──
+        # Pre-compute a half-bandwidth mask relative to zero; at runtime we
+        # apply a roll to centre it on doppler_hz + PILOT_TONE_OFFSET_HZ.
+        self._pilot_bw_hz = PILOT_TONE_BW_HZ
 
     # ------------------------------------------------------------------
     def process(self, x: np.ndarray) -> BurstResult:
@@ -158,19 +173,38 @@ class BurstDetector:
             abs_pwr_db    >= self.burst_pwr
         )
 
+        # ── Pilot tone detection ─────────────────────────────────────────
+        # The IRA preamble consists of 64 all-zero dibits.  Each zero-dibit
+        # maps to +π/4 phase rotation, so the preamble looks like a pure
+        # sinusoid at +Rs/8 = +3125 Hz above the burst carrier frequency.
+        # After Doppler correction the pilot sits at doppler_hz + 3125 Hz.
+        pilot_centre = doppler_hz + PILOT_TONE_OFFSET_HZ
+        pilot_mask   = (
+            (self.burst_freqs_hz >= pilot_centre - self._pilot_bw_hz) &
+            (self.burst_freqs_hz <= pilot_centre + self._pilot_bw_hz)
+        )
+        if np.any(pilot_mask):
+            pilot_power  = float(np.max(fa[pilot_mask]))
+            pilot_snr_db = float(10.0 * np.log10(pilot_power / noise_avg + 1e-12))
+        else:
+            pilot_snr_db = 0.0
+        pilot_detected = bool(pilot_snr_db >= self.pilot_snr)
+
         # ── Zoom spectrum for spectrogram ──────────────────────────────────
         zoom_lin = fa[self._zoom_idx].astype(np.float32)
         zoom_db  = 10.0 * np.log10(zoom_lin + 1e-20)
         zoom_db -= float(np.max(zoom_db))
 
         return BurstResult(
-            spec_db       = sp_db.astype(np.float32),
-            zoom_db       = zoom_db,
-            doppler_hz    = doppler_hz,
-            burst_snr_db  = burst_snr_db,
-            burst_papr_db = burst_papr_db,
-            abs_pwr_db    = abs_pwr_db,
-            is_burst      = is_burst,
+            spec_db        = sp_db.astype(np.float32),
+            zoom_db        = zoom_db,
+            doppler_hz     = doppler_hz,
+            burst_snr_db   = burst_snr_db,
+            burst_papr_db  = burst_papr_db,
+            abs_pwr_db     = abs_pwr_db,
+            is_burst       = is_burst,
+            pilot_snr_db   = pilot_snr_db,
+            pilot_detected = pilot_detected,
         )
 
 

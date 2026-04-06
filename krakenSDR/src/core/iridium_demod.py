@@ -171,9 +171,11 @@ class _SyncSearch:
         mid    = int(np.argmax(np.abs(c)))
         conf   = float(np.abs(c[mid]))
 
-        # Compensate for preamble: peak is at middle of preamble+UW block;
-        # shift forward by 2 symbols to reach UW start (matches original code).
-        start = mid + 2 * self._sps
+        # In 'same' mode the cross-correlation peak 'mid' sits at the UW start
+        # (the template is centred on preamble+UW, preamble_len*sps == L//2).
+        # No additional offset is needed; 'oldsym=0' in _dqpsk_demod is valid
+        # because the all-zero preamble always ends at absolute phase 0°.
+        start = mid
         return max(0, start), conf
 
 
@@ -332,9 +334,14 @@ def _qpsk(phase_deg: float) -> Tuple[int, float]:
     """
     Map a phase angle (degrees) to a QPSK symbol index (0–3) and the angular
     offset from the nearest ideal symbol point.
+
+    Decision boundaries are at 89.5°, 179.5°, 269.5°, 359.5° (i.e. shifted by
+    0.5° vs. exact 90° multiples) so that floating-point values like 179.9999°
+    (computed as exp(j·17π) due to IEEE-754 rounding) still map to index 2
+    instead of falling below the 180° boundary into index 1.
     """
     phase_deg = phase_deg % 360.0
-    sym    = int(phase_deg) // 90
+    sym    = int((phase_deg + 0.5) / 90.0) % 4
     offset = 45.0 - (phase_deg % 90.0)
     return sym, offset
 
