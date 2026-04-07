@@ -4,8 +4,8 @@ iridium_realistic_sim.py — Faithful simulation of Iridium downlink from a sing
 
 Implements the REAL Iridium system parameters from public sources:
   ┌─────────────────────────────────────────────────────────────────┐
-  │ Sources: gr-iridium (muccc/gr-iridium), iridium-toolkit        │
-  │          (muccc/iridium-toolkit), SDR community analysis       │
+  │ Sources: gr-iridium (muccc/gr-iridium), iridium-toolkit         │
+  │          (muccc/iridium-toolkit), SDR community analysis        │
   │          Motorola patents / public ITU filings                  │
   └─────────────────────────────────────────────────────────────────┘
 

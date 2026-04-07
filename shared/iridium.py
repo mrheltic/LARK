@@ -74,20 +74,35 @@ SAMPLE_RATE_TX:   int = SYMBOL_RATE * SPS_TX     # 200_000 Hz
 # TDMA frame structure (IRA – Ring Alert, Simplex downlink  )
 # ─────────────────────────────────────────────────────────────────────────────
 SUPERFRAME_S:    float = 0.090       # super-frame period [s]
-SLOT_S:          float = 0.008280   # slot duration [s]  (= 207 sym @ 25 ksps)
 SLOTS_PER_FRAME: int   = 8
+TDMA_PERIOD_S:   float = SUPERFRAME_S / SLOTS_PER_FRAME   # = 0.01125 s / slot
+TDMA_SLOT_SYM:   int   = int(SUPERFRAME_S * SYMBOL_RATE / SLOTS_PER_FRAME)  # = 281
 
 # Burst structure [symbols]
-#   Derived from gr-iridium and iridium-toolkit community analysis
+#   Sources: gr-iridium/lib/iridium.h, iridium-toolkit, confirmed in realistic_sim.py
+#
+#   PREAMBLE_LENGTH_LONG  = 64  (gr-iridium/lib/iridium.h)
+#   UW_LENGTH             = 12  (gr-iridium/lib/iridium.h)
+#   Data payload inferred from iridium-toolkit output: 179 total frame = 12 UW + 167 data
+#   IRA_TAIL_SYM = 2  tail bits to flush the K=7 convolutional encoder
+#
+#   Timeline within one 281-symbol TDMA slot:
+#     8 guard_pre + 64 preamble + 12 UW + 167 data + 2 tail + 8 guard_post = 261
+#     + 20 silence  = 281  ✓
 GUARD_PRE_SYM:   int = 8     # guard before burst (silence)
-PREAMBLE_SYM:    int = 32    # run-in: constant +45° rotation → tone at Rs/8
-UNIQUE_WORD_SYM: int = 12    # synchronisation word (24 bits, BPSK structure)
-FRAME_DATA_SYM:  int = 167   # payload (334 bits incl. header + BCH + data)
+PREAMBLE_SYM:    int = 64    # run-in: constant +π/4 rotation → tone at Rs/8 = 3125 Hz
+                              # source: gr-iridium PREAMBLE_LENGTH_LONG
+UNIQUE_WORD_SYM: int = 12    # synchronisation word (24 bits, BPSK-like dibits)
+                              # source: gr-iridium UW_LENGTH
+FRAME_DATA_SYM:  int = 167   # payload (334 bits: header + BCH + data)
+                              # source: iridium-toolkit output 179 total = 12+167
+IRA_TAIL_SYM:    int = 2     # tail symbols to flush K=7 convolutional encoder
 GUARD_POST_SYM:  int = 8     # guard after burst (silence)
-SILENCE_SYM:     int = 54    # inter-slot padding to complete a 281-sym slot
+SILENCE_SYM:     int = 20    # inter-slot padding: TDMA_SLOT_SYM minus all above = 20
 
 BURST_TOTAL_SYM: int = (GUARD_PRE_SYM + PREAMBLE_SYM +
-                         UNIQUE_WORD_SYM + FRAME_DATA_SYM + GUARD_POST_SYM)
+                         UNIQUE_WORD_SYM + FRAME_DATA_SYM +
+                         IRA_TAIL_SYM + GUARD_POST_SYM)
 
 # Unique Word bit pattern (24 bits → 12 DQPSK dibits)
 # Source: gr-iridium iridium.py, extractor-python, iridium-toolkit
