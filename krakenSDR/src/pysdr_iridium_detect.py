@@ -342,7 +342,7 @@ def main() -> None:
 
     _im_sg = _ax_sg.imshow(
         _S.spec_data, aspect="auto", origin="upper",
-        extent=[_spec_freq_kHz[0], _spec_freq_kHz[-1], _SPEC_HIST, 0],
+        extent=(_spec_freq_kHz[0], _spec_freq_kHz[-1], _SPEC_HIST, 0),
         vmin=-45, vmax=0, cmap=_sg_cmap, interpolation="nearest")
 
     _ax_sg.axvline(-MAX_DOP_HZ/1e3, color=AMBER,  lw=0.9, alpha=0.5, ls=":")

@@ -124,6 +124,7 @@ def snipfcn_realtime_doa_snippet(self):
     # ══════════════════════════════════════════════════════════════════════
     import tkinter as _tk
     import tkinter.ttk as _ttk
+    import tkinter.messagebox
 
     _CFG = {}   # filled by the dialog; keys match the GRC variable names
 
@@ -467,7 +468,7 @@ def snipfcn_realtime_doa_snippet(self):
 
     # A: MUSIC pseudospectrum
     _style_polar(_ax_music, "Pseudospectrum  [algo / decorr]")
-    _ax_music.set_ylim([-40, 2])
+    _ax_music.set_ylim((-40, 2))
     _ax_music.set_rlabel_position(45)
     _ax_music.set_yticks([-30, -20, -10, 0])
     _ax_music.set_yticklabels(["-30", "-20", "-10", "0"], fontsize=6, color=C_MUTED)
@@ -481,7 +482,7 @@ def snipfcn_realtime_doa_snippet(self):
     _ax_comp.set_yticks([])
     _ax_comp.set_xticks(_np.linspace(0, 2*_np.pi, 8, endpoint=False))
     _ax_comp.set_xticklabels(["N","NE","E","SE","S","SW","W","NW"], color=C_MUTED, fontsize=8)
-    _ax_comp.set_ylim([0, 1])
+    _ax_comp.set_ylim((0, 1))
     _ax_comp.plot(_np.linspace(0, 2*_np.pi, 360), _np.ones(360)*0.92, color=C_BORDER, linewidth=0.8)
     _needle,   = _ax_comp.plot([0, 0], [0, 0.85], color=C_TEAL, linewidth=3.5)
     _needle_b, = _ax_comp.plot([0, 0], [0, 0.38], color=C_TEAL, linewidth=2.0, alpha=0.30)
@@ -581,8 +582,8 @@ def snipfcn_realtime_doa_snippet(self):
     # ── Bottom controls ──────────────────────────────────────────────────
     _BTN_Y = 0.020; _BTN_H = 0.044; _BADGE_Y = 0.027
 
-    _ax_btn_cal = _fig.add_axes([0.38, _BTN_Y, 0.115, _BTN_H])
-    _ax_btn_rst = _fig.add_axes([0.50, _BTN_Y, 0.090, _BTN_H])
+    _ax_btn_cal = _fig.add_axes((0.38, _BTN_Y, 0.115, _BTN_H))
+    _ax_btn_rst = _fig.add_axes((0.50, _BTN_Y, 0.090, _BTN_H))
     _txt_cal    = _fig.text(0.598, _BADGE_Y, "Offset: 0.0\u00b0",
                             color=C_AMBER, fontsize=8.5, va="center",
                             bbox=dict(facecolor=BG3, edgecolor=C_BORDER, boxstyle="round,pad=0.35"))
@@ -609,8 +610,8 @@ def snipfcn_realtime_doa_snippet(self):
     _btn_cal.on_clicked(_on_set_zero)
     _btn_rst.on_clicked(_on_reset_cal)
 
-    _ax_btn_rec  = _fig.add_axes([0.04,  _BTN_Y, 0.115, _BTN_H])
-    _ax_btn_stop = _fig.add_axes([0.162, _BTN_Y, 0.095, _BTN_H])
+    _ax_btn_rec  = _fig.add_axes((0.04,  _BTN_Y, 0.115, _BTN_H))
+    _ax_btn_stop = _fig.add_axes((0.162, _BTN_Y, 0.095, _BTN_H))
     _txt_rec = _fig.text(0.265, _BADGE_Y, "", color=C_ROSE, fontsize=8.5, va="center",
                          bbox=dict(facecolor=BG3, edgecolor=C_BORDER, boxstyle="round,pad=0.35"),
                          visible=False)
@@ -651,13 +652,16 @@ def snipfcn_realtime_doa_snippet(self):
         if _S.rec_active: return
         _S.rec_active = True; _S.rec_buffer = []; _S.rec_ts = []; _S.rec_start_t = _time.time()
         _txt_rec.set_text("REC  00:00  (0 fr)"); _txt_rec.set_color(C_ROSE)
-        _txt_rec.get_bbox_patch().set(facecolor=BG3, edgecolor=C_BORDER); _txt_rec.set_visible(True)
+        _bp = _txt_rec.get_bbox_patch()
+        if _bp is not None: _bp.set(facecolor=BG3, edgecolor=C_BORDER)
+        _txt_rec.set_visible(True)
 
     def _on_rec_stop(_):
         if not _S.rec_active: return
         _S.rec_active = False
         _txt_rec.set_text(f"Saving ...  ({len(_S.rec_buffer)} fr)"); _txt_rec.set_color(C_AMBER)
-        _txt_rec.get_bbox_patch().set(facecolor=BG3, edgecolor=C_BORDER)
+        _bp2 = _txt_rec.get_bbox_patch()
+        if _bp2 is not None: _bp2.set(facecolor=BG3, edgecolor=C_BORDER)
         _threading.Thread(target=_save_recording, daemon=True).start()
 
     _btn_rec.on_clicked(_on_rec_start)

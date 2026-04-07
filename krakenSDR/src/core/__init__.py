@@ -39,3 +39,9 @@ from .doa_algorithms import (   # noqa: F401
 )
 
 from .burst import BurstDetector, BurstResult, PassTracker  # noqa: F401
+
+from .iridium_doa_burst import (   # noqa: F401
+    detect_and_extract_burst,
+    compensate_doppler,
+    compute_single_shot_covariance,
+)

@@ -89,39 +89,39 @@ IRDM_IRA_FREQ     = IRDM_FREQ_BASE + 8 * IRDM_CHAN_SPACING   # ≈ 1.616 GHz (fo
 # Actual Iridium Ring Alert / Simplex channel used by gr-iridium and iridium-toolkit
 IRDM_RING_ALERT_HZ = 1_626_270_000   # 1626.270 MHz — matches SIMPLEX_RING_CH_HZ
 
-# ── Struttura TDMA ────────────────────────────────────────────────────────────
-# Superframe = 90 ms, 8 slot, 1 slot = 281,25 simboli → arrotondiamo a 281
+# ── TDMA structure ────────────────────────────────────────────────────────────
+# Superframe = 90 ms, 8 slots, 1 slot = 281.25 symbols → rounded to 281
 SUPERFRAME_S      = 0.090     # 90 ms
 SLOTS_PER_FRAME   = 8
 SLOT_SYMS         = int(SUPERFRAME_S * SYMBOL_RATE / SLOTS_PER_FRAME)  # 281
 
-# ── Struttura burst IRA ───────────────────────────────────────────────────────
+# ── IRA burst structure ───────────────────────────────────────────────────────
 # Fonte: gr-iridium README (footnote 2: "12-symbol BPSK Iridium sync word")
-#        iridium-toolkit: output frame length 179 simboli (12 UW + 167 data)
-IRA_GUARD_SYMS     = 8    # silenzio prima del burst
+#        iridium-toolkit: output frame length 179 symbols (12 UW + 167 data)
+IRA_GUARD_SYMS     = 8    # silence before burst
 IRA_PREAMBLE_SYMS  = 64   # PREAMBLE_LENGTH_LONG — gr-iridium/include/iridium/iridium.h
 IRA_UW_SYMS        = 12   # UW_LENGTH — gr-iridium/include/iridium/iridium.h
 IRA_DATA_SYMS      = 167  # payload — gr-iridium output: 179 total = UW+data
 IRA_TAIL_SYMS      = 2    # tail bits (flush encoder K=7)
-IRA_POST_GUARD     = 8    # silenzio dopo il burst
-# Simboli burst totale (escluso silenzio):
+IRA_POST_GUARD     = 8    # silence after burst
+# Total burst symbols (excluding silence):
 IRA_BURST_SYMS     = IRA_PREAMBLE_SYMS + IRA_UW_SYMS + IRA_DATA_SYMS + IRA_TAIL_SYMS
-# = 64 + 12 + 167 + 2 = 245 simboli → 9.80 ms
+# = 64 + 12 + 167 + 2 = 245 symbols → 9.80 ms
 
-# Il remainder di un slot viene riempito con silenzio:
+# The remainder of a slot is filled with silence:
 IRA_SLOT_SILENCE   = SLOT_SYMS - IRA_GUARD_SYMS - IRA_BURST_SYMS - IRA_POST_GUARD
-# = 281 - 8 - 245 - 8 = 20 simboli di silenzio post-burst
+# = 281 - 8 - 245 - 8 = 20 silence symbols post-burst
 
-# ── Unique Word IRA — da gr-iridium/include/iridium/iridium.h ─────────────────
+# ── IRA Unique Word — from gr-iridium/include/iridium/iridium.h ─────────────────
 # UW_DL[] = { 0, 2, 2, 2, 2, 0, 0, 0, 2, 0, 0, 2 }
-# Simboli BPSK assoluti: quadrante 0 = NE (45°), quadrante 2 = SW (225°)
-# IMPORTANTE: il UW NON passa per il codificatore differenziale π/4-DQPSK.
-#             Viene inserito direttamente come fasi assolute nel burst.
+# Absolute BPSK symbols: quadrant 0 = NE (45°), quadrant 2 = SW (225°)
+# IMPORTANT: the UW does NOT pass through the π/4-DQPSK differential encoder.
+#            It is inserted directly as absolute phases in the burst.
 _UW_DL_QUADRANTS = np.array([0, 2, 2, 2, 2, 0, 0, 0, 2, 0, 0, 2], dtype=np.int8)
-UW_DL_SYMBOLS = np.exp(1j * (_UW_DL_QUADRANTS * np.pi / 2 + np.pi / 4))  # 45° o 225°
+UW_DL_SYMBOLS = np.exp(1j * (_UW_DL_QUADRANTS * np.pi / 2 + np.pi / 4))  # 45° or 225°
 
-# ── Mappatura π/4-DQPSK ──────────────────────────────────────────────────────
-# Gray coding: dibit → variazione di fase (Δφ)
+# ── π/4-DQPSK mapping ──────────────────────────────────────────────────────
+# Gray coding: dibit → phase increment (Δφ)
 # (0,0) → +π/4     (0,1) → +3π/4
 # (1,0) → -π/4     (1,1) → -3π/4
 _DQPSK_MAP = {
@@ -133,7 +133,7 @@ _DQPSK_MAP = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 1. MODULAZIONE π/4-DQPSK
+# 1. π/4-DQPSK MODULATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def pi4_dqpsk_modulate(bits: np.ndarray, initial_phase: float = np.pi / 4) -> np.ndarray:
@@ -178,7 +178,7 @@ def pi4_dqpsk_demodulate_differential(samples: np.ndarray) -> np.ndarray:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. FILTRO RRC (Root Raised Cosine, β=0.4)
+# 2. RRC FILTER (Root Raised Cosine, β=0.4)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def generate_rrc_filter(beta: float, sps: int, num_taps: int) -> np.ndarray:
@@ -206,7 +206,7 @@ def generate_rrc_filter(beta: float, sps: int, num_taps: int) -> np.ndarray:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 3. GENERATORE BURST IRA
+# 3. IRA BURST GENERATOR
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _iridium_scrambler(length: int, seed: int = 0x4A2C) -> np.ndarray:
@@ -237,12 +237,12 @@ def conv_encode_rate_half(bits: np.ndarray) -> np.ndarray:
 
     Ogni bit in ingresso produce 2 bit in uscita (interleaved G0, G1).
     Note: the encoder is initialised with shift register = 0 (trellis flushed
-    aggiungendo K-1=6 bit di tailing).
+    adding K-1=6 tail bits).
     """
     K = 7
     G0 = 0b1111001   # 0x79
     G1 = 0b1011011   # 0x5B
-    # Aggiungi K-1 tail bit (zeri) per flushing del registro
+    # Append K-1 tail bits (zeros) to flush the shift register
     padded = np.concatenate([bits, np.zeros(K - 1, dtype=np.uint8)])
     shift_reg = 0
     output = np.zeros(len(padded) * 2, dtype=np.uint8)
@@ -268,17 +268,17 @@ def generate_ira_frame_bits(sat_id: int = 0, beam_id: int = 0,
     corresponding to {(IRA_DATA_SYMS+IRA_TAIL_SYMS)*2 // 2} information bits
     after rate 1/2 coding (K-1=6 tail bits already included in the output).
     """
-    # 338 bit simboli totali dal frame (data + tail simboli × 2 bit/simbolo)
+    # 338 total coded bits from the frame (data + tail symbols × 2 bits/symbol)
     total_coded_bits = (IRA_DATA_SYMS + IRA_TAIL_SYMS) * 2   # 338
 
-    # Quanti bit informativi (pre-codifica) producono 338 bit codificati?
-    # conv_encode padding aggiunge K-1=6 tail bit, quindi:
+    # How many information bits (pre-encoding) produce 338 coded bits?
+    # conv_encode padding adds K-1=6 tail bits, therefore:
     # info_bits × 2 + (K-1) × 2 = total_coded_bits
     # info_bits = (total_coded_bits // 2) - (K - 1) = 169 - 6 = 163
     K = 7
     info_bits = total_coded_bits // 2 - (K - 1)   # = 163
 
-    # Header fisso (30 bit)
+    # Fixed header (30 bits)
     header = np.zeros(30, dtype=np.uint8)
     for i in range(8):
         header[7 - i] = (sat_id >> i) & 1
@@ -287,15 +287,15 @@ def generate_ira_frame_bits(sat_id: int = 0, beam_id: int = 0,
     for i in range(16):
         header[29 - i] = (frame_count >> i) & 1
 
-    # Payload scrambled per i bit rimanenti
+    # Scrambled payload for the remaining bits
     payload_bits_count = info_bits - len(header)
     payload = _iridium_scrambler(payload_bits_count, seed=frame_count & 0xFFFF)
     info = np.concatenate([header, payload]).astype(np.uint8)
 
-    # Codifica convoluzionale rate 1/2, K=7
+    # Convolutional encoding rate 1/2, K=7
     coded = conv_encode_rate_half(info)
     # conv_encode_rate_half produces info_bits*2 + (K-1)*2 = 169*2 — already included
-    # Tronca/padda a total_coded_bits per sicurezza
+    # Truncate/pad to total_coded_bits for safety
     if len(coded) > total_coded_bits:
         coded = coded[:total_coded_bits]
     elif len(coded) < total_coded_bits:
@@ -322,28 +322,28 @@ def generate_ira_burst(rrc_filter: np.ndarray,
         (slot_iq, markers) where markers is a dict with the sample indices of
         inizio/fine di ogni sezione.
     """
-    # ── Sezione 1: Guard pre-burst (silenzio) ─────────────────────────────
+    # ── Section 1: Guard pre-burst (silence) ──────────────────────────────
     guard_pre_syms  = np.zeros(IRA_GUARD_SYMS, dtype=np.complex128)
 
-    # ── Sezione 2: Preamble run-in (64 simboli) ───────────────────────────
-    # Tutti dibits 0x00 → Δφ = +π/4 per simbolo → tono @ +Rs/8 Hz dal carrier
+    # ── Section 2: Preamble run-in (64 symbols) ─────────────────────────────
+    # All dibits 0x00 → Δφ = +π/4 per symbol → tone @ +Rs/8 Hz from carrier
     # This is the "signature" tone that allows burst detection in RF
     preamble_bits = np.zeros(IRA_PREAMBLE_SYMS * 2, dtype=np.uint8)
     preamble_syms = pi4_dqpsk_modulate(preamble_bits, initial_phase=np.pi / 4)
 
-    # ── Sezione 3: Unique Word (12 simboli BPSK assoluti) ─────────────────
-    # UW_DL[] da iridium.h: {0,2,2,2,2,0,0,0,2,0,0,2}, quadrante 0=45°, 2=225°
+    # ── Section 3: Unique Word (12 absolute BPSK symbols) ───────────────────
+    # UW_DL[] from iridium.h: {0,2,2,2,2,0,0,0,2,0,0,2}, quadrant 0=45°, 2=225°
     # The UW does NOT go through the differential modulator: it is inserted
     # directly as absolute phases. This is the expected behaviour per gr-iridium.
-    uw_syms = UW_DL_SYMBOLS.copy()   # 12 simboli complessi, |s|=1
+    uw_syms = UW_DL_SYMBOLS.copy()   # 12 complex symbols, |s|=1
 
-    # ── Sezione 4: Frame data (167+2 simboli, codifica conv. rate 1/2 K=7) ─
+    # ── Section 4: Frame data (167+2 symbols, conv. code rate 1/2 K=7) ──────
     frame_bits = generate_ira_frame_bits(sat_id, beam_id, frame_count)
-    # La fase iniziale per i dati continua dall'ultimo simbolo dell'UW (assoluto)
+    # Initial phase for data continues from the last UW symbol (absolute)
     data_syms = pi4_dqpsk_modulate(frame_bits,
                                     initial_phase=float(np.angle(uw_syms[-1])))
 
-    # ── Pulse shaping (upsampling + filtraggio RRC) ───────────────────────
+    # ── Pulse shaping (upsampling + RRC filtering) ────────────────────────
     def pulse_shape(symbols):
         up = np.zeros(len(symbols) * SPS, dtype=np.complex128)
         up[::SPS] = symbols
@@ -352,14 +352,14 @@ def generate_ira_burst(rrc_filter: np.ndarray,
     burst_syms = np.concatenate([preamble_syms, uw_syms, data_syms])
     burst_iq   = pulse_shape(burst_syms)
 
-    # Prependi/appendi i guard (silenzio, niente filtro)
+    # Prepend/append guard intervals (silence, no filter)
     guard_iq  = np.zeros(IRA_GUARD_SYMS * SPS, dtype=np.complex128)
     silence_n = IRA_SLOT_SILENCE * SPS if IRA_SLOT_SILENCE > 0 else 0
     silence_iq = np.zeros(silence_n, dtype=np.complex128)
 
     slot_iq = np.concatenate([guard_iq, burst_iq, guard_iq, silence_iq])
 
-    # Indici campione di ogni sezione (relativi a inizio slot)
+    # Sample indices of each section (relative to slot start)
     g_pre = IRA_GUARD_SYMS * SPS
     pm_s  = g_pre
     pm_e  = pm_s + IRA_PREAMBLE_SYMS * SPS
@@ -379,23 +379,23 @@ def generate_ira_burst(rrc_filter: np.ndarray,
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 4. MODELLO DOPPLER LEO — fisica orbitale reale
+# 4. LEO DOPPLER MODEL — real orbital physics
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class IridiumLEODoppler:
     """
-    Modello Doppler geometrico per un passo satellite Iridium.
+    Geometric Doppler model for an Iridium satellite pass.
 
-    Il modello approssima il moto del satellite come moto rettilineo uniforme
-    a quota costante (valido per finestre di osservazione < 5 minuti).
+    The model approximates satellite motion as uniform rectilinear motion
+    at constant altitude (valid for observation windows < 5 minutes).
     The effect of Earth's rotation is neglected (error < 1%).
 
-    Geometria di riferimento:
-      - Stazione a terra in (0, 0)
-      - Satellite si muove lungo l'asse x a quota h = 780 km
-      - t = 0: closest approach (momento di elevazione massima)
-      - Per t < 0: satellite si avvicina (Doppler positivo, freq aumenta)
-      - Per t > 0: satellite si allontana (Doppler negativo, freq diminuisce)
+    Reference geometry:
+      - Ground station at (0, 0)
+      - Satellite moves along the x-axis at altitude h = 780 km
+      - t = 0: closest approach (moment of maximum elevation)
+      - For t < 0: satellite approaching (positive Doppler, freq increases)
+      - For t > 0: satellite receding (negative Doppler, freq decreases)
 
     The instantaneous range is:
         r(t) = √(r_min² + v_sat² × (t − t_ca)²)
@@ -408,11 +408,11 @@ class IridiumLEODoppler:
     The Doppler shift is:
         Δf(t) = −f₀ × ṙ(t) / c    [Hz]
 
-    Valori tipici per Iridium a 1621 MHz:
-      - Pass overhead (E_max = 90°): Doppler da +40.2 kHz a −40.2 kHz
-      - Pass al 45°:                 da +31.3 kHz a −31.3 kHz
-      - Chirp rate max (overhead):   ≈ 386 Hz/s  al closest approach
-      - Chirp rate max (45° pass):   ≈ 273 Hz/s  al closest approach
+    Typical values for Iridium at 1621 MHz:
+      - Overhead pass (E_max = 90°): Doppler from +40.2 kHz to −40.2 kHz
+      - 45° pass:                    from +31.3 kHz to −31.3 kHz
+      - Max chirp rate (overhead):   ≈ 386 Hz/s at closest approach
+      - Max chirp rate (45° pass):   ≈ 273 Hz/s at closest approach
     """
 
     def __init__(self, carrier_hz: float, max_elev_deg: float = 90.0,
@@ -421,16 +421,16 @@ class IridiumLEODoppler:
         self.E_max = np.radians(max_elev_deg)
         self.t_ca  = t_closest_approach
 
-        # Slant range minima = distanza al closest approach
-        # Per E_max = 90°: r_min = h;  per E_max < 90°: r_min > h
+        # Minimum slant range = distance at closest approach
+        # For E_max = 90°: r_min = h;  for E_max < 90°: r_min > h
         sin_e = np.sin(self.E_max)
         if sin_e < 1e-4:
-            sin_e = 1e-4   # evita divisione per zero a elevazione 0°
+            sin_e = 1e-4   # avoid division by zero at 0° elevation
         self.r_min = IRIDIUM_ALT_M / sin_e
 
-        # Statistiche del passo
+        # Pass statistics
         self.v_sat  = V_SAT
-        self.doppler_max_hz = self.f0 * self.v_sat / C  # ≈ 40.2 kHz a 1621 MHz
+        self.doppler_max_hz = self.f0 * self.v_sat / C  # ≈ 40.2 kHz at 1621 MHz
         chirp_hz_per_s = self.f0 * self.v_sat ** 2 / (C * self.r_min)
         print(f"  [Doppler] r_min={self.r_min/1000:.1f} km | "
               f"Δf_max=±{self.doppler_at_t(-1e6)/1e3:.1f} kHz | "
@@ -443,24 +443,24 @@ class IridiumLEODoppler:
         return self.v_sat ** 2 * dt / r
 
     def doppler_at_t(self, t: float) -> float:
-        """Shift Doppler [Hz] all'istante t.
-        Positivo = satellite si avvicina (freq ricevuta > freq trasmessa).
-        Negativo = satellite si allontana.
+        """Doppler shift [Hz] at time t.
+        Positive = satellite approaching (received freq > transmitted freq).
+        Negative = satellite receding.
         """
         return -self.f0 * self.range_rate(t) / C
 
     def elevation_deg(self, t: float) -> float:
-        """Angolo di elevazione [°] rispetto all'orizzonte all'istante t."""
+        """Elevation angle [°] above the horizon at time t."""
         dt = t - self.t_ca
         horiz = abs(self.v_sat * dt)
-        # Approssimazione Terra piatta (valida per osservazioni < 2000 km horiz)
+        # Flat-Earth approximation (valid for observations < 2000 km horizontal)
         el_rad = np.arctan2(IRIDIUM_ALT_M, horiz)
         return np.degrees(el_rad)
 
     def pass_half_duration_s(self, min_elev_deg: float = 5.0) -> float:
         """
-        Durata dal closest approach al tramonto del satellite (elevazione min).
-        Duration totale del passo = 2 × questo valore.
+        Duration from closest approach to satellite set (minimum elevation).
+        Total pass duration = 2 × this value.
         """
         min_el_rad = np.radians(min_elev_deg)
         horiz_at_min = IRIDIUM_ALT_M / np.tan(min_el_rad)
@@ -468,7 +468,7 @@ class IridiumLEODoppler:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 5. GENERATORE IQ DEL PASSO COMPLETO
+# 5. FULL-PASS IQ GENERATOR
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def simulate_iridium_pass(
@@ -481,26 +481,26 @@ def simulate_iridium_pass(
     t_closest: float = None,
 ) -> tuple:
     """
-    Genera il segnale IQ di un satellite Iridium che trasmette burst IRA
-    durante un passo con effetto Doppler realistico.
+    Generate the IQ signal of an Iridium satellite transmitting IRA bursts
+    during a pass with realistic Doppler effect.
 
-    Il satellite trasmette un burst IRA ogni 90 ms (1 burst per superframe
-    sul canale simplex assegnato). Il Doppler cambia gradualmente con
-    la geometria del passo.
+    The satellite transmits one IRA burst every 90 ms (1 burst per superframe
+    on the assigned simplex channel). Doppler changes gradually with
+    the pass geometry.
 
     Args:
-        duration_s:    Durata totale della simulazione [s]
-        carrier_hz:    Frequenza portante trasmessa [Hz]
-        max_elev_deg:  Elevazione massima del passo [°]
-        snr_db:        SNR in dB (aggiunto come AWGN alla fine)
-        sat_id:        ID satellite (0-127)
-        beam_id:       ID beam (0-47)
+        duration_s:    Total simulation duration [s]
+        carrier_hz:    Transmitted carrier frequency [Hz]
+        max_elev_deg:  Maximum pass elevation [°]
+        snr_db:        SNR in dB (added as AWGN at the end)
+        sat_id:        Satellite ID (0-127)
+        beam_id:       Beam ID (0-47)
         t_closest:     Instant of closest approach [s] (default: midpoint of sim)
 
     Returns:
         (iq_samples, burst_log, doppler_model, rrc_filter)
-          iq_samples: array complex64 dell'intera simulazione
-          burst_log:  lista di dict con info per ogni burst
+          iq_samples: complex64 array of the entire simulation
+          burst_log:  list of dicts with info for each burst
           doppler_model, rrc_filter: oggetti per uso esterno
     """
 
@@ -510,7 +510,7 @@ def simulate_iridium_pass(
     rrc = generate_rrc_filter(RRC_BETA, SPS, RRC_NUM_TAPS)
     doppler = IridiumLEODoppler(carrier_hz, max_elev_deg, t_closest)
 
-    # Numero di slot nel periodo di simulazione
+    # Number of slots in the simulation period
     n_slots = int(np.ceil(duration_s / SUPERFRAME_S))
     total_samples = int(duration_s * SAMPLE_RATE)
     iq_out = np.zeros(total_samples, dtype=np.complex128)
@@ -518,26 +518,26 @@ def simulate_iridium_pass(
     burst_log = []
 
     for slot_idx in range(n_slots):
-        t_burst  = slot_idx * SUPERFRAME_S          # inizio burst [s]
-        t_center = t_burst + SUPERFRAME_S / 2       # centro burst [s]
+        t_burst  = slot_idx * SUPERFRAME_S          # burst start [s]
+        t_center = t_burst + SUPERFRAME_S / 2       # burst centre [s]
         el_deg   = doppler.elevation_deg(t_center)
 
-        # Calcola Doppler al centro del burst (costante per tutto il burst:
+        # Compute Doppler at burst centre (constant over the entire burst:
         # Doppler variation WITHIN a 9 ms burst is < 3.5 Hz → negligible)
         f_doppler = doppler.doppler_at_t(t_center)
 
-        # Genera il burst IQ @ freq. base (nessun Doppler applicato ancora)
+        # Generate burst IQ @ base freq. (no Doppler applied yet)
         slot_iq, markers = generate_ira_burst(rrc, sat_id, beam_id, slot_idx)
 
-        # Applica offset Doppler al burst (shift di frequenza):
+        # Apply Doppler offset to burst (frequency shift):
         # s_rx(t) = s_tx(t) × exp(j × 2π × Δf_doppler × t)
         n_slot = len(slot_iq)
-        # Usiamo il tempo assoluto dell'inizio del burst per la fase corretta
+        # Use the absolute time of burst start for correct phase
         t_abs_start = t_burst
         t_vec = t_abs_start + np.arange(n_slot) / SAMPLE_RATE
         slot_iq *= np.exp(1j * 2 * np.pi * f_doppler * t_vec)
 
-        # Inserisce nella timeline globale
+        # Insert into the global timeline
         start_sample = int(t_burst * SAMPLE_RATE)
         end_sample   = start_sample + n_slot
         if end_sample > total_samples:
@@ -558,12 +558,12 @@ def simulate_iridium_pass(
                                for k, v in markers.items()},
         })
 
-    # Normalizza e aggiunge AWGN
+    # Normalise and add AWGN
     peak = np.max(np.abs(iq_out))
     if peak > 0:
         iq_out /= peak
 
-    if snr_db < 100:   # SNR=100 significa segnale ideale senza rumore
+    if snr_db < 100:   # SNR=100 means ideal signal without noise
         sig_power   = np.mean(np.abs(iq_out) ** 2)
         noise_power = sig_power / (10 ** (snr_db / 10))
         noise = np.sqrt(noise_power / 2) * (
@@ -575,13 +575,13 @@ def simulate_iridium_pass(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 6. CORRELATORE PREAMBLE + UW (rilevazione burst)
+# 6. PREAMBLE + UW CORRELATOR (burst detection)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def build_preamble_template(rrc: np.ndarray) -> np.ndarray:
     """
     Build the IQ template for the preamble run-in (already filtered with RRC).
-    Usato per cross-correlazione.
+    Used for cross-correlation.
     """
     pm_bits = np.zeros(IRA_PREAMBLE_SYMS * 2, dtype=np.uint8)
     pm_syms = pi4_dqpsk_modulate(pm_bits, initial_phase=np.pi / 4)
@@ -595,27 +595,27 @@ def detect_preamble(iq: np.ndarray, rrc: np.ndarray,
                     doppler_step_hz: float = 500.0,
                     threshold_factor: float = 0.35) -> list:
     """
-    Rilevatore correlazione preamble con compensazione Doppler.
+    Preamble correlation detector with Doppler compensation.
 
-    Algoritmo:
-      1. Scansione su griglia di offset Doppler (−45 kHz … +45 kHz, passo 500 Hz)
-      2. Per ciascun offset: mescola il segnale per compensare il Doppler
-      3. Calcola la correlazione incrociata con il template del preamble
-      4. Cerca i picchi sopra soglia
+    Algorithm:
+      1. Scan a Doppler offset grid (−45 kHz … +45 kHz, step 500 Hz)
+      2. For each offset: mix the signal to compensate the Doppler
+      3. Compute cross-correlation with the preamble template
+      4. Search for peaks above threshold
 
     This is essentially what gr-iridium does to find bursts:
     it searches for energy in the already channelised FDMA channel (Doppler handled
     by the polyphase filter bank), then passes to the QPSK demodulator.
 
     Args:
-        iq:                  Campioni IQ in ingresso
-        rrc:                 Filtro RRC per il template
-        doppler_search_hz:   Range di ricerca Doppler [Hz]
-        doppler_step_hz:     Passo della griglia Doppler [Hz]
-        threshold_factor:    Soglia come frazione del picco massimo
+        iq:                  Input IQ samples
+        rrc:                 RRC filter for the template
+        doppler_search_hz:   Doppler search range [Hz]
+        doppler_step_hz:     Doppler grid step [Hz]
+        threshold_factor:    Threshold as fraction of the global peak
 
     Returns:
-        Lista di dict: {sample_idx, doppler_hz, corr_peak, t_s}
+        List of dicts: {sample_idx, doppler_hz, corr_peak, t_s}
     """
     template = build_preamble_template(rrc)
     t = np.arange(len(iq)) / SAMPLE_RATE
@@ -627,19 +627,19 @@ def detect_preamble(iq: np.ndarray, rrc: np.ndarray,
     freqs = np.arange(-doppler_search_hz, doppler_search_hz + doppler_step_hz,
                       doppler_step_hz)
 
-    print(f"  [Detector] Scansione Doppler: {len(freqs)} offset "
+    print(f"  [Detector] Doppler scan: {len(freqs)} offsets "
           f"({-doppler_search_hz/1e3:.0f}…+{doppler_search_hz/1e3:.0f} kHz, "
           f"passo {doppler_step_hz:.0f} Hz) …", end=" ", flush=True)
     t0 = time.time()
 
-    # Calcolo efficiente: FFT‐based cross‐correlation
+    # Efficient computation: FFT-based cross-correlation
     n_fft = len(iq) + template_len - 1
-    n_fft = int(2 ** np.ceil(np.log2(n_fft)))   # prossima potenza di 2
+    n_fft = int(2 ** np.ceil(np.log2(n_fft)))   # next power of 2
 
-    corr_max = np.zeros(len(iq))  # picco di correlazione per ogni campione
+    corr_max = np.zeros(len(iq))  # correlation peak for each sample
 
     for f_d in freqs:
-        # Compensazione Doppler: ruota il segnale di −f_d
+        # Doppler compensation: rotate signal by −f_d
         iq_comp = iq * np.exp(-1j * 2 * np.pi * f_d * t)
 
         # Cross-correlation via FFT (faster than direct convolution)
@@ -647,25 +647,25 @@ def detect_preamble(iq: np.ndarray, rrc: np.ndarray,
         T = np.fft.fft(np.conj(template[::-1]), n=n_fft)  # matched filter
         corr = np.abs(np.fft.ifft(X * T))[:len(iq)]
 
-        # Aggiorna il massimo per ogni campione tra tutti gli offset Doppler
+        # Update the maximum for each sample across all Doppler offsets
         np.maximum(corr_max, corr, out=corr_max)
 
     elapsed = time.time() - t0
-    print(f"fatto in {elapsed:.1f}s")
+    print(f"done in {elapsed:.1f}s")
 
-    # Soglia adattiva: percentile 99.9% + fattore
+    # Adaptive threshold: 99.9th percentile + factor
     if np.max(corr_max) > 0:
         threshold = np.max(corr_max) * threshold_factor
     else:
         return detections
 
-    # Trova picchi sopra soglia (con distanza minima = 1 slot)
+    # Find peaks above threshold (with minimum distance = 1 slot)
     min_dist = int(SUPERFRAME_S * SAMPLE_RATE * 0.5)
     peak_locs, _ = sp_signal.find_peaks(corr_max, height=threshold,
                                          distance=min_dist)
 
     for loc in peak_locs:
-        # Stima del Doppler al punto di rilevazione tramite ricerca raffinata
+        # Estimate Doppler at detection point via refined search
         best_corr = 0.0
         best_dop  = 0.0
         for f_d in freqs:
@@ -690,12 +690,12 @@ def detect_preamble(iq: np.ndarray, rrc: np.ndarray,
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 7. PLOTS DI ANALISI
+# 7. ANALYSIS PLOTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def plot_analysis(iq: np.ndarray, burst_log: list, doppler_model: IridiumLEODoppler,
                   detections: list = None, save_path: str = None):
-    """Genera un pannello diagnostico a 4 plot."""
+    """Generate a 4-panel diagnostic plot."""
     duration_s = len(iq) / SAMPLE_RATE
     t_ms = np.arange(len(iq)) / SAMPLE_RATE * 1000
 
@@ -706,10 +706,10 @@ def plot_analysis(iq: np.ndarray, burst_log: list, doppler_model: IridiumLEODopp
         fontsize=13, fontweight="bold"
     )
 
-    # 1) Inviluppo nel tempo
+    # 1) Time-domain envelope
     ax = axes[0, 0]
     ax.plot(t_ms, np.abs(iq), linewidth=0.3, color="steelblue", alpha=0.8)
-    for b in burst_log[:20]:   # max 20 burst
+    for b in burst_log[:20]:   # max 20 bursts
         pm = b["markers"]["preamble"]
         uw  = b["markers"]["uw"]
         t_pm_s = pm[0] / SAMPLE_RATE * 1000
@@ -718,43 +718,43 @@ def plot_analysis(iq: np.ndarray, burst_log: list, doppler_model: IridiumLEODopp
         t_uw_s = uw[0] / SAMPLE_RATE * 1000
         t_uw_e = uw[1] / SAMPLE_RATE * 1000
         ax.axvspan(t_uw_s, t_uw_e, alpha=0.3, color="orange", zorder=3)
-    # Legenda colori
+    # Colour legend
     from matplotlib.patches import Patch
     ax.legend(handles=[Patch(color="lime",   alpha=0.5, label="Preamble"),
                         Patch(color="orange", alpha=0.5, label="UW")],
                fontsize=8, loc="upper right")
-    ax.set_xlabel("Tempo (ms)")
-    ax.set_ylabel("Ampiezza")
-    ax.set_title("Inviluppo segnale (i primi 20 burst)")
-    ax.set_xlim([0, min(duration_s * 1000, 5000)])  # mostra max 5 s
+    ax.set_xlabel("Time (ms)")
+    ax.set_ylabel("Amplitude")
+    ax.set_title("Signal envelope (first 20 bursts)")
+    ax.set_xlim([0, min(duration_s * 1000, 5000)])  # show max 5 s
     ax.grid(True, alpha=0.3)
 
-    # 2) Traiettoria Doppler durante il passo
+    # 2) Doppler trajectory during the pass
     ax = axes[0, 1]
     t_pass = np.linspace(0, duration_s, 500)
     doppler_traj = [doppler_model.doppler_at_t(t) / 1000 for t in t_pass]
     elev_traj    = [doppler_model.elevation_deg(t) for t in t_pass]
     ax.plot(t_pass, doppler_traj, "b-", linewidth=1.5, label="Doppler (kHz)")
     ax2 = ax.twinx()
-    ax2.plot(t_pass, elev_traj, "r--", linewidth=1.0, alpha=0.6, label="Elevazione (°)")
-    ax2.set_ylabel("Elevazione (°)", color="red", alpha=0.7)
+    ax2.plot(t_pass, elev_traj, "r--", linewidth=1.0, alpha=0.6, label="Elevation (°)")
+    ax2.set_ylabel("Elevation (°)", color="red", alpha=0.7)
     ax2.tick_params(axis="y", labelcolor="red")
-    # Sovrapponi Doppler misurato per ogni burst
+    # Overlay measured Doppler for each burst
     if burst_log:
         t_bursts  = [b["t_center_s"] for b in burst_log]
         d_bursts  = [b["doppler_hz"] / 1000 for b in burst_log]
         ax.scatter(t_bursts, d_bursts, s=6, c="steelblue", zorder=5, alpha=0.7,
-                   label="Burst simul.")
-    ax.set_xlabel("Tempo (s)")
+                   label="Simul. burst")
+    ax.set_xlabel("Time (s)")
     ax.set_ylabel("Doppler shift (kHz)", color="blue")
     ax.tick_params(axis="y", labelcolor="blue")
-    ax.set_title(f"Traiettoria Doppler LEO (h=780 km, E_max={doppler_model.E_max*180/np.pi:.0f}°)")
+    ax.set_title(f"LEO Doppler trajectory (h=780 km, E_max={doppler_model.E_max*180/np.pi:.0f}°)")
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()
     ax.legend(h1 + h2, l1 + l2, fontsize=8, loc="upper right")
     ax.grid(True, alpha=0.3)
 
-    # 3) Spettro del preamble (deve mostrare il tono a +3125 Hz)
+    # 3) Preamble spectrum (should show the tone at +3125 Hz)
     ax = axes[1, 0]
     if burst_log:
         pm_m = burst_log[0]["markers"]["preamble"]
@@ -766,45 +766,45 @@ def plot_analysis(iq: np.ndarray, burst_log: list, doppler_model: IridiumLEODopp
             spec -= np.max(spec)
             ax.plot(f_ax, spec, linewidth=0.7, color="darkgreen")
             ax.axvline(x=3.125, color="red", linestyle="--",
-                       linewidth=0.8, alpha=0.8, label="Tono atteso +3125 Hz")
-    ax.set_xlabel("Frequenza relativa al carrier (kHz)")
+                       linewidth=0.8, alpha=0.8, label="Expected tone +3125 Hz")
+    ax.set_xlabel("Frequency relative to carrier (kHz)")
     ax.set_ylabel("PSD (dB, norm.)")
-    ax.set_title("Spettro del Preamble run-in (tono @ +Rs/8 = +3125 Hz)")
+    ax.set_title("Preamble run-in spectrum (tone @ +Rs/8 = +3125 Hz)")
     ax.set_xlim([-30, 30])
     ax.set_ylim([-50, 5])
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # 4) Scatter detections vs. burst reali
+    # 4) Scatter: detections vs. generated bursts
     ax = axes[1, 1]
     if burst_log:
         t_b = [b["t_center_s"] for b in burst_log]
         d_b = [b["doppler_hz"] / 1000 for b in burst_log]
-        ax.scatter(t_b, d_b, s=20, c="steelblue", alpha=0.7, label="Burst generati",
+        ax.scatter(t_b, d_b, s=20, c="steelblue", alpha=0.7, label="Generated bursts",
                    zorder=3)
     if detections:
         t_d  = [d["t_s"] for d in detections]
         d_d  = [d["doppler_hz"] / 1000 for d in detections]
         ax.scatter(t_d, d_d, s=40, c="red", marker="x", linewidths=1.5,
-                   label="Burst rilevati (correlatore)", zorder=4)
-    ax.set_xlabel("Tempo (s)")
-    ax.set_ylabel("Doppler stimato (kHz)")
-    ax.set_title("Burst generati vs. rilevati dal correlatore")
+                   label="Detected bursts (correlator)", zorder=4)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Estimated Doppler (kHz)")
+    ax.set_title("Generated vs. detected bursts (correlator)")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     out = save_path if save_path else "iridium_realistic_plot.png"
     plt.savefig(out, dpi=150, bbox_inches="tight")
-    print(f"  Plot salvato: {out}")
+    print(f"  Plot saved: {out}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 8. TRASMISSIONE VIA LIBRESDR (pyadi-iio)
+# 8. TRANSMISSION VIA LIBRESDR (pyadi-iio)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _resample_to_hw(iq: np.ndarray, target_sps: int = 1_000_000) -> np.ndarray:
-    """Ricampionia da SAMPLE_RATE (250 kHz) a target_sps (default 1 MHz)."""
+    """Resample from SAMPLE_RATE (250 kHz) to target_sps (default 1 MHz)."""
     from math import gcd
     g = gcd(target_sps, SAMPLE_RATE)
     up, down = target_sps // g, SAMPLE_RATE // g
@@ -814,36 +814,36 @@ def _resample_to_hw(iq: np.ndarray, target_sps: int = 1_000_000) -> np.ndarray:
 def transmit_via_libresdr(iq: np.ndarray, uri: str, center_freq_hz: int,
                            tx_gain_db: float = -60.0, cyclic: bool = False):
     """
-    Trasmette i campioni IQ via LibreSDR (AD9363) usando pyadi-iio.
-    Identica all'interfaccia del PlutoSDR che usa lo stesso firmware.
+    Transmit IQ samples via LibreSDR (AD9363) using pyadi-iio.
+    Identical interface to PlutoSDR (same firmware).
 
-    SICUREZZA:
-      - Gain default: −60 dB (molto basso)
-      - Aumentare SOLO dopo aver verificato la ricezione su un cavo cablato
-      - NON trasmettere nella banda Iridium (1616-1626 MHz) senza licenza
+    SAFETY:
+      - Default gain: −60 dB (very low)
+      - Increase ONLY after verifying reception on a wired cable
+      - DO NOT transmit in the Iridium band (1616-1626 MHz) without a licence
     """
     try:
         import adi
     except ImportError:
-        print("[ERRORE TX] pyadi-iio non installato. Installa con: pip install pyadi-iio")
+        print("[TX ERROR] pyadi-iio not installed. Install with: pip install pyadi-iio")
         return False
 
-    # Ricampionamento a 1 MSPS (minimo AD9363)
+    # Resample to 1 MSPS (AD9363 minimum)
     TX_RATE = 1_000_000
-    print(f"  Ricampionamento {SAMPLE_RATE/1e3:.0f} kHz → {TX_RATE/1e6:.1f} MSPS …",
+    print(f"  Resampling {SAMPLE_RATE/1e3:.0f} kHz → {TX_RATE/1e6:.1f} MSPS …",
           end=" ", flush=True)
     tx_iq = _resample_to_hw(iq, TX_RATE)
-    # Scala per DAC (range ±2^14)
+    # Scale for DAC (range ±2^14)
     mx = np.max(np.abs(tx_iq))
     if mx > 0:
         tx_iq = tx_iq / mx * 0.9 * 2**14
     print("OK")
 
-    print(f"  Connessione a {uri} …", end=" ", flush=True)
+    print(f"  Connecting to {uri} …", end=" ", flush=True)
     try:
         sdr = adi.Pluto(uri)
     except Exception as e:
-        print(f"FALLITA: {e}")
+        print(f"FAILED: {e}")
         return False
     print("OK")
 
@@ -852,22 +852,22 @@ def transmit_via_libresdr(iq: np.ndarray, uri: str, center_freq_hz: int,
     sdr.tx_lo = int(center_freq_hz)
     sdr.tx_hardwaregain_chan0 = float(tx_gain_db)
 
-    # Limite buffer hardware AD9363 via rete (Ethernet IIO):
-    # buffers > ~2^20 campioni causano BrokenPipe sulla pipeline DMA.
-    # Per la ciclica usiamo un multiplo intero di slot (281 simboli × SPS),
-    # max 2^20 campioni ≈ 1 s a 1 MSPS. Questo garantisce che il burst
-    # Iridium (periodo 90 ms = 90000 campioni) sia rappresentato intero almeno
-    # una volta nel ciclo hardware.
-    HW_BUF_MAX = 2**20   # 1.048.576 campioni ≈ 1.05 s @ 1 MSPS
+    # AD9363 hardware buffer limit via network (Ethernet IIO):
+    # buffers > ~2^20 samples cause BrokenPipe on the DMA pipeline.
+    # For cyclic mode we use an integer multiple of slots (281 symbols × SPS),
+    # max 2^20 samples ≈ 1 s at 1 MSPS. This ensures the Iridium burst
+    # (period 90 ms = 90000 samples) is fully represented at least once
+    # per hardware cycle.
+    HW_BUF_MAX = 2**20   # 1,048,576 samples ≈ 1.05 s @ 1 MSPS
 
     if cyclic:
         # Trim to nearest superframe multiple below HW_BUF_MAX
-        slot_samples_hw = int(SUPERFRAME_S * TX_RATE)   # 90000 campioni
+        slot_samples_hw = int(SUPERFRAME_S * TX_RATE)   # 90000 samples
         n_slots_fit = max(1, HW_BUF_MAX // slot_samples_hw)
         cyclic_len = n_slots_fit * slot_samples_hw
         cyclic_iq = tx_iq[:cyclic_len].copy()
         cycle_ms = cyclic_len / TX_RATE * 1000
-        print(f"  Ciclo: {cyclic_len} campioni ({cycle_ms:.0f} ms, "
+        print(f"  Cycle: {cyclic_len} samples ({cycle_ms:.0f} ms, "
               f"{n_slots_fit} superframe) — ripetuto in loop")
     else:
         cyclic_iq = None
@@ -879,7 +879,7 @@ def transmit_via_libresdr(iq: np.ndarray, uri: str, center_freq_hz: int,
     if cyclic:
         sdr.tx_cyclic_buffer = True
         sdr.tx(cyclic_iq)
-        print("  Trasmissione ciclica attiva. Ctrl+C per fermare …")
+        print("  Cyclic transmission active. Ctrl+C to stop …")
         try:
             while True:
                 time.sleep(0.5)
@@ -910,79 +910,79 @@ def transmit_via_libresdr(iq: np.ndarray, uri: str, center_freq_hz: int,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Simulazione realistica downlink Iridium (IRA burst, π/4-DQPSK, LEO Doppler)",
+        description="Realistic Iridium downlink simulation (IRA bursts, π/4-DQPSK, LEO Doppler)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Esempi:
-  # Genera 30 secondi di passo, salva IQ e plot
+Examples:
+  # Generate 30 s pass, save IQ and plot
   python3 iridium_realistic_sim.py --pass-dur 30 --save iridium.iq
 
-  # Passo al 60° con elevazione, alto SNR, rilevamento burst
+  # 60° elevation pass, high SNR, burst detection
   python3 iridium_realistic_sim.py --elev 60 --snr 25 --detect
 
-  # Trasmetti in loop via LibreSDR su 100 MHz (freq. test sicura)
+  # Transmit in loop via LibreSDR at 100 MHz (safe test frequency)
   python3 iridium_realistic_sim.py --tx-freq 100e6 --tx-gain -55 --cyclic
 
-  # Disabilita TX (solo simulazione IQ)
+  # Disable TX (IQ simulation only)
   python3 iridium_realistic_sim.py --no-tx --no-save --no-plot --pass-dur 60
 """
     )
     parser.add_argument("--pass-dur",  type=float, default=60.0,
-                        metavar="SECONDI",
-                        help="Durata totale della simulazione [s] (default: 60)")
+                        metavar="SECONDS",
+                        help="Total simulation duration [s] (default: 60)")
     parser.add_argument("--elev",      type=float, default=45.0,
-                        metavar="GRADI",
-                        help="Elevazione massima del passo [°] (default: 45). "
-                             "90° = pass al zenith; 10° = pass basso sull'orizzonte")
+                        metavar="DEGREES",
+                        help="Maximum pass elevation [°] (default: 45). "
+                             "90° = overhead pass; 10° = low horizon pass")
     parser.add_argument("--snr",       type=float, default=15.0,
                         metavar="dB",
-                        help="SNR del canale AWGN [dB] (default: 15). "
-                             "Usa 100 per segnale ideale senza rumore")
+                        help="AWGN channel SNR [dB] (default: 15). "
+                             "Use 100 for ideal signal without noise")
     parser.add_argument("--carrier",   type=float, default=float(IRDM_RING_ALERT_HZ),
                         metavar="HZ",
-                        help=f"Frequenza portante simulata [Hz] "
+                        help=f"Simulated carrier frequency [Hz] "
                              f"(default: {IRDM_RING_ALERT_HZ} Hz = Iridium Ring Alert)")
     parser.add_argument("--sat-id",    type=int, default=47,
                         metavar="ID",
-                        help="ID satellite Iridium simulato (0-127, default: 47)")
+                        help="Simulated Iridium satellite ID (0-127, default: 47)")
     parser.add_argument("--beam-id",   type=int, default=3,
                         metavar="ID",
-                        help="ID spot beam (0-47, default: 3)")
+                        help="Spot beam ID (0-47, default: 3)")
     parser.add_argument("--save",      type=str, default=None,
                         metavar="FILE.IQ",
-                        help="Salva campioni IQ come complex64 (default: iridium_pass.iq)")
+                        help="Save IQ samples as complex64 (default: iridium_pass.iq)")
     parser.add_argument("--no-save",   action="store_true",
-                        help="Non salvare il file IQ")
+                        help="Skip saving the IQ file")
     parser.add_argument("--save-plot", type=str, default=None,
                         metavar="FILE.PNG",
-                        help="Percorso PNG del plot (default: iridium_realistic_plot.png)")
+                        help="PNG plot output path (default: iridium_realistic_plot.png)")
     parser.add_argument("--no-plot",   action="store_true",
-                        help="Non generare il plot")
+                        help="Skip plot generation")
     parser.add_argument("--detect",    action="store_true",
-                        help="Esegui il correlatore preamble (lento: scansiona Doppler)")
+                        help="Run preamble correlator (slow: scans Doppler)")
     parser.add_argument("--no-tx",     action="store_true",
-                        help="Disabilita TX via LibreSDR (default: TX sempre attivo)")
+                        help="Disable TX via LibreSDR (default: TX always active)")
     parser.add_argument("--tx-uri",    type=str, default="ip:192.168.1.10",
                         metavar="URI",
                         help="URI IIO del LibreSDR (default: ip:192.168.1.10)")
     parser.add_argument("--tx-freq",   type=float, default=float(IRDM_RING_ALERT_HZ),
                         metavar="HZ",
-                        help=f"Frequenza portante TX per LibreSDR [Hz] "
+                        help=f"LibreSDR TX carrier frequency [Hz] "
                              f"(default: {IRDM_RING_ALERT_HZ} Hz = Iridium Ring Alert)")
     parser.add_argument("--tx-gain",   type=float, default=-60.0,
                         metavar="dB",
-                        help="Gain TX in dB, range −90…0  (default: −60)")
+                        help="TX gain in dB, range −90…0  (default: −60)")
     parser.add_argument("--cyclic",    action="store_true",
-                        help="Trasmissione TX ciclica fino a Ctrl+C")
+                        help="Cyclic TX transmission until Ctrl+C")
     args = parser.parse_args()
 
     print("=" * 68)
-    print("  Simulazione Downlink Iridium — Satellite Singolo")
+    print("  Iridium Downlink Simulation — Single Satellite")
     print("=" * 68)
-    print(f"  Durata passo:      {args.pass_dur:.0f} s")
-    print(f"  Elev. massima:     {args.elev:.0f}°")
-    print(f"  SNR canale:        {args.snr:.0f} dB")
-    print(f"  Portante simul.:   {args.carrier/1e6:.4f} MHz")
+    print(f"  Pass duration:     {args.pass_dur:.0f} s")
+    print(f"  Max elevation:     {args.elev:.0f}°")
+    print(f"  Channel SNR:       {args.snr:.0f} dB")
+    print(f"  Simul. carrier:    {args.carrier/1e6:.4f} MHz")
     print(f"  SAT_ID/BEAM_ID:    {args.sat_id}/{args.beam_id}")
     print()
     print(f"  Modulazione:       π/4-DQPSK")
@@ -990,22 +990,22 @@ Esempi:
     print(f"  Sample rate sim.:  {SAMPLE_RATE/1e3:.0f} ksps  ({SPS} sps)")
     print(f"  RRC β:             {RRC_BETA}")
     print(f"  Superframe:        {SUPERFRAME_S*1000:.0f} ms  "
-          f"({SLOTS_PER_FRAME} slot/frame, {SLOT_SYMS} sim/slot)")
-    print(f"  Struttura burst:   "
+          f"({SLOTS_PER_FRAME} slots/frame, {SLOT_SYMS} sym/slot)")
+    print(f"  Burst structure:   "
           f"guard({IRA_GUARD_SYMS}) + preamble({IRA_PREAMBLE_SYMS}) + "
           f"UW({IRA_UW_SYMS} BPSK) + data({IRA_DATA_SYMS}+{IRA_TAIL_SYMS} conv K=7) + "
           f"guard({IRA_POST_GUARD}) + silence({IRA_SLOT_SILENCE})")
-    print(f"  Tono preamble:     +{SYMBOL_RATE//8} Hz dal carrier "
-          f"(= Rs/8 = costante +π/4/simbolo)")
+    print(f"  Preamble tone:     +{SYMBOL_RATE//8} Hz from carrier "
+          f"(= Rs/8 = constant +π/4/symbol)")
     n_bursts_expected = int(args.pass_dur / SUPERFRAME_S)
     n_samples_total   = int(args.pass_dur * SAMPLE_RATE)
-    size_mb = n_samples_total * 8 / 1e6   # complex64 = 8 byte
-    print(f"  Burst generati:    {n_bursts_expected}")
-    print(f"  Campioni totali:   {n_samples_total/1e6:.2f} M  ({size_mb:.1f} MB)")
+    size_mb = n_samples_total * 8 / 1e6   # complex64 = 8 bytes
+    print(f"  Bursts generated:  {n_bursts_expected}")
+    print(f"  Total samples:     {n_samples_total/1e6:.2f} M  ({size_mb:.1f} MB)")
     print()
 
-    # ── Simulazione passo ──────────────────────────────────────────────────
-    print("  Generazione IQ del passo …", end=" ", flush=True)
+    # ── Pass simulation ────────────────────────────────────────────────────
+    print("  Generating pass IQ …", end=" ", flush=True)
     t0 = time.time()
     iq, burst_log, doppler, rrc = simulate_iridium_pass(
         duration_s  = args.pass_dur,
@@ -1016,19 +1016,19 @@ Esempi:
         beam_id     = args.beam_id,
     )
     elapsed = time.time() - t0
-    print(f"fatto in {elapsed:.1f}s  →  {len(iq)/1e6:.2f} M campioni")
+    print(f"done in {elapsed:.1f}s  →  {len(iq)/1e6:.2f} M samples")
 
-    # Stampa statistiche burst
+    # Print burst statistics
     if burst_log:
         d_vals = [b["doppler_hz"] for b in burst_log]
         e_vals = [b["elevation_deg"] for b in burst_log]
-        print(f"\n  Burst log ({len(burst_log)} burst):")
+        print(f"\n  Burst log ({len(burst_log)} bursts):")
         print(f"    Doppler range:     {min(d_vals)/1e3:+.1f} … {max(d_vals)/1e3:+.1f} kHz")
-        print(f"    Elevazione range:  {min(e_vals):.1f}° … {max(e_vals):.1f}°")
+        print(f"    Elevation range:   {min(e_vals):.1f}° … {max(e_vals):.1f}°")
         print(f"    Closest approach:  t={doppler.t_ca:.1f}s  "
               f"(Δf=0 Hz, elev={doppler.E_max*180/np.pi:.0f}°)")
         print(f"    Doppler max:       ±{doppler.doppler_at_t(-1e6)/1e3:.1f} kHz")
-        # Mostra i primi 5 e ultimi 5
+        # Show first 5 and last 5
         print()
         print("    idx | t_center [s] | Elev [°] | Doppler [kHz]")
         print("    " + "─" * 46)
@@ -1043,41 +1043,41 @@ Esempi:
             print(f"    {b['slot_idx']:<5}  {b['t_center_s']:<12.2f}  "
                   f"{b['elevation_deg']:<8.1f}  {b['doppler_hz']/1e3:+.2f}")
 
-    # ── Correlatore preamble (opzionale, lento) ────────────────────────────
+    # ── Preamble correlator (optional, slow) ──────────────────────────────
     detections = []
     if args.detect:
-        print(f"\n  Rilevamento preamble (correlatore):")
+        print(f"\n  Preamble detection (correlator):")
         # Analyse only the first 10 seconds for speed
         seg_len = min(len(iq), int(10.0 * SAMPLE_RATE))
         detections = detect_preamble(iq[:seg_len], rrc,
                                       doppler_search_hz=45_000,
                                       doppler_step_hz=1000)
-        print(f"  → {len(detections)} burst rilevati nei primi 10 s")
+        print(f"  → {len(detections)} bursts detected in the first 10 s")
         for d in detections[:6]:
             print(f"     t={d['t_s']:.3f}s  Δf={d['doppler_hz']/1e3:+.1f} kHz  "
                   f"corr_peak={d['corr_peak']:.2f}")
 
-    # ── Salva file IQ ──────────────────────────────────────────────────────
+    # ── Save IQ file ──────────────────────────────────────────────────────
     if not args.no_save:
         out_iq = args.save if args.save else "iridium_pass.iq"
         iq.astype(np.complex64).tofile(out_iq)
-        print(f"\n  File IQ salvato: {out_iq}")
-        print(f"    Campioni:    {len(iq)}  |  SR: {SAMPLE_RATE} Hz")
-        print(f"    Formato:     complex64 (I float32 + Q float32 interleaved)")
+        print(f"\n  IQ file saved: {out_iq}")
+        print(f"    Samples:     {len(iq)}  |  SR: {SAMPLE_RATE} Hz")
+        print(f"    Format:      complex64 (I float32 + Q float32 interleaved)")
         print(f"    Lettura:     np.fromfile('{out_iq}', dtype=np.complex64)")
         print(f"    gr-iridium:  iridium-extractor -c {int(args.carrier)} "
               f"-r {SAMPLE_RATE} -f float {out_iq}")
 
-    # ── Plot ───────────────────────────────────────────────────────────────
+    # ── Plot ──────────────────────────────────────────────────────────────
     if not args.no_plot:
-        print("\n  Generazione plot …", end=" ", flush=True)
+        print("\n  Generating plot …", end=" ", flush=True)
         plot_analysis(iq, burst_log, doppler, detections,
                       save_path=args.save_plot)
         print("OK")
 
-    # ── Trasmissione via LibreSDR ──────────────────────────────────────────
+    # ── Transmission via LibreSDR ─────────────────────────────────────────
     if not args.no_tx:
-        print(f"\n  Trasmissione via LibreSDR ({args.tx_uri})")
+        print(f"\n  Transmitting via LibreSDR ({args.tx_uri})")
         print(f"  FREQ: {args.tx_freq/1e6:.4f} MHz  |  GAIN: {args.tx_gain:+.0f} dB")
         transmit_via_libresdr(
             iq             = iq,
@@ -1087,7 +1087,7 @@ Esempi:
             cyclic         = args.cyclic,
         )
 
-    print("\nFatto!")
+    print("\nDone!")
 
 
 if __name__ == "__main__":
