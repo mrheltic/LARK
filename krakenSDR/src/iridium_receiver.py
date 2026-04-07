@@ -62,7 +62,7 @@ if _HERE not in sys.path:
 import numpy as np
 
 import config as C
-from kraken_iq_source import KrakenIQSource
+from hardware.kraken_iq_source import KrakenIQSource
 from core.burst_pipeline import BurstPipeline
 
 # ═══════════════════════════════════════════════════════════════════════════════

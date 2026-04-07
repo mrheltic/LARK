@@ -31,7 +31,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import config as C
-from doa_algorithms import (
+from core.doa_algorithms import (
     ArrayConfig, Geometry,
     doa_music, doa_root_music, doa_capon, doa_ml, doa_esprit,
     apply_phase_correction,

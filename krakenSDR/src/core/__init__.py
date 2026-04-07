@@ -12,7 +12,7 @@ from __future__ import annotations
 # Re-export everything from the existing monolithic module so callers that
 # already do `from doa_algorithms import ...` keep working, while new code can
 # use the sub-package path `from core import ...`.
-from doa_algorithms import (   # noqa: F401
+from .doa_algorithms import (   # noqa: F401
     ArrayConfig,
     Geometry,
     steering,
@@ -38,4 +38,4 @@ from doa_algorithms import (   # noqa: F401
     coherence_matrix,
 )
 
-from core.burst import BurstDetector, BurstResult, PassTracker  # noqa: F401
+from .burst import BurstDetector, BurstResult, PassTracker  # noqa: F401

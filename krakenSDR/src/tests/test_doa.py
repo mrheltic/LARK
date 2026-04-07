@@ -24,13 +24,13 @@ import os
 import sys
 import time
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
+_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import numpy as np
 
-from doa_algorithms import (
+from core.doa_algorithms import (
     ArrayConfig,
     Geometry,
     steering,

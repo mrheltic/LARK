@@ -68,8 +68,8 @@ import matplotlib.gridspec as gridspec
 from matplotlib.widgets import Button
 
 import config as C
-from kraken_iq_source import KrakenIQSource
-from doa_algorithms import (
+from hardware.kraken_iq_source import KrakenIQSource
+from core.doa_algorithms import (
     ArrayConfig, Geometry,
     doa_music, doa_root_music, doa_capon, doa_ml, doa_esprit,
     apply_phase_correction,

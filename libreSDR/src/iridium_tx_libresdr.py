@@ -31,7 +31,7 @@ from scipy import signal as sp_signal
 
 # Import burst generator from the same scripts/ package
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from iridium_burst_gen import (
+from iridium.burst_gen import (
     generate_tdma_frame,
     SAMPLE_RATE as BURST_SAMPLE_RATE,   # 200 kHz
     SYMBOL_RATE,

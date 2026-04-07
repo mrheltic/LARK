@@ -73,7 +73,7 @@ import matplotlib.colors as mcolors
 import matplotlib.gridspec as gridspec
 
 import config as C
-from kraken_iq_source import KrakenIQSource
+from hardware.kraken_iq_source import KrakenIQSource
 from core.burst import (
     BurstDetector, PassTracker,
     IRD_CHANS, MAX_DOP_HZ, TDMA_FRAME_S,

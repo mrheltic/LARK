@@ -25,16 +25,16 @@ import subprocess
 import signal
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gps_engine import (
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from gnss.gps_engine import (
     generate_gps_baseband, generate_ca_code,
     CA_CODE_RATE, CA_CODE_LEN, CODE_PERIOD_S,
     NAV_BIT_RATE, encode_nav_frame, nav_bits_to_bipolar,
 )
 
 try:
-    from gnss_decoder import find_gnss_sdr, generate_temp_config
-    from gnss_monitor import GnssSdrMonitor
+    from gnss.gnss_decoder import find_gnss_sdr, generate_temp_config
+    from gnss.gnss_monitor import GnssSdrMonitor
     HAS_GNSS_SDR = True
 except ImportError:
     HAS_GNSS_SDR = False

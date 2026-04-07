@@ -35,7 +35,7 @@
             "label": "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
             "detail": "Auto-detects firmware path, copies Iridium config, installs sudoers if needed, then runs daq_start_sm.sh as root.",
             "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} bash ${workspaceFolder}/krakenSDR/src/start_heimdall.sh",
+            "command": "LARK_ROOT=${workspaceFolder} bash ${workspaceFolder}/krakenSDR/src/scripts/start_heimdall.sh",
             "options": { "cwd": "${workspaceFolder}" },
             "isBackground": true,
             "presentation": {
@@ -56,7 +56,7 @@
             "label": "Heimdall: Start — synthetic (no hardware)",
             "detail": "Auto-detects firmware path, installs sudoers if needed, then runs daq_synthetic_start.sh as root.",
             "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} bash ${workspaceFolder}/krakenSDR/src/start_heimdall.sh --synthetic",
+            "command": "LARK_ROOT=${workspaceFolder} bash ${workspaceFolder}/krakenSDR/src/scripts/start_heimdall.sh --synthetic",
             "options": { "cwd": "${workspaceFolder}" },
             "isBackground": true,
             "presentation": {
@@ -133,7 +133,7 @@
             "label": "KrakenSDR: Run test suite",
             "detail": "Unit tests for DoA algorithms (MUSIC, ESPRIT, Capon, ML). No hardware needed.",
             "type": "shell",
-            "command": "python3 -m pytest test_doa.py -v --tb=short",
+            "command": "python3 -m pytest tests/test_doa.py -v --tb=short",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
             "group": { "kind": "test", "isDefault": true },
             "presentation": {

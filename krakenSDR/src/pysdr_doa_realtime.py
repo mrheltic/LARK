@@ -97,7 +97,7 @@ def snipfcn_realtime_doa_snippet(self):
     import matplotlib.gridspec as _gridspec
     from matplotlib.widgets import Button as _Button
 
-    from doa_algorithms import (
+    from core.doa_algorithms import (
         ArrayConfig as _ArrayConfig, Geometry as _Geometry,
         doa_music as _doa_music, doa_root_music as _doa_root_music,
         doa_capon as _doa_capon, doa_ml as _doa_ml, doa_esprit as _doa_esprit,
@@ -110,7 +110,7 @@ def snipfcn_realtime_doa_snippet(self):
         coherence_matrix as _coh_mat,
         CovarianceAccumulator as _CovAcc,
     )
-    from kraken_iq_source import KrakenIQSource as _KrakenIQSource
+    from hardware.kraken_iq_source import KrakenIQSource as _KrakenIQSource
 
     # ── Colour palette ─────────────────────────────────────────────────────
     BG       = "#1a1d27"; BG2 = "#21253a"; BG3 = "#2a2f47"
