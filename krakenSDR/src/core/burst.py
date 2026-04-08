@@ -118,6 +118,15 @@ class BurstDetector:
         self._noise_mask = np.abs(self.burst_freqs_hz) >  max_dop_hz * 2.5
         if not np.any(self._noise_mask):
             self._noise_mask = ~self._sig_mask
+        # Last-resort fallback: when fs < 2*max_dop_hz (e.g. narrow-band
+        # recordings) the whole spectrum falls inside the signal window and
+        # _noise_mask stays empty.  Use the outer 10 % of the available band
+        # as a noise reference so the computation never returns nan.
+        if not np.any(self._noise_mask):
+            boundary = np.abs(self.burst_freqs_hz) >= fs * 0.45
+            self._noise_mask = boundary
+        if not np.any(self._noise_mask):   # absolute last resort
+            self._noise_mask = np.ones(len(self.burst_freqs_hz), dtype=bool)
 
         # ── Pilot tone mask (absolute offset; Doppler-corrected at runtime) ──
         # Pre-compute a half-bandwidth mask relative to zero; at runtime we

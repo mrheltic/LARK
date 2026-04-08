@@ -159,6 +159,13 @@ def main() -> None:
           f"power>={BURST_PWR} dBW")
     print(f"[OFF] frame_size={FRAME_SIZE:,}  input_fs={int(_FS):,} Hz  "
           f"BURST_N={_detector.burst_n}")
+    if _FS < 200_000:
+        print(f"[OFF] *** WARNING: sample rate {_FS/1e3:.0f} kHz is too LOW for "
+              f"reliable Iridium burst detection (Iridium bursts are ~27 kHz wide).")
+        print(f"[OFF] ***   Need >= 200 kHz; ideally 1-2 MS/s baseband IQ.")
+        print(f"[OFF] ***   In SDR++: Recorder tab -> Baseband (NOT Radio), "
+              f"WAV, Int16, sample rate 2.048 MS/s.")
+        print(f"[OFF] ***   Noise floor estimate uses inner-band; expect no detections.")
     if LOOP_MODE:
         print("[OFF] Loop mode ON")
 
@@ -423,7 +430,7 @@ def main() -> None:
         _S.t_last = now
         _txt_fps.set_text(f"{_S.fps:.1f} fps")
 
-        if not _S.scrubbing:
+        if not _S.scrubbing and plt.fignum_exists(_fig.number):
             _slider.eventson = False
             _slider.set_val(_file_src.elapsed_s)
             _slider.eventson = True
@@ -553,6 +560,11 @@ def main() -> None:
 
     # ── Close handler ─────────────────────────────────────────────────────────────
     def _on_close(_evt) -> None:
+        _S.done = True                      # stop _update() callbacks immediately
+        try:
+            _ani.event_source.stop()        # cancel the animation timer
+        except Exception:
+            pass
         _file_src.stop()
         if _raw_file:
             _raw_file.close()
