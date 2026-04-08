@@ -155,7 +155,7 @@ class _SyncSearch:
     # ------------------------------------------------------------------
     def estimate_start(
         self, signal: np.ndarray, direction: int
-    ) -> Tuple[int, float]:
+    ) -> Tuple[int, float, float]:
         """
         Cross-correlate *signal* with the matched filter kernel for *direction*.
 
@@ -165,18 +165,20 @@ class _SyncSearch:
             Estimated start sample of the unique word (after preamble).
         confidence : float
             Correlation peak amplitude (higher = more confident).
+        phase_rad : float
+            Phase angle of the correlation peak in radians.  Use to correct
+            the 4-fold DQPSK phase ambiguity before demodulation.
         """
         kernel = self._kernels[direction]
         c      = scipy.signal.fftconvolve(signal, kernel, "same")
         mid    = int(np.argmax(np.abs(c)))
-        conf   = float(np.abs(c[mid]))
+        conf      = float(np.abs(c[mid]))
+        phase_rad = float(np.angle(c[mid]))
 
-        # In 'same' mode the cross-correlation peak 'mid' sits at the UW start
-        # (the template is centred on preamble+UW, preamble_len*sps == L//2).
-        # No additional offset is needed; 'oldsym=0' in _dqpsk_demod is valid
-        # because the all-zero preamble always ends at absolute phase 0°.
-        start = mid
-        return max(0, start), conf
+        # Mirror the +2*sps compensation in the original ComplexSyncSearch
+        # estimate_sync_word_start() that aligns the argmax to the UW start.
+        start = mid + 2 * self._sps
+        return max(0, start), conf, phase_rad
 
 
 # ---------------------------------------------------------------------------
@@ -283,10 +285,21 @@ class IridiumDemod:
         y = scipy.signal.fftconvolve(y, self._rrc, "same")
 
         # 6. Sync word search (both directions; pick best confidence) -----------
-        start_dl, conf_dl = self._sync.estimate_start(y, DOWNLINK)
-        start_ul, conf_ul = self._sync.estimate_start(y, UPLINK)
+        start_dl, conf_dl, phase_dl = self._sync.estimate_start(y, DOWNLINK)
+        start_ul, conf_ul, phase_ul = self._sync.estimate_start(y, UPLINK)
 
-        sync_start = start_dl if conf_dl >= conf_ul else start_ul
+        if conf_dl >= conf_ul:
+            sync_start = start_dl
+            phase_corr = phase_dl
+        else:
+            sync_start = start_ul
+            phase_corr = phase_ul
+
+        # Apply phase correction: rotate signal so preamble aligns with the
+        # template reference phase (+1+1j at 45°), resolving the 4-fold
+        # DQPSK carrier phase ambiguity and enabling the UW check to pass.
+        n_corr = np.arange(len(y), dtype=np.float64)
+        y = y * np.exp(-1j * phase_corr)
 
         # 7. DQPSK demodulate ---------------------------------------------------
         result = _dqpsk_demod(y, sync_start, self._sps)
