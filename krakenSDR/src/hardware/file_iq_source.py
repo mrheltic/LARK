@@ -141,6 +141,15 @@ class FileIQSource:
 
         if len(chunk) == 0:
             return None
+
+        # Convert int16 SC16 WAV slice to complex64 on-the-fly (per-frame, not full file)
+        if chunk.ndim == 2:
+            I = chunk[:, 0].astype(np.float32) * _WAV_SCALE
+            Q = chunk[:, 1].astype(np.float32) * _WAV_SCALE
+            chunk = np.empty(len(I), dtype=np.complex64)
+            chunk.real[:] = I
+            chunk.imag[:] = Q
+
         if len(chunk) < self._frame_size:
             pad   = np.zeros(self._frame_size - len(chunk), dtype=np.complex64)
             chunk = np.concatenate([chunk, pad])
@@ -233,9 +242,10 @@ class FileIQSource:
                 f"{self._path.name}: WAV has 1 channel; expected 2-ch SC16 (I/Q)")
         if data.shape[1] < 2:
             raise ValueError(f"{self._path.name}: WAV shape {data.shape!r} invalid")
-        I = data[:, 0].astype(np.float32) * _WAV_SCALE
-        Q = data[:, 1].astype(np.float32) * _WAV_SCALE
-        return (I + 1j * Q).astype(np.complex64), float(rate)
+        # Keep the int16 memory-map as-is: avoids full-file conversion to complex64
+        # which would require ~17 GB peak RAM for large files.
+        # Conversion to complex64 happens per-frame in get_frame().
+        return data, float(rate)
 
     def _load_cf32(self) -> tuple[np.ndarray, float]:
         if self._user_rate is None:
