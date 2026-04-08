@@ -41,10 +41,12 @@ import cmath
 import itertools
 import math
 import re
+from dataclasses import dataclass, field
 from math import gcd
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
+
 import scipy.signal
 
 # ---------------------------------------------------------------------------
@@ -59,6 +61,36 @@ UPLINK:             int = 1
 UW_DOWNLINK = "022220002002"
 UW_UPLINK   = "220002002022"
 _LEAD_OUT   = "100101111010110110110011001111"
+
+PREAMBLE_LENGTH: int = 16   # symbols before UW in sync template
+
+
+# ---------------------------------------------------------------------------
+# Debug/visualization output dataclass
+# ---------------------------------------------------------------------------
+@dataclass
+class DemodDebug:
+    """Rich output from :meth:`IridiumDemod.demod_full` for visualization."""
+    raw_line:      Optional[str]            # RAW: line or None
+    iq_1m:         np.ndarray              # phase-corrected 1 Msps signal (complex128)
+    sync_start:    int                     # sample index of UW start in iq_1m
+    sym_indices:   List[int]              # sample index of each symbol decision
+    symbol_samps:  np.ndarray              # IQ at decision points (complex128)
+    symbols:       List[int]              # raw QPSK decisions (0-3)
+    dataarray:     List[int]              # decoded bits (0/1)
+    data_str:      str                    # formatted bit string
+    access_ok:     bool
+    lead_out_ok:   bool
+    confidence:    float
+    level:         float
+    nsymbols:      int
+    direction:     int                    # DOWNLINK or UPLINK
+    sps:           int = 40              # samples per symbol at 1 Msps
+    doppler_hz:    float = 0.0
+    snr_db:        float = 0.0
+    timestamp_ms:  float = 0.0
+    center_freq_hz: float = 1_626_270_000.0
+    filename:      str = "kraken"
 
 # QPSK constellation reference symbols (±1±1j)
 _S1 = complex(-1, -1)   # "1"
@@ -306,7 +338,7 @@ class IridiumDemod:
         if result is None:
             return None
 
-        dataarray, data_str, access_ok, lead_out_ok, confidence, level, nsymbols = result
+        dataarray, data_str, access_ok, lead_out_ok, confidence, level, nsymbols, _, _ = result
 
         # 8. Assemble RAW: line -------------------------------------------------
         freq_hz  = int(round(center_freq_hz + doppler_hz))
@@ -321,6 +353,104 @@ class IridiumDemod:
             f"{data_str}"
         )
         return raw_line
+
+    # ------------------------------------------------------------------
+    def demod_full(
+        self,
+        x:              np.ndarray,
+        doppler_hz:     float,
+        timestamp_ms:   float = 0.0,
+        center_freq_hz: float = 1_626_270_000.0,
+        filename:       str   = "kraken",
+        snr_db:         float = 0.0,
+    ) -> Optional["DemodDebug"]:
+        """
+        Like :meth:`demod` but returns a :class:`DemodDebug` with all
+        intermediate signals for visualization in ``iridium_anatomy.py``.
+        Returns ``None`` if the burst is too short or sync fails.
+        """
+        # 1. Resample ----------------------------------------------------------
+        if self._up != self._dn:
+            y = scipy.signal.resample_poly(x, self._up, self._dn).astype(np.complex128)
+        else:
+            y = np.asarray(x, dtype=np.complex128)
+        fs = float(self._OUT_FS)
+
+        # 2. Downmix -----------------------------------------------------------
+        n = np.arange(len(y), dtype=np.float64)
+        y = y * np.exp(-1j * 2.0 * math.pi * doppler_hz / fs * n)
+
+        # 3. Channel LPF -------------------------------------------------------
+        y = scipy.signal.fftconvolve(y, self._lpf, "same")
+
+        # 4. Signal start ------------------------------------------------------
+        sig_start = _find_signal_start(y)
+        sig_start = max(0, sig_start - self._lead_in)
+        y = y[sig_start:]
+        if len(y) < (UW_LENGTH + 100) * self._sps:
+            return None
+
+        # 5. RRC ---------------------------------------------------------------
+        y = scipy.signal.fftconvolve(y, self._rrc, "same")
+
+        # 6. Sync word search --------------------------------------------------
+        start_dl, conf_dl, phase_dl = self._sync.estimate_start(y, DOWNLINK)
+        start_ul, conf_ul, phase_ul = self._sync.estimate_start(y, UPLINK)
+        if conf_dl >= conf_ul:
+            sync_start = start_dl
+            phase_corr = phase_dl
+            direction  = DOWNLINK
+        else:
+            sync_start = start_ul
+            phase_corr = phase_ul
+            direction  = UPLINK
+
+        # 7. Phase correction --------------------------------------------------
+        y = y * np.exp(-1j * phase_corr)
+
+        # 8. DQPSK demod -------------------------------------------------------
+        result = _dqpsk_demod(y, sync_start, self._sps)
+        if result is None:
+            return None
+        dataarray, data_str, access_ok, lead_out_ok, confidence, level, nsymbols, sym_indices, symbols = result
+
+        symbol_samps = np.array(
+            [y[i] for i in sym_indices if i < len(y)], dtype=np.complex128
+        )
+
+        freq_hz = int(round(center_freq_hz + doppler_hz))
+        uid     = next(_burst_counter)
+        n_data  = max(0, nsymbols - UW_LENGTH)
+        raw_line = (
+            f"RAW: {filename} {timestamp_ms:012.4f} {freq_hz:10d} "
+            f"A:{'OK' if access_ok else 'no'} "
+            f"I:{uid:011d} "
+            f"{confidence:3.0f}% {level:.5f} {n_data:3d} "
+            f"{data_str}"
+        )
+
+        return DemodDebug(
+            raw_line      = raw_line,
+            iq_1m         = y,
+            sync_start    = sync_start,
+            sym_indices   = sym_indices,
+            symbol_samps  = symbol_samps,
+            symbols       = symbols,
+            dataarray     = dataarray,
+            data_str      = data_str,
+            access_ok     = access_ok,
+            lead_out_ok   = lead_out_ok,
+            confidence    = confidence,
+            level         = level,
+            nsymbols      = nsymbols,
+            direction     = direction,
+            sps           = self._sps,
+            doppler_hz    = doppler_hz,
+            snr_db        = snr_db,
+            timestamp_ms  = timestamp_ms,
+            center_freq_hz= center_freq_hz,
+            filename      = filename,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -400,8 +530,9 @@ def _dqpsk_demod(
     if level < 1e-15 or lmax < 1e-15:
         return None
 
-    errors:  int       = 0
-    symbols: list[int] = []
+    errors:     int       = 0
+    symbols:    list[int] = []
+    sym_indices: list[int] = []
     i      = start
     phase  = 0.0
 
@@ -456,6 +587,7 @@ def _dqpsk_demod(
         if abs(offset) > 22.0:
             errors += 1
 
+        sym_indices.append(i)
         symbols.append(sym)
         i += sps
 
@@ -504,4 +636,4 @@ def _dqpsk_demod(
     # Insert a space every 32 bits for readability
     data = re.sub(r"([01]{32})", r"\1 ", data)
 
-    return (dataarray, data, access_ok, lead_out_ok, confidence, level, nsymbols)
+    return (dataarray, data, access_ok, lead_out_ok, confidence, level, nsymbols, sym_indices, symbols)
