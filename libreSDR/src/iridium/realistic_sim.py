@@ -627,7 +627,7 @@ def detect_preamble(iq: np.ndarray, rrc: np.ndarray,
     freqs = np.arange(-doppler_search_hz, doppler_search_hz + doppler_step_hz,
                       doppler_step_hz)
 
-    print(f"  [Detector] Doppler scan: {len(freqs)} offsets "
+    print(f"  [Detector] Scansione Doppler: {len(freqs)} offset "
           f"({-doppler_search_hz/1e3:.0f}…+{doppler_search_hz/1e3:.0f} kHz, "
           f"passo {doppler_step_hz:.0f} Hz) …", end=" ", flush=True)
     t0 = time.time()
@@ -736,7 +736,7 @@ def plot_analysis(iq: np.ndarray, burst_log: list, doppler_model: IridiumLEODopp
     elev_traj    = [doppler_model.elevation_deg(t) for t in t_pass]
     ax.plot(t_pass, doppler_traj, "b-", linewidth=1.5, label="Doppler (kHz)")
     ax2 = ax.twinx()
-    ax2.plot(t_pass, elev_traj, "r--", linewidth=1.0, alpha=0.6, label="Elevation (°)")
+    ax2.plot(t_pass, elev_traj, "r--", linewidth=1.0, alpha=0.6, label="Elevazione (°)")
     ax2.set_ylabel("Elevation (°)", color="red", alpha=0.7)
     ax2.tick_params(axis="y", labelcolor="red")
     # Overlay measured Doppler for each burst
@@ -780,7 +780,7 @@ def plot_analysis(iq: np.ndarray, burst_log: list, doppler_model: IridiumLEODopp
     if burst_log:
         t_b = [b["t_center_s"] for b in burst_log]
         d_b = [b["doppler_hz"] / 1000 for b in burst_log]
-        ax.scatter(t_b, d_b, s=20, c="steelblue", alpha=0.7, label="Generated bursts",
+        ax.scatter(t_b, d_b, s=20, c="steelblue", alpha=0.7, label="Burst generati",
                    zorder=3)
     if detections:
         t_d  = [d["t_s"] for d in detections]
@@ -867,7 +867,7 @@ def transmit_via_libresdr(iq: np.ndarray, uri: str, center_freq_hz: int,
         cyclic_len = n_slots_fit * slot_samples_hw
         cyclic_iq = tx_iq[:cyclic_len].copy()
         cycle_ms = cyclic_len / TX_RATE * 1000
-        print(f"  Cycle: {cyclic_len} samples ({cycle_ms:.0f} ms, "
+        print(f"  Ciclo: {cyclic_len} campioni ({cycle_ms:.0f} ms, "
               f"{n_slots_fit} superframe) — ripetuto in loop")
     else:
         cyclic_iq = None

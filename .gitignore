@@ -53,6 +53,7 @@ captures/
 *.grc
 *.py.bak
 *.grc.bak
+*.wav
 
 # ── Heimdall / DAQ ────────────────────────────────────────────────────────────
 # Build artefacts produced by heimdall_daq_fw
