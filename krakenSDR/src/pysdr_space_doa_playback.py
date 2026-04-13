@@ -35,6 +35,7 @@ import json
 import os
 import sys
 import time
+import threading
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -494,14 +495,12 @@ def main() -> None:
         for bar, v in zip(bars_ph, coh_vals):
             bar.set_height(v / max_v)
 
-        # Slider + frame label
-        with _sld_lock:
-            sld_frame.set_val(i)
-        txt_frame.set_text(f"{i}/{N-1}")
+        # Slider + frame label (eventson=False prevents re-entrant _on_slider call)
+        sld_frame.eventson = False
+        sld_frame.set_val(i)
+        sld_frame.eventson = True
         ts_s = float(timestamps[i]) / 1000.0
         txt_frame.set_text(f"#{i}  t={ts_s:.1f}s")
-
-    _sld_lock = __import__("threading").Lock()
 
     # ── Animation ─────────────────────────────────────────────────────────────
     def _animate(_):

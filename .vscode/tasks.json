@@ -119,7 +119,7 @@
             "label": "KrakenSDR: Iridium — DoA L-band (multi-channel)",
             "detail": "DoA on Iridium bursts with MUSIC + Doppler tracking. Requires Heimdall active.",
             "type": "shell",
-            "command": "python3 pysdr_doa_iridium.py",
+            "command": "python3 run_doa.py",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
             "group": "test",
             "dependsOn": "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
@@ -201,8 +201,52 @@
                 "panel": "shared"
             },
             "problemMatcher": "$python"
-        }
-    ],
+        },
+
+        // ═══════════════════════════════════════════════════════════════════
+        // KRAKENSDR — 3D Space DoA (cross array 2D-MUSIC / 2D-Capon)
+        // ═══════════════════════════════════════════════════════════════════
+        {
+            "label": "KrakenSDR: Space DoA — Collect bursts",
+            "detail": "Opens config dialog, connects to Heimdall, gates Iridium bursts from all 5 antennas, saves .npz/.json for offline 3D DoA.",
+            "type": "shell",
+            "command": "python3 pysdr_space_collector.py",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "isBackground": true,
+            "dependsOn": "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": "$python"
+        },
+        {
+            "label": "KrakenSDR: Space DoA — Real-time (2D-MUSIC)",
+            "detail": "Real-time 3D DoA with sky plot + 8-panel display. Opens config dialog; supports BURST (Iridium gated) or CW mode. Requires Heimdall active.",
+            "type": "shell",
+            "command": "python3 pysdr_space_doa_realtime.py",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "isBackground": true,
+            "dependsOn": "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": "$python"
+        },
+        {
+            "label": "KrakenSDR: Space DoA — Playback (offline)",
+            "detail": "Opens a .npz capture from pysdr_space_collector or the realtime recorder and replays the full 2D DoA pipeline offline.",
+            "type": "shell",
+            "command": "python3 pysdr_space_doa_playback.py",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": "$python"
+        }    ],
 
     "inputs": [
         {
