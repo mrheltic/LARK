@@ -10,3 +10,18 @@
 # =============================================================================
 from config_hw  import *   # noqa: F401, F403
 from config_doa import *   # noqa: F401, F403
+
+# ── Profile override via LARK_PROFILE env var ─────────────────────────────────
+# Set the environment variable before launching any script to select a
+# pre-defined parameter set, e.g.:
+#
+#   LARK_PROFILE=ism_868       python3 apps/doa/doa_runner.py
+#   LARK_PROFILE=iridium_1626  python3 apps/iridium/iridium_live.py
+#
+# A --profile CLI flag on individual scripts overrides this at runtime.
+# =============================================================================
+import os as _os
+_lark_profile = _os.environ.get("LARK_PROFILE", "").strip()
+if _lark_profile:
+    from profiles import apply_profile as _apply_lark_profile
+    _apply_lark_profile(_lark_profile)

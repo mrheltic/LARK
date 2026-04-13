@@ -159,6 +159,43 @@ PROFILES: dict[str, dict] = {
         "SQUELCH_THRESHOLD_DB": -80.0,
         "PHASE_OFFSETS_DEG":   [0.0, 0.0, 0.0, 0.0, 0.0],
     },
+
+    # ── Iridium L-band (KrakenSDR 5-ant, 1626.270 MHz) ────────────────────────
+    # λ ≈ 18.44 cm at 1626 MHz.  If using the standard KrakenSDR 12.5 cm-radius
+    # ring the spacing/λ ≈ 0.68 — grating lobes possible; tune RADIUS_LAMBDA to
+    # your actual array radius in wavelengths.
+    "iridium_1626": {
+        "N_ANTENNAS":          5,
+        "GEOMETRY":            "UCA",
+        "RADIUS_LAMBDA":       0.679,          # 12.5 cm @ 1626 MHz (≈ λ/1.47)
+        "FREQ_HZ":             1_626_270_000,
+        "GAIN_DB":             15,
+        "DOA_ALGORITHM":       "MUSIC",
+        "DECORRELATION":       "FBA",
+        "COV_ALPHA":           0.88,           # lighter smoothing — burst signals
+        "ANGLE_SMOOTH_ALPHA":  0.75,
+        "AMPLITUDE_NORMALIZE": True,
+        "SQUELCH_ENABLED":     True,
+        "SQUELCH_THRESHOLD_DB": -60.0,
+        "PHASE_OFFSETS_DEG":   [0.0, 0.0, 0.0, 0.0, 0.0],
+    },
+
+    # ── ISM 868 MHz – explicit alias for the standard outdoor-5ant profile ─────
+    "ism_868": {
+        "N_ANTENNAS":          5,
+        "GEOMETRY":            "UCA",
+        "RADIUS_LAMBDA":       0.358,          # 12.5 cm @ 865 MHz (≈ λ/2.79)
+        "FREQ_HZ":             865.21e6,
+        "GAIN_DB":             15,
+        "DOA_ALGORITHM":       "MUSIC",
+        "DECORRELATION":       "FBA",
+        "COV_ALPHA":           0.95,
+        "ANGLE_SMOOTH_ALPHA":  0.80,
+        "AMPLITUDE_NORMALIZE": True,
+        "SQUELCH_ENABLED":     True,
+        "SQUELCH_THRESHOLD_DB": -60.0,
+        "PHASE_OFFSETS_DEG":   [0.0, 0.0, 0.0, 0.0, 0.0],
+    },
 }
 
 

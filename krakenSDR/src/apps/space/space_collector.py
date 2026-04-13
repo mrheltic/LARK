@@ -243,7 +243,14 @@ def main() -> None:
     parser.add_argument("--time",      type=float, default=0.0,  help="Max session time [s] (0=∞)")
     parser.add_argument("--out",       type=str,   default=None, help="Output directory")
     parser.add_argument("--no-gui",    action="store_true",      help="Run without display (headless)")
+    parser.add_argument("--profile",   type=str,   default=None, metavar="NAME",
+                        help="Named config profile (e.g. iridium_1626). Overrides LARK_PROFILE env var.")
     args = parser.parse_args()
+
+    # ── Profile (must run before any C.* read) ────────────────────────────────
+    if args.profile:
+        from profiles import apply_profile
+        apply_profile(args.profile)
 
     # If any required param missing from CLI, show dialog
     if args.freq is None or args.gain is None:

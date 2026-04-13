@@ -104,7 +104,15 @@ def main() -> None:
                      help="Heimdall data port  (default: config.py HEIMDALL_PORT)")
     _ap.add_argument("-v", "--verbose", action="store_true",
                      help="Print detector metrics on stderr for each burst frame")
+    _ap.add_argument("--profile", type=str, default=None, metavar="NAME",
+                     help="Named config profile to load (e.g. iridium_1626). "
+                          "Overrides LARK_PROFILE env var.")
     args = _ap.parse_args()
+
+    # ── Profile (must run before any C.* read) ────────────────────────────────
+    if args.profile:
+        from profiles import apply_profile
+        apply_profile(args.profile)
 
     freq_hz    = args.freq
     gain_db    = args.gain if args.gain is not None else float(C.GAIN_DB)

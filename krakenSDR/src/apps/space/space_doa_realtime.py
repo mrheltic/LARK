@@ -292,7 +292,14 @@ def main() -> None:
     parser.add_argument("--n_el",      type=int,   default=18,  help="El scan points")
     parser.add_argument("--d_lambda",  type=float, default=0.5, help="Arm length [λ]")
     parser.add_argument("--threshold", type=float, default=10.0, help="Burst threshold [dB]")
+    parser.add_argument("--profile",   type=str,   default=None, metavar="NAME",
+                        help="Named config profile (e.g. iridium_1626). Overrides LARK_PROFILE env var.")
     args = parser.parse_args()
+
+    # ── Profile (must run before any C.* read) ────────────────────────────────
+    if args.profile:
+        from profiles import apply_profile
+        apply_profile(args.profile)
 
     if args.freq is None or args.gain is None:
         CFG = _run_config_dialog()

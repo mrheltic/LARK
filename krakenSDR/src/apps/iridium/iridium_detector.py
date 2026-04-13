@@ -128,7 +128,14 @@ def main() -> None:
                      help="Enable DQPSK demodulation and display decoded frame type")
     _ap.add_argument("--raw-out", type=str, default=None, metavar="FILE",
                      help="Append RAW: lines to FILE (compatible with iridium-parser.py)")
+    _ap.add_argument("--profile", type=str, default=None, metavar="NAME",
+                     help="Named config profile (e.g. iridium_1626). Overrides LARK_PROFILE env var.")
     _ARGS = _ap.parse_args()
+
+    # ── Profile (must run before any C.* read) ────────────────────────────────
+    if _ARGS.profile:
+        from profiles import apply_profile
+        apply_profile(_ARGS.profile)
 
     # ══════════════════════════════════════════════════════════════════════════════
     # RESOLVE CONFIGURATION  (dialog → CLI args → config.py defaults)
