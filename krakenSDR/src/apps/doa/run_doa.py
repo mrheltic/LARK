@@ -50,8 +50,9 @@ import time
 from types import SimpleNamespace
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
+_SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 if sys.platform.startswith("linux"):
     try:
@@ -99,7 +100,7 @@ else:
     D_LAMBDA = C.D_LAMBDA
     R_LAMBDA = C.RADIUS_LAMBDA
 
-_CAL_FILE = os.path.join(_HERE, ".doa_calibration.json")
+_CAL_FILE = os.path.join(_SRC, ".doa_calibration.json")
 
 
 def main() -> None:

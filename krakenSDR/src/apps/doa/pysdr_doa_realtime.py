@@ -83,8 +83,8 @@ def snipfcn_realtime_doa_snippet(self):
     from types import SimpleNamespace as _NS
 
     _WORKSPACE = _os.path.dirname(_os.path.abspath(__file__))
-    _PYSDR_DIR = _WORKSPACE
-    for _p in (_WORKSPACE,):
+    _PYSDR_DIR = _os.path.dirname(_os.path.dirname(_WORKSPACE))  # krakenSDR/src/
+    for _p in (_PYSDR_DIR,):
         if _p not in _sys.path:
             _sys.path.insert(0, _p)
 

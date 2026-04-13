@@ -45,8 +45,9 @@ import collections
 import threading
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
+_SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 import numpy as np
 import matplotlib
@@ -181,7 +182,7 @@ def _run_config_dialog() -> dict:
 
     r4 = _row(root)
     _lbl(r4, "Output directory").pack(side="left")
-    _default_rec = os.path.normpath(os.path.join(_HERE, "..", "..", "recordings"))
+    _default_rec = os.path.normpath(os.path.join(_SRC, "..", "..", "recordings"))
     _v_out = tk.StringVar(value=_default_rec)
     ttk.Entry(r4, textvariable=_v_out, width=40).pack(side="left", padx=6)
 
@@ -257,7 +258,7 @@ def main() -> None:
             "max_bursts":         args.limit,
             "max_time_s":         args.time,
             "out_dir":            args.out or os.path.normpath(
-                                      os.path.join(_HERE, "..", "..", "recordings")),
+                                      os.path.join(_SRC, "..", "..", "recordings")),
         }
     if args.threshold is not None:
         CFG["burst_threshold_db"] = args.threshold

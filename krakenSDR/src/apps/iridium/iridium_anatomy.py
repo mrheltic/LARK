@@ -46,8 +46,9 @@ import sys
 from pathlib import Path
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
+_SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 import numpy as np
 import matplotlib as mpl
@@ -94,9 +95,9 @@ def _rgb(css: str) -> tuple:
 def _auto_find_wav() -> Path:
     """Return the first WAV file in krakenSDR/recordings/ relative to _HERE."""
     candidates = [
-        Path(_HERE).parent.parent / "krakenSDR" / "recordings",  # repo root
-        Path(_HERE).parent / "recordings",
-        Path(_HERE) / "recordings",
+        Path(_SRC).parent.parent / "krakenSDR" / "recordings",  # repo root
+        Path(_SRC).parent / "recordings",
+        Path(_SRC) / "recordings",
     ]
     for d in candidates:
         wavs = sorted(d.glob("*.wav"))

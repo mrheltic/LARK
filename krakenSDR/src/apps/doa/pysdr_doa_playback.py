@@ -27,8 +27,9 @@ import time
 import collections
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
+_SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 import config as C
 from core.doa_algorithms import (
@@ -63,7 +64,7 @@ def main() -> None:
             from tkinter import filedialog
             _root = tk.Tk()
             _root.withdraw()
-            _rec_dir = os.path.normpath(os.path.join(_HERE, "..", "..", "recordings"))
+            _rec_dir = os.path.normpath(os.path.join(_SRC, "..", "..", "recordings"))
             rec_path = filedialog.askopenfilename(
                 title="Open KrakenSDR recording",
                 initialdir=_rec_dir if os.path.isdir(_rec_dir) else ".",

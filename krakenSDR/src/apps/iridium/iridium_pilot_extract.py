@@ -47,8 +47,9 @@ from pathlib import Path
 from typing import Optional, List, Tuple
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
+_SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 import numpy as np
 
@@ -69,7 +70,7 @@ _PILOT_NSYMS  = 16        # preamble length in symbols
 _RING_TYPES   = {"IRA", "IBC"}   # parser prefixes considered ring-alert
 
 # Find iridium-parser relative to project root
-_LARK_ROOT  = Path(_HERE).parent.parent
+_LARK_ROOT  = Path(_SRC).parent.parent
 _PARSER_EXE = str(_LARK_ROOT / "external" / "iridium-toolkit" / "iridium-parser.py")
 _VENV_PYTHON = str(_LARK_ROOT / ".venv" / "bin" / "python3")
 if not Path(_VENV_PYTHON).exists():
@@ -508,9 +509,9 @@ def _summary_table(bursts: List[dict], parser_map: dict[str, str]) -> str:
 
 def _auto_wav() -> Path:
     candidates = [
-        Path(_HERE).parent.parent / "krakenSDR" / "recordings",
-        Path(_HERE).parent / "recordings",
-        Path(_HERE) / "recordings",
+        Path(_SRC).parent.parent / "krakenSDR" / "recordings",
+        Path(_SRC).parent / "recordings",
+        Path(_SRC) / "recordings",
     ]
     for d in candidates:
         wavs = sorted(d.glob("*.wav"))

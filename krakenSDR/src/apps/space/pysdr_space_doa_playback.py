@@ -38,8 +38,9 @@ import time
 import threading
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
+_SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 import numpy as np
 import matplotlib
@@ -87,7 +88,7 @@ def _pick_file() -> str:
     path = filedialog.askopenfilename(
         title="Open KrakenSDR space capture",
         filetypes=[("NumPy archives", "*.npz"), ("All files", "*.*")],
-        initialdir=os.path.normpath(os.path.join(_HERE, "..", "..", "recordings")),
+        initialdir=os.path.normpath(os.path.join(_SRC, "..", "..", "recordings")),
     )
     root.destroy()
     if not path:
