@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-pysdr_space_doa_realtime.py — KrakenSDR 3D Space DoA (real-time)
-=================================================================
+space_doa_realtime.py — KrakenSDR 3D Space DoA (real-time)
+===========================================================
 Real-time 2D direction-of-arrival (azimuth + elevation) for satellite signals
 using a 5-element cross array and the KrakenSDR / Heimdall DAQ back-end.
 
-Unlike the 1D azimuth-only scripts (pysdr_doa_realtime.py), this script:
+Unlike the 1D azimuth-only scripts (doa_runner.py), this script:
   • Scans the full upper hemisphere (az 0–360°, el 5–90°)
   • Uses a cross ("+") array geometry with orthogonal E-W and N-S apertures
   • Runs 2D-MUSIC or 2D-Capon on each frame or burst window
@@ -25,9 +25,9 @@ Display — 8 panels (2 × 4 GridSpec)
 
 Usage
 -----
-    python3 pysdr_space_doa_realtime.py
-    python3 pysdr_space_doa_realtime.py --freq 1626.27 --gain 20 --algo music
-    python3 pysdr_space_doa_realtime.py --algo capon --mode cw --n_az 90 --n_el 27
+    python3 space_doa_realtime.py
+    python3 space_doa_realtime.py --freq 1626.27 --gain 20 --algo music
+    python3 space_doa_realtime.py --algo capon --mode cw --n_az 90 --n_el 27
 """
 
 from __future__ import annotations

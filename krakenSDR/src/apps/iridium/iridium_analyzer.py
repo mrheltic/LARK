@@ -26,10 +26,10 @@ Navigation
 Usage
 -----
     # Auto-discover the only WAV in krakenSDR/recordings/
-    python3 iridium_anatomy.py
+    python3 apps/iridium/iridium_analyzer.py
 
     # Explicit file
-    python3 iridium_anatomy.py path/to/recording.wav
+    python3 apps/iridium/iridium_analyzer.py path/to/recording.wav
 
     # Custom thresholds
     python3 iridium_anatomy.py --snr 10 --papr 6

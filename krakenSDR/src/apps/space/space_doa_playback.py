@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-pysdr_space_doa_playback.py — KrakenSDR 3D Space DoA (offline playback)
-========================================================================
-Loads a .npz file captured by pysdr_space_collector.py or the recorder in
-pysdr_space_doa_realtime.py and replays the full 2D DoA pipeline frame by frame.
+space_doa_playback.py — KrakenSDR 3D Space DoA (offline playback)
+==================================================================
+Loads a .npz file captured by space_collector.py or the recorder in
+space_doa_realtime.py and replays the full 2D DoA pipeline frame by frame.
 
 Compatible formats
 ------------------
@@ -12,8 +12,8 @@ Compatible formats
   key ``timestamps`` : (N,) float64 — ms from session start
   .json sidecar with metadata (auto-loaded if present)
 
-Display — 8 panels  (same layout as pysdr_space_doa_realtime.py)
------------------------------------------------------------------
+Display — 8 panels  (same layout as space_doa_realtime.py)
+-----------------------------------------------------------
   Row 0: [Sky plot (polar)]  [2D heatmap (rect)]  [Az + El history]  [Eigenvalues]
   Row 1: [Coherence matrix]  [PAPR + SNR history]  [IQ FFT ch0]  [Phase stability]
 
@@ -23,9 +23,9 @@ Playback controls (bottom toolbar)
 
 Usage
 -----
-    python3 pysdr_space_doa_playback.py
-    python3 pysdr_space_doa_playback.py /path/to/capture.npz
-    python3 pysdr_space_doa_playback.py capture.npz --algo capon --n_az 90 --n_el 27
+    python3 space_doa_playback.py
+    python3 space_doa_playback.py /path/to/capture.npz
+    python3 space_doa_playback.py capture.npz --algo capon --n_az 90 --n_el 27
 """
 
 from __future__ import annotations

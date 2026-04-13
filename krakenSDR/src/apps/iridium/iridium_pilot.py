@@ -27,11 +27,11 @@ By default only Ring-Alert related bursts are analysed in detail
 
 Usage
 -----
-    python3 iridium_pilot_extract.py                      # auto-detect WAV
-    python3 iridium_pilot_extract.py path/to/rec.wav
-    python3 iridium_pilot_extract.py --all                # report all bursts
-    python3 iridium_pilot_extract.py --out my_report.txt
-    python3 iridium_pilot_extract.py --limit 300          # scan first 300 s
+    python3 apps/iridium/iridium_pilot.py                      # auto-detect WAV
+    python3 apps/iridium/iridium_pilot.py path/to/rec.wav
+    python3 apps/iridium/iridium_pilot.py --all                # report all bursts
+    python3 apps/iridium/iridium_pilot.py --out my_report.txt
+    python3 apps/iridium/iridium_pilot.py --limit 300          # scan first 300 s
 """
 
 from __future__ import annotations

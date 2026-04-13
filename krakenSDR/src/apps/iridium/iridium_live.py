@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-iridium_receiver.py – KrakenSDR Iridium burst receiver / RAW: line producer
-=============================================================================
+iridium_live.py – KrakenSDR Iridium burst receiver / RAW: line producer
+=========================================================================
 
 Connects to Heimdall, detects Iridium L-band TDMA bursts with the FFT-based
 :class:`BurstDetector`, and DQPSK-demodulates each burst frame with
@@ -14,16 +14,15 @@ Typical usage
 ::
 
     # Pipe into iridium-parser for decoded messages
-    cd krakensdr/workspace
-    python3 pysdr_doa/iridium_receiver.py | \\
+    python3 apps/iridium/iridium_live.py | \\
         python3 ../iridium-toolkit/iridium-parser.py -p
 
     # Or capture raw lines to a file for offline analysis
-    python3 pysdr_doa/iridium_receiver.py --freq 1626270000 > session.bits
+    python3 apps/iridium/iridium_live.py --freq 1626270000 > session.bits
     cat session.bits | python3 ../iridium-toolkit/iridium-parser.py
 
     # Verbose mode (also shows detector metrics on stderr)
-    python3 pysdr_doa/iridium_receiver.py -v
+    python3 apps/iridium/iridium_live.py -v
 
 Options
 ~~~~~~~

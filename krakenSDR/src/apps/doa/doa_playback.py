@@ -2,12 +2,12 @@
 """
 DoA Playback – KrakenSDR
 =========================
-Reads a .npz recording saved by pysdr_doa_realtime.py and replays it
+Reads a .npz recording saved by doa_runner.py and replays it
 offline through the same DoA pipeline, displaying all 8 panels.
 
 Usage:
-    python3 pysdr_doa/pysdr_doa_playback.py recordings/kraken_20260325_123456.npz
-    python3 pysdr_doa/pysdr_doa_playback.py          # opens a file-picker dialog
+    python3 apps/doa/doa_playback.py recordings/kraken_20260325_123456.npz
+    python3 apps/doa/doa_playback.py          # opens a file-picker dialog
 
 Playback controls (bottom strip):
   ⏸/▶  – Play / Pause
@@ -75,7 +75,7 @@ def main() -> None:
                 print("[PB] No file selected.")
                 sys.exit(0)
         except Exception:
-            print("Usage:  python3 pysdr_doa_playback.py <recording.npz>")
+            print("Usage:  python3 apps/doa/doa_playback.py <recording.npz>")
             sys.exit(1)
 
     if not os.path.isfile(rec_path):

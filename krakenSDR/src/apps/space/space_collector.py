@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-pysdr_space_collector.py — KrakenSDR 5-channel burst collector
-===============================================================
+space_collector.py — KrakenSDR 5-channel burst collector
+=========================================================
 Connects to the Heimdall DAQ server, detects Iridium TDMA bursts across
 all 5 channels, and saves the raw multi-channel burst windows to disk for
 offline 3D DoA analysis.
 
-This script is the data-collection companion to pysdr_space_doa_realtime.py
-and pysdr_space_doa_playback.py.  It focuses on:
+This script is the data-collection companion to space_doa_realtime.py
+and space_doa_playback.py.  It focuses on:
 
   1. Reliable burst detection (energy + PAPR on Channel 0)
   2. Multi-channel extraction (burst window across all 5 antennas)
@@ -29,9 +29,9 @@ Saved format
 
 Usage
 -----
-    python3 pysdr_space_collector.py
-    python3 pysdr_space_collector.py --freq 1626.27 --gain 20 --limit 200
-    python3 pysdr_space_collector.py --out /mnt/ssd/captures --threshold 8
+    python3 space_collector.py
+    python3 space_collector.py --freq 1626.27 --gain 20 --limit 200
+    python3 space_collector.py --out /mnt/ssd/captures --threshold 8
 """
 
 from __future__ import annotations
