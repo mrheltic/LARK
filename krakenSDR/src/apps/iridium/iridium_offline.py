@@ -42,10 +42,10 @@ from types import SimpleNamespace
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)   # app-local config.py takes priority
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)   # app-local config.py takes priority
 
 import numpy as np
 
@@ -88,9 +88,9 @@ def main() -> None:
                     choices=["auto", "wav", "cf32", "u8"],
                     help="Force IQ format (default: auto)")
     ap.add_argument("--fs",       type=float, default=2_048_000.0, metavar="HZ",
-                    help="Sample rate for CF32/U8 (default: 2048000)")
-    ap.add_argument("--freq",     type=float, default=1_626_270_000.0, metavar="HZ",
-                    help="Centre frequency Hz (default: 1626270000)")
+                    help="Sample rate for CF32/U8 (default: 2048000 — SDR++ WAV default)")
+    ap.add_argument("--freq",     type=float, default=C.FREQ_HZ, metavar="HZ",
+                    help=f"Centre frequency Hz  (default: {int(C.FREQ_HZ)} from config.py)")
     ap.add_argument("--snr",      type=float, default=8.0,   metavar="DB")
     ap.add_argument("--papr",     type=float, default=5.0,   metavar="DB")
     ap.add_argument("--power",    type=float, default=-90.0, metavar="DBW")

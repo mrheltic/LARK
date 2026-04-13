@@ -256,7 +256,8 @@ def apply_profile(name: str, target=None) -> None:
             setattr(target, key, val)
             applied += 1
 
-    print(f"[Profile] Applied '{name}' ({applied}/{len(profile)} params)")
+    print(f"[Profile] Applied '{name}' ({applied}/{len(profile)} params)",
+          file=_sys.stderr)
 
 
 def list_profiles() -> None:
