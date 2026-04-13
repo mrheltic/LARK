@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pysdr_iridium_detect.py – KrakenSDR single-antenna Iridium burst detector
+iridium_detector.py – KrakenSDR single-antenna Iridium burst detector
 ==========================================================================
 
 Connects to Heimdall and detects Iridium L-band TDMA bursts from a single
@@ -33,15 +33,15 @@ Layout (3 rows):
 Signal processing  →  core.burst.BurstDetector / PassTracker
 Startup dialog     →  ui.dialogs.run_iridium_dialog
 Colour theme       →  ui.theme
-Hardware I/O       →  io.KrakenIQSource
+Hardware I/O       →  hardware.KrakenIQSource
 System config      →  config
 
 Usage:
-    python3 pysdr_doa/pysdr_iridium_detect.py
-    python3 pysdr_doa/pysdr_iridium_detect.py --no-dialog
-    python3 pysdr_doa/pysdr_iridium_detect.py --freq 1626270000
-    python3 pysdr_doa/pysdr_iridium_detect.py --snr 5 --papr 3.5
-    python3 pysdr_doa/pysdr_iridium_detect.py --channel 1
+    python3 apps/iridium/iridium_detector.py
+    python3 apps/iridium/iridium_detector.py --no-dialog
+    python3 apps/iridium/iridium_detector.py --freq 1626270000
+    python3 apps/iridium/iridium_detector.py --snr 5 --papr 3.5
+    python3 apps/iridium/iridium_detector.py --channel 1
 
 References:
     ITU-R M.1031   – Iridium radio interface
@@ -61,10 +61,10 @@ from types import SimpleNamespace
 # ── Resolve script directory and add to import path ──────────────────────────
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)   # app-local config.py takes priority
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 import numpy as np
 

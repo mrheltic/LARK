@@ -15,7 +15,7 @@ Playback controls (bottom strip):
   ×0.5 / ×1 / ×2 / ×4  – speed (frames per animation tick)
   [──────────────]       – Frame scrub slider
 
-Scientific references same as pysdr_doa_realtime.py.
+Scientific references same as doa_runner.py.
 """
 
 from __future__ import annotations
@@ -28,10 +28,10 @@ import collections
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)   # app-local config.py takes priority
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 import config as C
 from core.doa_algorithms import (

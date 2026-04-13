@@ -67,7 +67,7 @@ from core.iridium_doa_burst import (
 )
 from core.burst import IRD_CHANS
 
-# ── Colour palette (matches pysdr_doa_realtime.py) ────────────────────────────
+# ── Colour palette ───────────────────────────────────────────────────────────
 BG       = "#1a1d27"; BG2 = "#21253a"; BG3 = "#2a2f47"
 C_BORDER = "#3b4263"; C_DIM = "#4e5680"
 C_BLUE   = "#5ea4e0"; C_TEAL = "#4ecdc4"; C_AMBER = "#f4a431"

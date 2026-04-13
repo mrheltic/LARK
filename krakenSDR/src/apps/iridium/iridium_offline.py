@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-pysdr_iridium_offline.py – Offline Iridium burst detector for recorded IQ files
-================================================================================
+iridium_offline.py – Offline Iridium burst detector for recorded IQ files
+=========================================================================
 
 Reads a baseband IQ recording (SDR++ WAV, CF32 or U8) and runs the same
-burst-detection pipeline as pysdr_iridium_detect.py.  No live hardware or
+burst-detection pipeline as iridium_detector.py.  No live hardware or
 Heimdall connection required.
 
 Typical workflow
@@ -14,20 +14,20 @@ Typical workflow
 3. Record for a few minutes while a satellite is in view.
 4. Back at your desk, run:
 
-       python3 pysdr_iridium_offline.py pass_20250601_1626MHz.wav
+       python3 apps/iridium/iridium_offline.py pass_20250601_1626MHz.wav
 
-5. Same 5-panel display as pysdr_iridium_detect.py.  Use the scrub slider
+5. Same 5-panel display as iridium_detector.py.  Use the scrub slider
    at the bottom to jump around the recording.  Detected bursts can be
    written to a JSON file with --json-out for later DoA correlation.
 
 Usage
 -----
-    python3 pysdr_iridium_offline.py pass.wav
-    python3 pysdr_iridium_offline.py pass.wav --loop
-    python3 pysdr_iridium_offline.py pass.wav --demod --raw-out bursts.txt
-    python3 pysdr_iridium_offline.py pass.wav --json-out detections.json
-    python3 pysdr_iridium_offline.py pass.cf32 --fs 2048000 --freq 1626270000
-    python3 pysdr_iridium_offline.py pass.bin  --fmt u8 --fs 2016000
+    python3 apps/iridium/iridium_offline.py pass.wav
+    python3 apps/iridium/iridium_offline.py pass.wav --loop
+    python3 apps/iridium/iridium_offline.py pass.wav --demod --raw-out bursts.txt
+    python3 apps/iridium/iridium_offline.py pass.wav --json-out detections.json
+    python3 apps/iridium/iridium_offline.py pass.cf32 --fs 2048000 --freq 1626270000
+    python3 apps/iridium/iridium_offline.py pass.bin  --fmt u8 --fs 2016000
 """
 
 from __future__ import annotations
@@ -42,10 +42,10 @@ from types import SimpleNamespace
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)   # app-local config.py takes priority
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 import numpy as np
 
