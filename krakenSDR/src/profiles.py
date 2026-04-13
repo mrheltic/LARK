@@ -160,19 +160,19 @@ PROFILES: dict[str, dict] = {
         "PHASE_OFFSETS_DEG":   [0.0, 0.0, 0.0, 0.0, 0.0],
     },
 
-    # ── Iridium L-band (KrakenSDR 5-ant, 1626.270 MHz) ────────────────────────
-    # λ ≈ 18.44 cm at 1626 MHz.  If using the standard KrakenSDR 12.5 cm-radius
-    # ring the spacing/λ ≈ 0.68 — grating lobes possible; tune RADIUS_LAMBDA to
-    # your actual array radius in wavelengths.
+    # ── Iridium L-band — 5-element CROSS array (apps/space/ only) ──────────────
+    # Use with: space_doa_realtime.py, space_collector.py, space_doa_playback.py
+    # λ ≈ 18.44 cm @ 1626 MHz.  D_LAMBDA = 0.5 → arm length ≈ 9.2 cm.
+    # Cross layout: ant0=center, ant1=E, ant2=N, ant3=W, ant4=S (see doa_algorithms_3d.py).
+    # Do NOT apply this profile to doa_runner.py (UCA/ULA only).
     "iridium_1626": {
         "N_ANTENNAS":          5,
-        "GEOMETRY":            "UCA",
-        "RADIUS_LAMBDA":       0.679,          # 12.5 cm @ 1626 MHz (≈ λ/1.47)
         "FREQ_HZ":             1_626_270_000,
         "GAIN_DB":             15,
+        "D_LAMBDA":            0.5,            # cross array arm length [λ] ≈ 9.2 cm
         "DOA_ALGORITHM":       "MUSIC",
         "DECORRELATION":       "FBA",
-        "COV_ALPHA":           0.88,           # lighter smoothing — burst signals
+        "COV_ALPHA":           0.88,           # lighter smoothing — burst TDMA signals
         "ANGLE_SMOOTH_ALPHA":  0.75,
         "AMPLITUDE_NORMALIZE": True,
         "SQUELCH_ENABLED":     True,

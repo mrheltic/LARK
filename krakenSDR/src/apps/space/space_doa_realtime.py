@@ -290,7 +290,7 @@ def main() -> None:
                         choices=["burst", "cw"],   help="Burst gate vs CW EMA")
     parser.add_argument("--n_az",      type=int,   default=72,  help="Az scan points")
     parser.add_argument("--n_el",      type=int,   default=18,  help="El scan points")
-    parser.add_argument("--d_lambda",  type=float, default=0.5, help="Arm length [λ]")
+    parser.add_argument("--d_lambda",  type=float, default=None, help="Arm length [λ] (default: config D_LAMBDA)")
     parser.add_argument("--threshold", type=float, default=10.0, help="Burst threshold [dB]")
     parser.add_argument("--profile",   type=str,   default=None, metavar="NAME",
                         help="Named config profile (e.g. iridium_1626). Overrides LARK_PROFILE env var.")
@@ -301,6 +301,9 @@ def main() -> None:
         from profiles import apply_profile
         apply_profile(args.profile)
 
+    # Resolve d_lambda: explicit CLI wins, then profile/config default
+    _d_lambda = args.d_lambda if args.d_lambda is not None else float(C.D_LAMBDA)
+
     if args.freq is None or args.gain is None:
         CFG = _run_config_dialog()
     else:
@@ -309,7 +312,7 @@ def main() -> None:
             "gain_db":            args.gain,
             "host":               args.host or C.HEIMDALL_HOST,
             "port":               args.port or C.HEIMDALL_PORT,
-            "d_lambda":           args.d_lambda,
+            "d_lambda":           _d_lambda,
             "n_az":               args.n_az,
             "n_el":               args.n_el,
             "el_min_deg":         5.0,

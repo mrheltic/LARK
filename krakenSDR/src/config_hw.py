@@ -20,8 +20,10 @@ RADIUS_LAMBDA  = 0.358          # [UCA] array radius in fractions of λ
 #                                #  KrakenSDR 5-ant @ 1626 MHz → physical radius ~6.63 cm
 #                                #  λ @ 1626 MHz ≈ 18.5 cm  →  6.63/18.5 ≈ 0.358λ
 
-D_LAMBDA       = 0.5            # [ULA] inter-element spacing in fractions of λ
-#                                #  Only used when GEOMETRY = "ULA"
+D_LAMBDA       = 0.5            # [ULA] inter-element spacing  OR  [CROSS] arm length [λ]
+#                                #  For ULA: only used when GEOMETRY = "ULA"
+#                                #  For cross array (space_doa_realtime): arm length in λ
+#                                #  0.5λ @ 1626 MHz ≈ 9.2 cm  |  0.5λ @ 865 MHz ≈ 17.3 cm
 
 # ── RF / Radio ────────────────────────────────────────────────────────────────
 FREQ_HZ        = 1_626_270_000  # carrier frequency [Hz] — Iridium simplex ring alerts
