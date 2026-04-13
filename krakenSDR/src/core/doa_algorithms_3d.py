@@ -1,0 +1,423 @@
+"""
+doa_algorithms_3d — 2D (azimuth + elevation) DoA for cross array
+===================================================================
+
+3D space DoA algorithms for the 5-element cross ("+") array.
+
+Cross array layout (East-North ground plane, arm length d·λ):
+
+                 ant2 (North)
+                  |
+    ant3 ──── ant0 ──── ant1
+    (West)    (ctr)     (East)
+                  |
+                 ant4 (South)
+
+Source convention (satellite over the array):
+  azimuth  φ : degrees from North, clockwise
+               (0°=N / 90°=E / 180°=S / 270°=W)
+  elevation θ : degrees above horizon
+               (0°=horizon / 90°=zenith)
+
+The received phase at antenna k for a far-field source at (φ, θ):
+
+    τ_k = 2π · ( p_k_E · cos(θ) · sin(φ)  +  p_k_N · cos(θ) · cos(φ) )
+
+where p_k_E, p_k_N are the East and North coordinates of antenna k in λ.
+
+Steering vector:
+    a(φ,θ)  =  [exp(j·τ_0), …, exp(j·τ_4)]^T  ∈ ℂ^5
+
+2D-MUSIC:
+    P(φ,θ)  =  1 / (a^H(φ,θ) · E_n · E_n^H · a(φ,θ))
+where E_n is the noise subspace of R = E·E^H (D smallest eigenvectors).
+
+2D-Capon (MVDR):
+    P(φ,θ)  =  1 / (a^H(φ,θ) · R^{-1} · a(φ,θ))
+
+Why the cross array for satellite DoA
+--------------------------------------
+A symmetric cross array resolves both azimuth and elevation simultaneously
+by exploiting orthogonal apertures (E-W and N-S arms).  With 5 physically
+independent elements (no ambiguities at d ≤ 0.5 λ), the 5×5 covariance
+matrix provides up to 4 degrees of freedom, sufficient to separate 1–2
+satellite sources.
+
+References
+----------
+* Schmidt R.O., IEEE Trans. Antennas Propagat. 34(3), 1986               — MUSIC
+* Capon J., Proc. IEEE 57(8), pp. 1408-1418, 1969                       — MVDR/Capon
+* Van Trees H.L., Optimum Array Processing, Wiley 2002, §6.5             — 2D steering
+* Pillai S.U. & Kwon B.H., IEEE Trans. ASSP 37(4), 1989                  — FBA
+* Vu D.T. et al., IEEE Trans. Signal Process. 58(9), 2010                — 2D subspace methods
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Tuple
+
+import numpy as np
+
+
+# =============================================================================
+# Cross array configuration
+# =============================================================================
+
+@dataclass
+class CrossArrayConfig:
+    """
+    5-element cross array configuration for 2D (azimuth + elevation) DoA.
+
+    Antenna layout (λ-normalised East-North plane):
+        ant0 : center  [ 0,  0]
+        ant1 : East    [+d,  0]
+        ant2 : North   [ 0, +d]
+        ant3 : West    [-d,  0]
+        ant4 : South   [ 0, -d]
+
+    Parameters
+    ----------
+    d_lambda             : arm length [fraction of λ]          default 0.5
+    n_az                 : azimuth scan points over 0…360°     default 72 → 5° steps
+    n_el                 : elevation scan points over el_min…90° default 18 → 5° steps
+    el_min_deg           : minimum elevation angle to scan [°]  default 5°
+    num_expected_signals : number of sources (D in MUSIC subspace split)
+    """
+    d_lambda:             float = 0.5
+    n_az:                 int   = 72
+    n_el:                 int   = 18
+    el_min_deg:           float = 5.0
+    num_expected_signals: int   = 1
+
+    _cache: dict = field(default_factory=dict, init=False, repr=False, compare=False)
+
+    # ── Geometry ──────────────────────────────────────────────────────────────
+
+    @property
+    def positions(self) -> np.ndarray:
+        """(5, 2) array: [East, North] coordinates per antenna in wavelengths."""
+        d = self.d_lambda
+        return np.array([
+            [ 0.0,  0.0],   # ant0: center
+            [+d,    0.0],   # ant1: East
+            [ 0.0, +d  ],   # ant2: North
+            [-d,    0.0],   # ant3: West
+            [ 0.0, -d  ],   # ant4: South
+        ], dtype=np.float64)
+
+    def az_range_deg(self) -> np.ndarray:
+        """Azimuth scan grid in degrees: 0° … 360°."""
+        return np.linspace(0.0, 360.0, self.n_az, endpoint=False)
+
+    def el_range_deg(self) -> np.ndarray:
+        """Elevation scan grid in degrees: el_min … 90°."""
+        return np.linspace(self.el_min_deg, 90.0, self.n_el)
+
+    # ── Steering matrix (pre-computed + cached) ───────────────────────────────
+
+    def get_steering_matrix(self) -> np.ndarray:
+        """
+        (5, n_el × n_az) steering matrix, pre-computed and cached.
+
+        Column index: i_el * n_az + i_az  →  grid point (el[i_el], az[i_az]).
+        The cache key encodes all shape-determining parameters so it invalidates
+        automatically if d_lambda, n_az, n_el, or el_min_deg change.
+        """
+        key = ('cross3d',
+               round(self.d_lambda, 8),
+               self.n_az, self.n_el,
+               round(self.el_min_deg, 4))
+        if key not in self._cache:
+            az = np.deg2rad(self.az_range_deg())   # (N_az,)
+            el = np.deg2rad(self.el_range_deg())   # (N_el,)
+
+            AZ, EL = np.meshgrid(az, el)           # (N_el, N_az)
+
+            # Direction cosines in the East-North plane
+            u_east  = np.cos(EL) * np.sin(AZ)     # cos θ · sin φ
+            u_north = np.cos(EL) * np.cos(AZ)     # cos θ · cos φ
+
+            # Flatten to (N_grid,) where N_grid = N_el * N_az
+            ue = u_east.ravel();  un = u_north.ravel()
+
+            # Phase delays (5, N_grid)
+            p   = self.positions                   # (5, 2)
+            tau = 2.0 * np.pi * (
+                p[:, 0:1] * ue[np.newaxis, :]
+              + p[:, 1:2] * un[np.newaxis, :]
+            )
+            self._cache[key] = np.exp(1j * tau).astype(np.complex128)
+
+        return self._cache[key]
+
+    def invalidate_cache(self) -> None:
+        """Force re-computation of the steering matrix on next access."""
+        self._cache.clear()
+
+
+# =============================================================================
+# 2D-MUSIC
+# =============================================================================
+
+def doa_music_2d(
+    X:    np.ndarray,
+    cfg:  CrossArrayConfig,
+    R_in: np.ndarray | None = None,
+) -> np.ndarray:
+    """
+    2D-MUSIC pseudospectrum for the cross array.
+
+    P(φ, θ) = 1 / ‖E_n^H · a(φ, θ)‖²
+
+    Parameters
+    ----------
+    X    : (5, N_samples) complex — IQ matrix (burst window or CW)
+    cfg  : CrossArrayConfig
+    R_in : optional (5, 5) covariance; if provided X is ignored
+
+    Returns
+    -------
+    spec : (n_el, n_az) float ndarray  [dB, peak = 0, floor = −40 dB]
+    """
+    R = _get_cov(X, R_in)
+
+    _, eigenvectors = np.linalg.eigh(R)          # ascending eigenvalues
+    n_sig = max(1, min(cfg.num_expected_signals, 4))
+    En    = eigenvectors[:, :-n_sig]             # (5, 5−n_sig) noise subspace
+
+    A  = cfg.get_steering_matrix()               # (5, N_grid)
+    Pa = En.conj().T @ A                         # (5−n_sig, N_grid)
+
+    denom    = np.real(np.sum(np.abs(Pa) ** 2, axis=0))  # (N_grid,)
+    pspec    = 1.0 / (denom + 1e-12)
+    pspec_db = 10.0 * np.log10(pspec / (np.max(pspec) + 1e-12) + 1e-12)
+    return np.clip(pspec_db, -40.0, 0.0).reshape(cfg.n_el, cfg.n_az)
+
+
+# =============================================================================
+# 2D-Capon (MVDR)
+# =============================================================================
+
+def doa_capon_2d(
+    X:    np.ndarray,
+    cfg:  CrossArrayConfig,
+    R_in: np.ndarray | None = None,
+) -> np.ndarray:
+    """
+    2D-Capon (MVDR) beamformer spectrum for the cross array.
+
+    P(φ, θ) = 1 / (a^H(φ, θ) · R^{-1} · a(φ, θ))
+
+    Less sensitive to noise-subspace dimension errors than 2D-MUSIC.
+    Recommended as cross-check or when the number of sources D is uncertain.
+
+    Parameters
+    ----------
+    X    : (5, N_samples) complex
+    cfg  : CrossArrayConfig
+    R_in : optional pre-computed covariance
+
+    Returns
+    -------
+    spec : (n_el, n_az) float ndarray  [dB, peak = 0, floor = −40 dB]
+
+    Ref: Capon J., Proc. IEEE 57(8), 1969.
+    """
+    R = _get_cov(X, R_in)
+
+    # Diagonal loading: δ = 1e-4 · Tr(R) / 5  for numerical stability
+    eps   = 1e-4 * float(np.real(np.trace(R))) / 5.0
+    R_reg = R + eps * np.eye(5, dtype=complex)
+    R_inv = np.linalg.inv(R_reg)                # (5, 5)
+
+    A  = cfg.get_steering_matrix()              # (5, N_grid)
+    denom    = np.real(np.sum(A.conj() * (R_inv @ A), axis=0))  # (N_grid,)
+    pspec    = np.maximum(1.0 / (denom + 1e-12), 1e-12)
+    pspec_db = 10.0 * np.log10(pspec / (np.max(pspec) + 1e-12) + 1e-12)
+    return np.clip(pspec_db, -40.0, 0.0).reshape(cfg.n_el, cfg.n_az)
+
+
+# =============================================================================
+# Peak finding with sub-grid parabolic interpolation
+# =============================================================================
+
+def find_peak_2d(
+    spec: np.ndarray,
+    cfg:  CrossArrayConfig,
+) -> Tuple[float, float, float]:
+    """
+    Find (azimuth_deg, elevation_deg, papr_db) from a 2D spectrum.
+
+    Uses 2D parabolic interpolation around the peak bin for sub-grid accuracy.
+    The interpolation corrects the quantisation introduced by the discrete scan
+    grid (step_az × step_el), typically ±half a grid step.
+
+    Returns
+    -------
+    az_deg  : estimated azimuth  [°, 0…360]
+    el_deg  : estimated elevation [°, el_min…90]
+    papr_db : peak-to-average power ratio of the spectrum [dB]
+    """
+    idx       = np.unravel_index(np.argmax(spec), spec.shape)
+    i_el, i_az = int(idx[0]), int(idx[1])
+    n_el, n_az = spec.shape
+
+    # Azimuth — periodic (wrap-around)
+    az_frac = 0.0
+    ym = float(spec[i_el, (i_az - 1) % n_az])
+    y0 = float(spec[i_el,  i_az])
+    yp = float(spec[i_el, (i_az + 1) % n_az])
+    denom_az = ym - 2.0 * y0 + yp
+    if abs(denom_az) > 1e-6:
+        az_frac = float(np.clip(0.5 * (ym - yp) / denom_az, -0.5, 0.5))
+
+    # Elevation — non-periodic
+    el_frac = 0.0
+    if 0 < i_el < n_el - 1:
+        ym = float(spec[i_el - 1, i_az])
+        y0 = float(spec[i_el,     i_az])
+        yp = float(spec[i_el + 1, i_az])
+        denom_el = ym - 2.0 * y0 + yp
+        if abs(denom_el) > 1e-6:
+            el_frac = float(np.clip(0.5 * (ym - yp) / denom_el, -0.5, 0.5))
+
+    # Grid step sizes
+    az_step = 360.0 / n_az
+    el_step = (90.0 - cfg.el_min_deg) / max(n_el - 1, 1)
+
+    az_deg = (cfg.az_range_deg()[i_az] + az_frac * az_step) % 360.0
+    el_deg = float(
+        np.clip(cfg.el_range_deg()[i_el] + el_frac * el_step,
+                cfg.el_min_deg, 90.0)
+    )
+
+    # PAPR of the 2D spectrum
+    s_lin  = 10.0 ** (np.clip(spec, -200.0, 0.0) / 10.0)
+    mean_v = float(np.mean(s_lin))
+    papr   = (10.0 * np.log10(float(np.max(s_lin)) / (mean_v + 1e-15))
+              if mean_v > 1e-15 else 0.0)
+
+    return float(az_deg), float(el_deg), float(papr)
+
+
+# =============================================================================
+# Sky-plot coordinate helpers
+# =============================================================================
+
+def skyplot_coords(az_deg: float, el_deg: float) -> Tuple[float, float]:
+    """
+    Convert (az_deg, el_deg) to matplotlib polar plot coordinates.
+
+    The sky plot uses:
+        theta_mpl = azimuth in radians (0=North at top, clockwise = –1 direction)
+        r_mpl     = 90° − elevation [deg]  (0 = zenith, 90 = horizon)
+
+    Use with:
+        ax.set_theta_zero_location('N')
+        ax.set_theta_direction(-1)
+    """
+    return float(np.deg2rad(az_deg)), float(90.0 - el_deg)
+
+
+def make_sky_heatmap_edges(cfg: CrossArrayConfig) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Cell-edge arrays for ax.pcolormesh on a polar sky plot.
+
+    Returns
+    -------
+    theta_edges : (n_az + 1,) in radians   — azimuth cell edges
+    r_edges     : (n_el + 1,) in degrees   — radial cell edges (90 − elevation)
+
+    Usage::
+        T_e, R_e  = np.meshgrid(theta_edges, r_edges)
+        ax.pcolormesh(T_e, R_e, spec_flipped, ...)
+    where spec_flipped = np.flipud(spec) to map low elevation → outer ring.
+    """
+    az_edges = np.linspace(0.0, 2.0 * np.pi, cfg.n_az + 1)
+    el_edges = np.linspace(cfg.el_min_deg, 90.0, cfg.n_el + 1)
+    r_edges  = 90.0 - el_edges          # low elevation → high r (outer)
+    return az_edges, r_edges[::-1]      # flip: near-horizon at edge of plot
+
+
+# =============================================================================
+# Signal quality metrics (same definitions as doa_algorithms.py)
+# =============================================================================
+
+def eigenvalue_spread_db(R: np.ndarray) -> np.ndarray:
+    """
+    Eigenvalues of the 5×5 covariance matrix in dB, sorted descending.
+
+    Normalised against the smallest eigenvalue (noise floor = 0 dB).
+    The first eigenvalue is the signal subspace; the remaining four
+    represent the noise subspace.  A large gap between λ_0 and the rest
+    indicates a strong, localised source and a reliable DoA estimate.
+    """
+    ev = np.sort(np.abs(np.linalg.eigvalsh(R)))[::-1]
+    return 10.0 * np.log10(ev / (ev[-1] + 1e-20) + 1e-20)
+
+
+def snr_from_covariance(R: np.ndarray) -> float:
+    """SNR estimate [dB] from the max/min eigenvalue ratio of R."""
+    ev    = np.sort(np.abs(np.linalg.eigvalsh(R)))
+    ratio = (ev[-1] - ev[0]) / (ev[0] + 1e-20)
+    return float(10.0 * np.log10(max(ratio, 1e-10)))
+
+
+def coherence_matrix(R: np.ndarray) -> np.ndarray:
+    """
+    Off-diagonal coherence |ρ_ij| = |R_ij| / sqrt(R_ii · R_jj).
+
+    Diagonal is 1.0; high off-diagonal values indicate coherent channels
+    (correlated noise or strong multipath).
+    """
+    d = np.sqrt(np.real(np.diag(R)) + 1e-30)
+    return np.abs(R) / np.outer(d, d)
+
+
+# =============================================================================
+# Exponential moving average covariance (shared with doa_algorithms.py)
+# =============================================================================
+
+class CovarianceAccumulator3D:
+    """
+    EMA covariance accumulator for the 5-element cross array.
+
+    R_new = α · R_old + (1 − α) · R_frame
+
+    α = 0.0 → no memory (single frame)
+    α → 1   → very long memory
+
+    For burst signals (Iridium TDMA) this accumulator should be bypassed
+    in favour of single-shot covariance on the extracted burst window.
+    See core.iridium_doa_burst.compute_single_shot_covariance().
+    """
+    def __init__(self, alpha: float = 0.90):
+        self.alpha = float(alpha)
+        self._R:   np.ndarray | None = None
+
+    def update(self, X: np.ndarray) -> np.ndarray:
+        """Feed IQ frame (5 × N), return current EMA covariance."""
+        R_frame = (X @ X.conj().T) / X.shape[1]
+        if self._R is None:
+            self._R = R_frame.copy()
+        else:
+            self._R = self.alpha * self._R + (1.0 - self.alpha) * R_frame
+        return self._R
+
+    def reset(self) -> None:
+        self._R = None
+
+    @property
+    def R(self) -> np.ndarray | None:
+        return self._R
+
+
+# =============================================================================
+# Internal helpers
+# =============================================================================
+
+def _get_cov(X: np.ndarray, R_in: np.ndarray | None) -> np.ndarray:
+    if R_in is not None:
+        return np.asarray(R_in, dtype=complex)
+    return (X @ X.conj().T) / X.shape[1]
