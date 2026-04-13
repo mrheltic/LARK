@@ -58,6 +58,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)   # app-local config.py takes priority
 
 import numpy as np
 
@@ -112,7 +114,7 @@ def main() -> None:
     # ── Profile (must run before any C.* read) ────────────────────────────────
     if args.profile:
         from profiles import apply_profile
-        apply_profile(args.profile)
+        apply_profile(args.profile, C)
 
     freq_hz    = args.freq
     gain_db    = args.gain if args.gain is not None else float(C.GAIN_DB)

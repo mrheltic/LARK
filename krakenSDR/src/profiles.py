@@ -168,9 +168,9 @@ PROFILES: dict[str, dict] = {
     "iridium_1626": {
         "N_ANTENNAS":          5,
         "FREQ_HZ":             1_626_270_000,
-        "GAIN_DB":             15,
+        "GAIN_DB":             49,
         "D_LAMBDA":            0.5,            # cross array arm length [λ] ≈ 9.2 cm
-        "DOA_ALGORITHM":       "MUSIC",
+        "DOA_ALGORITHM":       "2D-MUSIC",
         "DECORRELATION":       "FBA",
         "COV_ALPHA":           0.88,           # lighter smoothing — burst TDMA signals
         "ANGLE_SMOOTH_ALPHA":  0.75,
@@ -200,30 +200,63 @@ PROFILES: dict[str, dict] = {
 
 
 # =============================================================================
-# Apply a profile to the config module
+# Apply a profile to a config module
 # =============================================================================
 
-def apply_profile(name: str) -> None:
+def apply_profile(name: str, target=None) -> None:
     """
-    Overwrite config.py module attributes with values from the named profile.
+    Overwrite config module attributes with values from the named profile.
 
-    Raises KeyError if profile name is not found.
+    Parameters
+    ----------
+    name : str
+        Profile name as defined in PROFILES.
+    target : module, optional
+        The config module to update.  When omitted the function uses the
+        ``config`` module already present in ``sys.modules`` (which, thanks
+        to each app's sys.path ordering, is the app-local config.py).
+
+    Notes
+    -----
+    * Profile keys that do not exist in *target* are silently skipped.
+      This lets a generic profile be applied to an app-specific config that
+      only defines a subset of the profile's keys.
+    * Raises ``KeyError`` for unknown profile names.
+
+    Examples
+    --------
+    From a script that has already done ``import config as C``::
+
+        from profiles import apply_profile
+        apply_profile("ism_868")           # targets sys.modules['config']
+        apply_profile("iridium_1626", C)   # explicit target — identical result
+
+    From an app config at import time (LARK_PROFILE env var)::
+
+        import sys as _sys
+        from profiles import apply_profile as _ap
+        _ap("iridium_1626", _sys.modules[__name__])
     """
-    import config as C
+    import sys as _sys
+
+    if target is None:
+        target = _sys.modules.get("config")
+        if target is None:
+            import config as _c
+            target = _c
 
     if name not in PROFILES:
         available = ", ".join(sorted(PROFILES.keys()))
         raise KeyError(f"Unknown profile '{name}'. Available: {available}")
 
     profile = PROFILES[name]
+    applied = 0
     for key, val in profile.items():
-        if not hasattr(C, key):
-            raise AttributeError(
-                f"Profile '{name}' sets '{key}' but config.py has no such attribute"
-            )
-        setattr(C, key, val)
+        if hasattr(target, key):
+            setattr(target, key, val)
+            applied += 1
 
-    print(f"[Profile] Applied '{name}' ({len(profile)} params)")
+    print(f"[Profile] Applied '{name}' ({applied}/{len(profile)} params)")
 
 
 def list_profiles() -> None:

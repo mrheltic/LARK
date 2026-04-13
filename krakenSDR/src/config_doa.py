@@ -1,7 +1,17 @@
 # =============================================================================
-#  KrakenSDR — DoA algorithm & signal processing configuration
-#  Edit this file to change algorithm, thresholds, calibration, and display.
+#  MOVED — This file's content has been reorganised into apps/doa/config.py
+#
+#  DoA algorithm, array geometry, squelch, and display parameters now live in:
+#    krakenSDR/src/apps/doa/config.py
+#
+#  This stub is kept only so any stale import of "config_doa" produces a
+#  clear error rather than an obscure AttributeError elsewhere.
 # =============================================================================
+raise ImportError(
+    "config_doa.py has been moved.  "
+    "Edit krakenSDR/src/apps/doa/config.py for DoA parameters."
+)
+
 
 # ── DoA algorithm ─────────────────────────────────────────────────────────────
 SCAN_POINTS    = 360            # angular scan resolution (points across −180° … +180°)

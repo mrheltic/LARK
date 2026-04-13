@@ -63,6 +63,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)   # app-local config.py takes priority
 
 import numpy as np
 
@@ -134,8 +136,9 @@ def main() -> None:
 
     # ── Profile (must run before any C.* read) ────────────────────────────────
     if _ARGS.profile:
+        import sys as _sys_mod
         from profiles import apply_profile
-        apply_profile(_ARGS.profile)
+        apply_profile(_ARGS.profile, _sys_mod.modules["config"])
 
     # ══════════════════════════════════════════════════════════════════════════════
     # RESOLVE CONFIGURATION  (dialog → CLI args → config.py defaults)

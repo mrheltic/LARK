@@ -1,48 +1,40 @@
 # =============================================================================
-#  KrakenSDR — Hardware & RF configuration
-#  Edit this file to change hardware, antenna, and radio parameters.
+#  KrakenSDR — Hardware configuration (network & DAQ layer only)
+#
+#  This file contains ONLY hardware-level constants that are independent of
+#  the application scenario and frequency plan:
+#    • Heimdall DAQ network addresses / ports
+#    • Physical hardware constraints (number of channels, ADC rate)
+#
+#  Everything else — frequency, gain, array geometry, DoA algorithm
+#  parameters — lives in the config.py of the relevant application folder:
+#    apps/doa/config.py      ← ISM band direction-finding (868 / 433 MHz …)
+#    apps/iridium/config.py  ← Iridium L-band burst receive & decode
+#    apps/space/config.py    ← 3-D satellite DoA with cross array
+#
+#  The top-level config.py is a backward-compat skeleton that re-exports
+#  these hardware constants for code that has not yet been migrated.
 # =============================================================================
 
 # ── Heimdall DAQ connection ───────────────────────────────────────────────────
-#  Heimdall runs inside the Docker container with network_mode: host,
-#  so ports 5000/5001 are directly reachable at 127.0.0.1.
-HEIMDALL_HOST  = "127.0.0.1"   # Heimdall server IP
-HEIMDALL_PORT  = 5000           # IQ data port
-HEIMDALL_CTRL  = 5001           # control/status port
+#  Heimdall runs on the same host (Docker network_mode: host).
+#  Ports 5000 / 5001 are bound by daq_start_sm.sh and must match
+#  daq_chain_config.ini → [network] / data_ip / ctrl_ip.
+HEIMDALL_HOST  = "127.0.0.1"   # Heimdall server address
+HEIMDALL_PORT  = 5000           # IQ data stream port
+HEIMDALL_CTRL  = 5001           # command / status port
 
-# ── Antenna array geometry ────────────────────────────────────────────────────
-N_ANTENNAS     = 5              # number of KrakenSDR antennas
-
-GEOMETRY       = "UCA"          # "UCA" = uniform circular array  (recommended, full 360°)
-#                                # "ULA" = uniform linear  array
-
-RADIUS_LAMBDA  = 0.358          # [UCA] array radius in fractions of λ
-#                                #  KrakenSDR 5-ant @ 1626 MHz → physical radius ~6.63 cm
-#                                #  λ @ 1626 MHz ≈ 18.5 cm  →  6.63/18.5 ≈ 0.358λ
-
-D_LAMBDA       = 0.5            # [ULA] inter-element spacing  OR  [CROSS] arm length [λ]
-#                                #  For ULA: only used when GEOMETRY = "ULA"
-#                                #  For cross array (space_doa_realtime): arm length in λ
-#                                #  0.5λ @ 1626 MHz ≈ 9.2 cm  |  0.5λ @ 865 MHz ≈ 17.3 cm
-
-# ── RF / Radio ────────────────────────────────────────────────────────────────
-FREQ_HZ        = 1_626_270_000  # carrier frequency [Hz] — Iridium simplex ring alerts
-#                                #  Standard Iridium downlink channel (TDMA)
+# ── SDR hardware constants ────────────────────────────────────────────────────
+N_ANTENNAS     = 5              # number of populated KrakenSDR channels
+#                                #  Change only if using a 3-channel Kerberos or custom HW.
 
 SAMPLE_RATE_HZ = 1.024e6        # ADC sample rate [Hz]
 #                                #  Must match daq_chain_config.ini: sample_rate = 1024000
+#                                #  Valid values for RTL-SDR: 0.25, 0.5, 1.024, 1.4, 1.8,
+#                                #  2.048, 2.4, 2.56, 3.2 (MS/s).  1.024 is the most stable.
 
-GAIN_DB        = 15             # IF gain [dB]  (same value applied to all channels)
-#                                #  Can be overridden per-channel as a list, e.g.: [30, 30, 30, 30, 30]
-#                                #  Valid RTL-SDR discrete gain steps (dB):
-#                                #  0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4,
-#                                #  15.7, 16.6, 19.7, 20.7, 22.9, 25.4, 28.0, 29.7,
-#                                #  32.8, 33.8, 36.4, 37.2, 38.6, 40.2, 42.1, 43.4,
-#                                #  43.9, 44.5, 48.0, 49.6
-
-# ── Sample budget per frame ───────────────────────────────────────────────────
+# ── Frame budget ──────────────────────────────────────────────────────────────
 HW_NUM_SAMPLES  = 0             # IQ samples consumed per Heimdall frame
-#                                #  0 = use all samples sent by Heimdall (auto)
-#                                #  N > 0 = truncate to first N samples
-#                                #  Heimdall typically sends 512–2048 samples/frame
-#                                #  Recommended fixed values: 512, 1024, 2048
+#                                #  0 = use all samples Heimdall sends (automatic, recommended)
+#                                #  N > 0 = truncate each frame to the first N samples
+#                                #  Typical Heimdall frame sizes: 512 / 1024 / 2048 samples

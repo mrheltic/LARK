@@ -44,6 +44,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)   # app-local config.py takes priority
 
 import numpy as np
 import matplotlib
@@ -299,7 +301,7 @@ def main() -> None:
     # ── Profile (must run before any C.* read) ────────────────────────────────
     if args.profile:
         from profiles import apply_profile
-        apply_profile(args.profile)
+        apply_profile(args.profile, C)
 
     # Resolve d_lambda: explicit CLI wins, then profile/config default
     _d_lambda = args.d_lambda if args.d_lambda is not None else float(C.D_LAMBDA)
