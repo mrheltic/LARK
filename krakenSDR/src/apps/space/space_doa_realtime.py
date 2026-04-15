@@ -104,7 +104,7 @@ _SPEC_MIN_PAPR_DB = 3.0    # minimum PAPR [dB] to accept a burst into the EMA
 # UW validation gate
 # ≥ 0.67 means at least 8/12 UW dibits match the DL pattern.
 # Set to 0.0 to disable the filter (accept all power-detected bursts).
-_UW_SCORE_MIN     = 0.5    # 6/12 UW dibits must match (random baseline ≈ 0.25)
+_UW_SCORE_MIN     = 0.5    # 6/12 UW dibits; random match ≈ 0.25; at SNR 6-12 dB genuine bursts score 0.5-0.83
 
 
 # =============================================================================

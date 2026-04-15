@@ -507,13 +507,15 @@ def validate_burst_uw(
     if pre_scan_n >= 16:
         pwin   = x0[:pre_scan_n]
         N_pre  = len(pwin)
-        fa     = np.abs(np.fft.rfft(pwin * np.hanning(N_pre))) ** 2
-        freqs  = np.fft.rfftfreq(N_pre, d=1.0 / sample_rate)
+        # Use full complex FFT — pwin is complex IQ; rfft would discard the
+        # imaginary channel, halving the pilot SNR and generating a warning.
+        fa     = np.abs(np.fft.fftshift(np.fft.fft(pwin * np.hanning(N_pre)))) ** 2
+        freqs  = np.fft.fftshift(np.fft.fftfreq(N_pre, d=1.0 / sample_rate))
 
         pilot_mask = np.abs(freqs - PILOT_TONE_OFFSET_HZ) <= PILOT_TONE_BW_HZ
         noise_mask = (freqs >= 5_000.0) & (freqs <= 20_000.0) & ~pilot_mask
         if not np.any(noise_mask):
-            noise_mask = freqs >= (freqs[-1] * 0.9)
+            noise_mask = np.abs(freqs) >= (np.max(np.abs(freqs)) * 0.9)
         if not np.any(noise_mask):
             noise_mask = np.ones(len(freqs), dtype=bool)
 
@@ -523,7 +525,7 @@ def validate_burst_uw(
             pilot_snr_db = float(10.0 * math.log10(pilot_power / noise_avg + 1e-12))
 
     # ------------------------------------------------------------------
-    # 2. UW check with ±4-symbol timing scan for onset-jitter robustness
+    # 2. UW check with timing scan for onset-jitter robustness
     #
     #    After f_d compensation (carrier at DC), the differential between
     #    consecutive IQ samples separated by one symbol period is:
@@ -531,13 +533,14 @@ def validate_burst_uw(
     #               ≈ A² × exp(j Δφ_dibit_k)
     #    so _nearest_dibit(angle(diff)) returns the correct dibit directly.
     #
-    #    Timing scan: burst onset jitter can place the preamble start up to
-    #    ~GUARD_PRE_SYM symbols early in the burst window.  We try offsets
-    #    δ ∈ {−4, −3, …, +4} symbols and keep the best UW score.
+    #    Timing scan covers δ ∈ {−4, …, +14} symbols:
+    #      • +8 to cover full GUARD_PRE_SYM (8 symbols) if captured
+    #      • +14 for robustness when onset fires slightly before guard_pre ends
+    #      • −4 for onset slightly early (power threshold fires in preamble)
     # ------------------------------------------------------------------
     best_uw_score = 0.0
 
-    for delta_sym in range(-4, 9):        # scan −4 … +8 symbols
+    for delta_sym in range(-4, 15):        # scan −4 … +14 symbols
         ref_idx0 = int(round((_PREAMBLE_SYM - 1 + delta_sym + 0.5) * sps_f))
         if ref_idx0 < 0:
             continue
