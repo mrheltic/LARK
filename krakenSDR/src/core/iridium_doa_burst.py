@@ -65,12 +65,13 @@ References
 
 from __future__ import annotations
 
+import cmath
 import math
 from typing import Optional, Tuple
 
 import numpy as np
 
-from .burst import MAX_DOP_HZ
+from .burst import MAX_DOP_HZ, PILOT_TONE_OFFSET_HZ, PILOT_TONE_BW_HZ
 from .doa_algorithms import covariance
 
 # ---------------------------------------------------------------------------
@@ -94,10 +95,105 @@ try:
     _MAX_DOP_HZ:        float = float(_si.MAX_DOPPLER_HZ)
     _BURST_TOTAL_SYM:   int   = int(_si.BURST_TOTAL_SYM)   # 261 symbols
     _SYMBOL_RATE:       int   = int(_si.SYMBOL_RATE)        # 25_000 sps
+    _GUARD_PRE_SYM:     int   = int(_si.GUARD_PRE_SYM)      # 8
+    _PREAMBLE_SYM:      int   = int(_si.PREAMBLE_SYM)       # 64
+    _UW_SYM:            int   = int(_si.UNIQUE_WORD_SYM)    # 12
 except (ImportError, AttributeError):
     _MAX_DOP_HZ      = MAX_DOP_HZ   # 40_000.0 Hz from core/burst.py
     _BURST_TOTAL_SYM = 261          # gr-iridium: 8+64+12+167+2+8
     _SYMBOL_RATE     = 25_000       # gr-iridium: SYMBOLS_PER_SECOND
+    _GUARD_PRE_SYM   = 8
+    _PREAMBLE_SYM    = 64
+    _UW_SYM          = 12
+
+# ---------------------------------------------------------------------------
+# Unique-Word constants (from gr-iridium/lib/iridium.h)
+# ---------------------------------------------------------------------------
+# DQPSK dibit values (0–3) for downlink and uplink sync words.
+# Dibit → differential phase: 0 → +π/4, 1 → +3π/4, 2 → −3π/4, 3 → −π/4
+_UW_DL: np.ndarray = np.array([0, 2, 2, 2, 2, 0, 0, 0, 2, 0, 0, 2], dtype=np.int8)
+_UW_UL: np.ndarray = np.array([2, 2, 0, 0, 0, 2, 0, 0, 2, 0, 2, 2], dtype=np.int8)
+
+# Dibit index → expected differential phase increment [rad]
+_DIBIT_PHASE_RAD: tuple = (
+    math.pi / 4,        # dibit 0
+    3.0 * math.pi / 4,  # dibit 1
+    -3.0 * math.pi / 4, # dibit 2
+    -math.pi / 4,       # dibit 3
+)
+
+
+def _nearest_dibit(diff_phase: float) -> int:
+    """Map a differential phase (rad) to the nearest DQPSK dibit (0–3)."""
+    # Rotate so that dibit-0 (+π/4) aligns to 0, then quantise in [0, 2π)
+    norm = (diff_phase + math.pi / 4) % (2.0 * math.pi)
+    idx  = int(norm / (math.pi / 2)) % 4
+    # Mapping: quantised 0 → dibit 3, 1 → dibit 0, 2 → dibit 1, 3 → dibit 2
+    return (idx - 1) % 4
+
+
+def _cfo_from_preamble(ch0: np.ndarray, sample_rate: int) -> float:
+    """
+    Estimate the true Doppler CFO from the IRA preamble pilot tone only.
+
+    The IRA preamble (64 constant dibits=0, Δφ=+π/4 per symbol) generates a
+    pure tone at f_carrier + Rs/8 = f_carrier + 3125 Hz.  This function
+    scans the first (GUARD_PRE + PREAMBLE) symbols of the burst window
+    (widened to handle onset timing jitter), finds the spectral peak, and
+    subtracts Rs/8 to return the TRUE carrier Doppler (bias-free).
+
+    Accuracy: ≈ ±(sample_rate / (2 × N_pre)) ≈ ±195 Hz at 1.024 Msps.
+    This is better than the full-burst FFT because the preamble tone is
+    coherent, while the DQPSK payload spreads ±12.5 kHz and pulls the peak.
+
+    Parameters
+    ----------
+    ch0 : complex 1-D array   Channel 0 of the burst window (preamble first).
+    sample_rate : int
+
+    Returns
+    -------
+    f_dop : float   True Doppler [Hz] = FFT peak − Rs/8.  Clamped to ±MAX_DOP_HZ.
+    """
+    pilot_hz = float(_SYMBOL_RATE) / 8.0          # = 3125 Hz  (Rs/8)
+    sps_f    = sample_rate / _SYMBOL_RATE           # ≈ 40.96 at 1.024 Msps
+
+    # Wide scan window: include potential guard_pre (silenced but harmless)
+    scan_n = min(int((_GUARD_PRE_SYM + _PREAMBLE_SYM) * sps_f), len(ch0))
+    if scan_n < 16:
+        return 0.0
+
+    x_pre  = ch0[:scan_n]
+    N_pre  = len(x_pre)
+    window = np.hanning(N_pre)
+    spec   = np.fft.fftshift(np.fft.fft(x_pre * window))
+    freqs  = np.fft.fftshift(np.fft.fftfreq(N_pre, d=1.0 / sample_rate))
+    mag    = np.abs(spec)
+    bin_hz = float(sample_rate) / N_pre
+
+    # Pilot sits at f_d + pilot_hz → restrict search band
+    f_lo      = -_MAX_DOP_HZ + pilot_hz - 2000.0
+    f_hi      =  _MAX_DOP_HZ + pilot_hz + 2000.0
+    mask      = (freqs >= f_lo) & (freqs <= f_hi)
+    if not np.any(mask):
+        mask  = np.ones(N_pre, dtype=bool)
+    mag_m     = np.where(mask, mag, 0.0)
+    pk_idx    = int(np.argmax(mag_m))
+
+    # 3-point parabolic sub-bin interpolation
+    delta = 0.0
+    if 1 <= pk_idx <= N_pre - 2:
+        y_m   = float(mag_m[pk_idx - 1])
+        y_0   = float(mag_m[pk_idx])
+        y_p   = float(mag_m[pk_idx + 1])
+        denom = y_m - 2.0 * y_0 + y_p
+        if abs(denom) > 1e-20:
+            delta = 0.5 * (y_m - y_p) / denom
+            delta = max(-0.5, min(0.5, delta))
+
+    f_peak = float(freqs[pk_idx]) + delta * bin_hz   # = f_d + pilot_hz
+    f_dop  = f_peak - pilot_hz                         # = f_d (true Doppler)
+    return float(np.clip(f_dop, -_MAX_DOP_HZ, _MAX_DOP_HZ))
 
 
 # ---------------------------------------------------------------------------
@@ -188,13 +284,24 @@ def compensate_doppler(
     """
     Estimate and remove the Doppler frequency offset from a 5-channel burst.
 
-    Uses the FFT of Channel 0 only to estimate f_err (Coarse Frequency
-    Recovery), then applies the same corrective phasor to all 5 channels.
+    Uses the preamble pilot tone (first PREAMBLE_SYM symbols, tone at
+    f_carrier + Rs/8 = f_carrier + 3125 Hz) to estimate f_err with sub-bin
+    accuracy, then applies the corrective phasor to all 5 channels.
+
+    This is mathematically superior to a full-burst FFT: the preamble IS a
+    coherent tone, while the DQPSK payload spreads ±12.5 kHz and would bias
+    the peak.  The preamble-only approach is also unbiased: it returns the
+    TRUE Doppler (f_d), not f_d + Rs/8.
 
     Applying the identical phasor to every channel is mathematically mandatory:
     the KrakenSDR is a coherent receiver — all channels see the same carrier
     offset.  A different phasor per channel would corrupt the inter-antenna
     phase differences Δφ = φ_k − φ_0 that encode the DoA information.
+
+    After compensation (f_err = f_d):
+      • Carrier is at DC
+      • Preamble rotates at +Rs/8 = +3125 Hz  (pilot tone visible at +3125 Hz)
+      • UW differentials give the correct DQPSK dibit values  ← key for UW check
 
     Parameters
     ----------
@@ -209,55 +316,13 @@ def compensate_doppler(
         IQ matrix with Doppler removed; inter-antenna phase differences
         are preserved.
     doppler_hz : float
-        Estimated frequency offset [Hz] (positive = satellite approaching).
-
-    Notes
-    -----
-    The Hann window reduces spectral leakage (sidelobes at −13.3 dB) before
-    the FFT.  Three-point parabolic interpolation around the peak brings the
-    accuracy to approximately ±48 Hz (half the bin width at 1.024 Msps /
-    10_690 samples).  The time index n uses float64: at 40_200 Hz over
-    10_690 samples the accumulated phase is ~2141 rad, outside the precision
-    range of float32.
+        True estimated Doppler [Hz] (positive = satellite approaching).
+        Bias-free (unlike the old full-burst FFT which returned f_d + 3125).
     """
     N_burst = burst_matrix.shape[1]
-    bin_hz  = sample_rate / N_burst     # larghezza di un bin FFT [Hz]
 
-    # ── Windowed FFT sul Canale 0 ──────────────────────────────────────────
-    window  = np.hanning(N_burst)
-    x0_win  = burst_matrix[0] * window
-    spectrum = np.fft.fftshift(np.fft.fft(x0_win))     # centred at DC
-    mag      = np.abs(spectrum)
-
-    # Centred frequency axis [Hz]
-    freqs = np.fft.fftshift(np.fft.fftfreq(N_burst, d=1.0 / sample_rate))
-
-    # ── Restrict search to the LEO Doppler band ──────────────────────────────────────
-    # Mask ±MAX_DOP_HZ: guards against out-of-band interferers that would
-    # otherwise dominate argmax and corrupt the Doppler estimate.
-    doppler_mask = np.abs(freqs) <= _MAX_DOP_HZ
-    mag_masked   = np.where(doppler_mask, mag, 0.0)
-
-    # ── Main peak ─────────────────────────────────────────────────────────
-    pk_idx = int(np.argmax(mag_masked))
-
-    # ── Three-point parabolic sub-bin interpolation ─────────────────────────────────
-    # Points: (pk_idx-1, pk_idx, pk_idx+1).  Correction δ ∈ (−0.5, +0.5)
-    # minimises the quantisation error introduced by FFT bin discretisation.
-    #
-    #  δ = 0.5 × (y_{−1} − y_{+1}) / (y_{−1} − 2·y_0 + y_{+1})
-    #
-    delta = 0.0
-    if 1 <= pk_idx <= N_burst - 2:
-        y_m = float(mag_masked[pk_idx - 1])
-        y_0 = float(mag_masked[pk_idx])
-        y_p = float(mag_masked[pk_idx + 1])
-        denom = y_m - 2.0 * y_0 + y_p
-        if abs(denom) > 1e-20:
-            delta = 0.5 * (y_m - y_p) / denom
-            delta = max(-0.5, min(0.5, delta))  # clamp for robustness
-
-    f_err = float(freqs[pk_idx]) + delta * bin_hz   # Hz, sub-bin resolution
+    # ── Preamble-only CFO estimation (unbiased, high-precision) ──────────────
+    f_err = _cfo_from_preamble(burst_matrix[0], sample_rate)  # = true f_d
 
     # ── Corrective phasor, shape (1, N_burst) to broadcast over 5 channels ──
     # φ(n) = −j·2π·f_err·(n/fs)
@@ -266,7 +331,7 @@ def compensate_doppler(
     phasor = np.exp(-1j * 2.0 * math.pi * f_err / sample_rate * n)
     phasor = phasor[np.newaxis, :]   # (1, N_burst) → broadcast to (5, N_burst)
 
-    # ── Multiply all channels ─────────────────────────────────────────────────────────
+    # ── Multiply all channels ────────────────────────────────────────────────
     compensated = (burst_matrix * phasor).astype(np.complex128)
 
     return compensated, f_err
@@ -376,3 +441,135 @@ def detect_and_extract_all_bursts(
         search = onset + N_burst + guard
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Function 5 — Burst validation: pilot tone + Unique Word check
+# ---------------------------------------------------------------------------
+
+def validate_burst_uw(
+    burst: np.ndarray,
+    sample_rate: int = _SAMPLE_RATE_DEFAULT,
+) -> Tuple[float, float]:
+    """
+    Validate an Iridium burst by checking the preamble pilot tone and DL UW.
+
+    Call this on the **Doppler-compensated** burst (output of
+    :func:`compensate_doppler`).  After compensation with the true Doppler
+    f_d (preamble-only estimator):
+      • Carrier is at DC
+      • Preamble pilot tone is at +Rs/8 = +3125 Hz  ← PILOT_TONE_OFFSET_HZ
+      • UW differential phases = Δφ_dibit exactly   ← enables correct decoding
+
+    Parameters
+    ----------
+    burst : np.ndarray, shape (5, N_burst), dtype complex
+        Doppler-compensated 5-channel burst.  Only Channel 0 is used.
+        First sample is approximately the preamble onset (guard_pre is
+        silence and the power-envelope detector fires at the preamble start).
+    sample_rate : int
+        Hardware sample rate [Hz].
+
+    Returns
+    -------
+    pilot_snr_db : float
+        SNR [dB] of the preamble pilot tone (+3125 Hz) vs 5–20 kHz noise.
+        Values > 6 dB indicate a genuine Iridium IRA preamble.
+    uw_score : float
+        Fraction of 12 DL-UW dibits that match ``[0,2,2,2,2,0,0,0,2,0,0,2]``
+        (range 0.0–1.0; random ≈ 0.25; genuine IRA ≥ 0.67).
+        A timing scan over ±4 symbols is performed to handle onset jitter.
+
+    Notes
+    -----
+    Burst timing (symbols from preamble onset)::
+
+        |←64 preamble→|←12 UW→|←167 data→|←2 tail→|←8 guard_post→|
+
+    The guard_pre (8 silent symbols before the preamble) is NOT captured
+    in the burst window because the power detector fires at the preamble
+    onset, not at the guard_pre start.
+    """
+    sps_f = sample_rate / _SYMBOL_RATE          # 40.96 at 1.024 Msps
+
+    x0 = burst[0]   # Channel 0 only
+    N  = len(x0)
+
+    # Boundaries based on burst window starting AT preamble (no guard_pre)
+    pre_scan_n  = min(int((_GUARD_PRE_SYM + _PREAMBLE_SYM) * sps_f), N)  # wide scan
+    preamble_n  = int(_PREAMBLE_SYM * sps_f)                              # nominal end
+
+    # ------------------------------------------------------------------
+    # 1. Pilot tone SNR: scan x0[0 : pre_scan_n]
+    #    After f_d compensation, preamble pilot sits at +3125 Hz.
+    # ------------------------------------------------------------------
+    pilot_snr_db: float = 0.0
+    if pre_scan_n >= 16:
+        pwin   = x0[:pre_scan_n]
+        N_pre  = len(pwin)
+        fa     = np.abs(np.fft.rfft(pwin * np.hanning(N_pre))) ** 2
+        freqs  = np.fft.rfftfreq(N_pre, d=1.0 / sample_rate)
+
+        pilot_mask = np.abs(freqs - PILOT_TONE_OFFSET_HZ) <= PILOT_TONE_BW_HZ
+        noise_mask = (freqs >= 5_000.0) & (freqs <= 20_000.0) & ~pilot_mask
+        if not np.any(noise_mask):
+            noise_mask = freqs >= (freqs[-1] * 0.9)
+        if not np.any(noise_mask):
+            noise_mask = np.ones(len(freqs), dtype=bool)
+
+        if np.any(pilot_mask) and np.any(noise_mask):
+            pilot_power  = float(np.max(fa[pilot_mask]))
+            noise_avg    = float(np.mean(fa[noise_mask])) + 1e-30
+            pilot_snr_db = float(10.0 * math.log10(pilot_power / noise_avg + 1e-12))
+
+    # ------------------------------------------------------------------
+    # 2. UW check with ±4-symbol timing scan for onset-jitter robustness
+    #
+    #    After f_d compensation (carrier at DC), the differential between
+    #    consecutive IQ samples separated by one symbol period is:
+    #        diff[k] = x[n_k] × x[n_{k-1}].conj()
+    #               ≈ A² × exp(j Δφ_dibit_k)
+    #    so _nearest_dibit(angle(diff)) returns the correct dibit directly.
+    #
+    #    Timing scan: burst onset jitter can place the preamble start up to
+    #    ~GUARD_PRE_SYM symbols early in the burst window.  We try offsets
+    #    δ ∈ {−4, −3, …, +4} symbols and keep the best UW score.
+    # ------------------------------------------------------------------
+    best_uw_score = 0.0
+
+    for delta_sym in range(-4, 9):        # scan −4 … +8 symbols
+        ref_idx0 = int(round((_PREAMBLE_SYM - 1 + delta_sym + 0.5) * sps_f))
+        if ref_idx0 < 0:
+            continue
+
+        matches = 0
+        valid   = 0
+        prev_ok = True
+        prev    = x0[ref_idx0] if ref_idx0 < N else None
+
+        for k in range(_UW_SYM):
+            sym_idx = int(round((_PREAMBLE_SYM + k + delta_sym + 0.5) * sps_f))
+            if sym_idx >= N or prev is None:
+                prev_ok = False
+                break
+
+            curr = x0[sym_idx]
+            if abs(prev) < 1e-20 or abs(curr) < 1e-20:
+                prev = curr
+                valid += 1
+                continue
+
+            diff_phase = cmath.phase(curr * prev.conjugate())
+            dibit      = _nearest_dibit(diff_phase)
+
+            if dibit == int(_UW_DL[k]):
+                matches += 1
+            valid += 1
+            prev = curr
+
+        if valid >= _UW_SYM // 2:
+            score = float(matches / valid)
+            if score > best_uw_score:
+                best_uw_score = score
+
+    return pilot_snr_db, best_uw_score

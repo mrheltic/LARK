@@ -64,6 +64,7 @@ from core.iridium_doa_burst import (
     detect_and_extract_all_bursts,
     compensate_doppler,
     compute_single_shot_covariance,
+    validate_burst_uw,
 )
 from core.doa_algorithms_3d import (
     CROSS_ARRAY_CANONICAL_ORDER,
@@ -99,6 +100,11 @@ _SOLVER_SHORT = short_cross_array_labels(CROSS_ARRAY_CANONICAL_ORDER)
 # Spectrum EMA (temporal smoothing of 2D MUSIC map)
 _SPEC_EMA_ALPHA   = 0.35   # blend fraction per new burst (0=frozen, 1=no memory)
 _SPEC_MIN_PAPR_DB = 3.0    # minimum PAPR [dB] to accept a burst into the EMA
+
+# UW validation gate
+# ≥ 0.67 means at least 8/12 UW dibits match the DL pattern.
+# Set to 0.0 to disable the filter (accept all power-detected bursts).
+_UW_SCORE_MIN     = 0.5    # 6/12 UW dibits must match (random baseline ≈ 0.25)
 
 
 # =============================================================================
@@ -395,6 +401,8 @@ def main() -> None:
         frame_count    = 0
         burst_count    = 0
         pass_count     = 0      # satellite passes detected by PassTracker
+        uw_score       = 0.0    # last accepted burst UW correlation [0–1]
+        pilot_snr_db   = 0.0    # preamble pilot SNR of last accepted burst [dB]
         ph_offsets     = PH_OFF.copy()  # live-adjustable
         az_zero_offset = 0.0
         # Accumulated (EMA) spectrum for stable display
@@ -470,14 +478,24 @@ def main() -> None:
             papr_best = -999.0; snr_best = 0.0
             ev_best   = np.zeros(N_ANT);  coh_best = np.eye(N_ANT)
             burst_input_for_rec = None
+            uw_score_best = 0.0;  pilot_snr_best = 0.0
+            dop_hz_best   = 0.0
 
             if MODE == "BURST":
                 bursts_all = detect_and_extract_all_bursts(
                     X_input, threshold_db=THRESHOLD, sample_rate=int(FS)
                 )
                 for bi in bursts_all:
-                    b_r       = reorder_cross_array_channels(bi, _INPUT_ORDER)
-                    comp_i, _ = compensate_doppler(b_r, sample_rate=int(FS))
+                    b_r           = reorder_cross_array_channels(bi, _INPUT_ORDER)
+                    comp_i, f_dop_i = compensate_doppler(b_r, sample_rate=int(FS))
+
+                    # ── UW validation gate ────────────────────────────────────
+                    pilot_snr_i, uw_score_i = validate_burst_uw(
+                        comp_i, sample_rate=int(FS)
+                    )
+                    if uw_score_i < _UW_SCORE_MIN:
+                        continue   # reject: UW pattern mismatch
+
                     R_i       = compute_single_shot_covariance(comp_i)
                     if USE_FBA:
                         R_i = _fba(R_i)
@@ -491,6 +509,9 @@ def main() -> None:
                         ev_best   = eigenvalue_spread_db(R_i)
                         coh_best  = coherence_matrix(R_i)
                         burst_input_for_rec = bi
+                        uw_score_best  = uw_score_i
+                        pilot_snr_best = pilot_snr_i
+                        dop_hz_best    = f_dop_i
                     n_bursts_found += 1
                 if n_bursts_found > 0:
                     got_burst = True
@@ -539,7 +560,9 @@ def main() -> None:
                     S.R_now    = R.copy()
                     S.h_az.append(az)
                     S.h_el.append(el)
-                    S.burst_count += max(1, n_bursts_found)
+                    S.burst_count  += max(1, n_bursts_found)
+                    S.uw_score      = uw_score_best
+                    S.pilot_snr_db  = pilot_snr_best
                     if rf_papr >= _SPEC_MIN_PAPR_DB:
                         S.spec_ema = ((1.0 - _SPEC_EMA_ALPHA) * S.spec_ema
                                       + _SPEC_EMA_ALPHA * spec)
@@ -811,6 +834,8 @@ def main() -> None:
             h_papr = list(S.h_papr); h_snr  = list(S.h_snr)
             n_b    = S.burst_count;  n_f    = S.frame_count
             n_pass = S.pass_count
+            uw_sc  = S.uw_score
+            p_snr  = S.pilot_snr_db
             rec    = S.recording
             R      = S.R_now.copy()
 
@@ -835,7 +860,7 @@ def main() -> None:
         for bar, val in zip(bars_eig, ev):
             bar.set_height(max(val, 0))
         spread = float(ev[0]) - float(ev[-1]) if len(ev) > 1 else 0.0
-        txt_eig.set_text(f"spread={spread:.0f}dB")
+        txt_eig.set_text(f"spread={spread:.0f}dB  UW:{uw_sc:.2f}  Pilot:{p_snr:.0f}dB")
         bars_eig[0].set_color(C_BLUE if spread > 5.0 else C_DIM)
 
         # Coherence
