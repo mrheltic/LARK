@@ -405,7 +405,12 @@ def main() -> None:
     acq_thread.start()
 
     # ── Save helper ────────────────────────────────────────────────────────────
+    _saved = [False]   # guard against double-save (close_event + post-show)
+
     def _save():
+        if _saved[0]:
+            return
+        _saved[0] = True
         with S.lock:
             if not S.bursts:
                 print("[COL] No bursts collected — nothing saved.")
@@ -434,6 +439,8 @@ def main() -> None:
     if args.no_gui:
         try:
             print("[COL] Running headless. Press Ctrl-C to stop.")
+            print("[COL] Waiting for Heimdall connection on "
+                  f"{HOST}:{PORT} — start Heimdall if not running.")
             while S.running:
                 time.sleep(0.5)
         except KeyboardInterrupt:
@@ -621,7 +628,7 @@ def main() -> None:
 
     S.running = False
     time.sleep(0.3)
-    _save()
+    _save()  # no-op if _on_close already saved
 
 
 if __name__ == "__main__":
