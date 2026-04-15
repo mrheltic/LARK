@@ -249,6 +249,31 @@ def main() -> None:
 
     print(f"\n[PB] Done in {time.time()-t0:.1f}s")
 
+    # ── Accumulated PAPR-weighted hot-zone spectrum ───────────────────────────
+    # Convert each 2D MUSIC spectrum from dB to linear, weight by (PAPR - floor),
+    # sum, gaussian-smooth, then normalise to [0,1] for display.
+    _papr_floor = float(np.percentile(all_papr, 25))
+    _papr_w = np.maximum(all_papr - _papr_floor, 0.0).astype(np.float64)
+    _spec_lin = 10.0 ** (all_spec.astype(np.float64) / 10.0)  # (N, N_EL, N_AZ)
+    if _papr_w.sum() > 1e-10:
+        acc_spec_lin = np.einsum('i,ijk->jk', _papr_w / _papr_w.sum(), _spec_lin)
+    else:
+        acc_spec_lin = _spec_lin.mean(axis=0)
+    try:
+        from scipy.ndimage import gaussian_filter
+        acc_spec_lin = gaussian_filter(acc_spec_lin, sigma=1.5)
+    except ImportError:
+        pass
+    _acc_min = acc_spec_lin.min(); _acc_max = acc_spec_lin.max()
+    acc_norm = ((acc_spec_lin - _acc_min) / (_acc_max - _acc_min + 1e-30)).astype(np.float32)
+    # Peak of accumulated map → best overall estimate
+    _best_flat = int(np.argmax(acc_norm))
+    _best_el_i, _best_az_i = np.unravel_index(_best_flat, acc_norm.shape)
+    best_az = float(cfg.az_range_deg()[_best_az_i])
+    best_el = float(cfg.el_range_deg()[_best_el_i])
+    print(f"[PB] Accumulated hot-zone peak:  Az={best_az:.1f}°  El={best_el:.1f}°  "
+          f"(PAPR floor={_papr_floor:.1f} dB)")
+
     # ── GUI ───────────────────────────────────────────────────────────────────
     plt.rcParams.update({
         "font.family": "DejaVu Sans", "font.size": 8,
@@ -301,6 +326,18 @@ def main() -> None:
     ax_sky.grid(color=C_BORDER, linewidth=0.5, alpha=0.6)
     ax_sky.spines["polar"].set_color(C_BORDER)
 
+    # Scatter all burst estimates as faint dots — opacity proportional to PAPR
+    _papr_max = float(all_papr.max()) if all_papr.max() > 1e-6 else 1.0
+    for _si in range(N):
+        _t_i, _r_i = skyplot_coords(float(all_az[_si]), float(all_el[_si]))
+        _alpha = float(np.clip((all_papr[_si] - 1.0) / (_papr_max - 1.0 + 1e-6), 0.05, 0.8))
+        ax_sky.plot(_t_i, _r_i, "o", color=C_AMBER, markersize=3.5,
+                    alpha=_alpha, zorder=2, markeredgecolor="none")
+    # Mark accumulated best-estimate on sky plot
+    _t_best, _r_best = skyplot_coords(best_az, best_el)
+    ax_sky.plot(_t_best, _r_best, "*", color=C_LIME, markersize=14,
+                markeredgecolor=BG, markeredgewidth=1.0, zorder=6)
+
     th_edges, r_edges = make_sky_heatmap_edges(cfg)
     T_e, R_e = np.meshgrid(th_edges, r_edges)
     sky_mesh = ax_sky.pcolormesh(T_e, R_e, np.flipud(all_spec[0]),
@@ -318,17 +355,29 @@ def main() -> None:
         ha="center", fontsize=7.5, color=C_TEXT, fontweight="semibold",
     )
 
-    # Panel 1: Heat map ────────────────────────────────────────────────────────
-    _style(ax_heat, "2D Spectrum  (Az × El)", "Azimuth [°]", "Elevation [°]")
+    # Panel 1: Hot zone accumulated map ───────────────────────────────────────
+    n_valid = int((all_papr > 3.5).sum())
+    _style(ax_heat, f"Hot Zone  ({n_valid}/{N} bursts PAPR>3.5 dB)", "Azimuth [°]", "Elevation [°]")
     az_c, el_c = cfg.az_range_deg(), cfg.el_range_deg()
     heat_img   = ax_heat.imshow(
-        all_spec[0], aspect="auto", origin="lower",
+        acc_norm, aspect="auto", origin="lower",
         extent=[az_c[0], az_c[-1], el_c[0], el_c[-1]],
-        cmap="inferno", vmin=-40, vmax=0,
+        cmap="hot", vmin=0, vmax=1,
     )
-    heat_vline = ax_heat.axvline(0.0, color=C_LIME, linewidth=1.0, alpha=0.7)
-    heat_hline = ax_heat.axhline(el_c[-1], color=C_LIME, linewidth=1.0, alpha=0.7)
-    txt_heat   = ax_heat.text(0.02, 0.97, "", transform=ax_heat.transAxes,
+    # Contour lines at 50% and 80% of peak
+    try:
+        ax_heat.contour(az_c, el_c, acc_norm,
+                        levels=[0.5, 0.8], colors=[C_TEAL, C_LIME],
+                        linewidths=[0.8, 1.2], alpha=0.9)
+    except Exception:
+        pass
+    # Mark accumulated peak
+    ax_heat.plot(best_az, best_el, "*", color=C_LIME, markersize=12,
+                 markeredgecolor=BG, markeredgewidth=1.0, zorder=6)
+    heat_vline = ax_heat.axvline(best_az, color=C_AMBER, linewidth=1.0, alpha=0.6, linestyle="--")
+    heat_hline = ax_heat.axhline(best_el, color=C_AMBER, linewidth=1.0, alpha=0.6, linestyle="--")
+    txt_heat   = ax_heat.text(0.02, 0.97, f"Best: Az={best_az:.1f}°  El={best_el:.1f}°",
+                               transform=ax_heat.transAxes,
                                fontsize=7, color=C_TEXT, va="top",
                                bbox=dict(facecolor=BG3, edgecolor="none", alpha=0.7))
 
@@ -477,11 +526,11 @@ def main() -> None:
         sky_az_line.set_data([t_pk, t_pk], [0, 90])
         txt_sky.set_text(f"Az: {az:6.1f}°   El: {el:5.1f}°   PAPR: {papr:.1f} dB")
 
-        # 2D heatmap
-        heat_img.set_data(spec)
+        # Hot zone (static accumulated map) — only update crosshair for current frame
         heat_vline.set_xdata([az, az])
         heat_hline.set_ydata([el, el])
-        txt_heat.set_text(f"Az={az:.1f}°  El={el:.1f}°")
+        txt_heat.set_text(f"Best: Az={best_az:.1f}°  El={best_el:.1f}°\n"
+                          f"Frame {i}: Az={az:.1f}°  El={el:.1f}°  PAPR={papr:.1f}dB")
 
         # History
         line_az.set_ydata(az_w); line_el.set_ydata(el_w)
