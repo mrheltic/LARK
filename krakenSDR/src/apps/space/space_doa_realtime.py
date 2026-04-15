@@ -33,6 +33,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -65,17 +66,20 @@ from core.iridium_doa_burst import (
     compensate_doppler,
     compute_single_shot_covariance,
     validate_burst_uw,
+    narrowband_filter_burst,
 )
 from core.doa_algorithms_3d import (
     CROSS_ARRAY_CANONICAL_ORDER,
     CrossArrayConfig,
     CovarianceAccumulator3D,
+    SatellitePassAccumulator,
     doa_music_2d,
     doa_capon_2d,
     find_peak_2d,
     make_sky_heatmap_edges,
     skyplot_coords,
     eigenvalue_spread_db,
+    estimate_signal_count,
     snr_from_covariance,
     coherence_matrix,
     normalize_cross_array_order,
@@ -427,6 +431,9 @@ def main() -> None:
     # ── Covariance accumulator (CW mode) ─────────────────────────────────────
     accum = CovarianceAccumulator3D(alpha=COV_ALPHA)
 
+    # ── Per-pass spectrum accumulator ────────────────────────────────────────
+    pass_acc = SatellitePassAccumulator(cfg)
+
     # ── BurstDetector: per-frame RF metrics (PAPR, SNR, Doppler, pilot) ─────
     _burst_n = max(4096, int(261 * FS / 25_000))   # 10690 at 1.024 Msps
     bd = BurstDetector(
@@ -503,6 +510,9 @@ def main() -> None:
                     b_r           = reorder_cross_array_channels(bi, _INPUT_ORDER)
                     comp_i, f_dop_i = compensate_doppler(b_r, sample_rate=int(FS))
 
+                    # ── Narrowband filter (28 kHz → one FDMA channel) ─────────
+                    comp_i = narrowband_filter_burst(comp_i, sample_rate=int(FS))
+
                     # ── UW validation gate ────────────────────────────────────
                     pilot_snr_i, uw_score_i = validate_burst_uw(
                         comp_i, sample_rate=int(FS)
@@ -520,8 +530,12 @@ def main() -> None:
                     if spread_i < _EIG_SPREAD_MIN_DB:
                         continue   # reject: insufficient spatial SNR
 
-                    spec_i = _doa_fn(b_r, cfg, R_in=R_i)
-                    az_i, el_i, papr_i = find_peak_2d(spec_i, cfg)
+                    # ── Dynamic signal count (MDL) ────────────────────────────
+                    n_sig_i = max(1, estimate_signal_count(R_i, _burst_n))
+                    cfg_i   = dataclasses.replace(cfg, num_expected_signals=n_sig_i)
+
+                    spec_i = _doa_fn(comp_i, cfg_i, R_in=R_i)
+                    az_i, el_i, papr_i = find_peak_2d(spec_i, cfg_i)
                     snr_i  = snr_from_covariance(R_i)
                     if papr_i > papr_best:
                         spec_best = spec_i;  R_best    = R_i
@@ -545,6 +559,10 @@ def main() -> None:
 
             # ── PassTracker: detect new satellite pass ────────────────────────
             new_pass = pt.update(bd_result.doppler_hz, bd_result.is_burst)
+
+            # ── Pass accumulator: weighted average of accepted burst spectra ──
+            if got_burst and MODE == "BURST" and spec_best is not None:
+                pass_acc.update(spec_best, papr_db=papr_best, new_pass=new_pass)
 
             # ── Compute DoA outside the lock ──────────────────────────────────
             if got_burst and R is not None:

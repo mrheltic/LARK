@@ -45,3 +45,8 @@ from .iridium_doa_burst import (   # noqa: F401
     compensate_doppler,
     compute_single_shot_covariance,
 )
+
+from .doa_algorithms_3d import (  # noqa: F401
+    estimate_signal_count,
+    SatellitePassAccumulator,
+)

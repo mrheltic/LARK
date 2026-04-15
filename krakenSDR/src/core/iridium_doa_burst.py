@@ -132,6 +132,92 @@ def _nearest_dibit(diff_phase: float) -> int:
     return (idx - 1) % 4
 
 
+# ---------------------------------------------------------------------------
+# Narrowband FIR filter — applied post-CFO to isolate one FDMA channel
+# ---------------------------------------------------------------------------
+
+def _design_bpf(bandwidth_hz: float, sample_rate: int, n_taps: int) -> np.ndarray:
+    """
+    Return a linear-phase FIR lowpass kernel of length ``n_taps``
+    with cut-off at ±bandwidth_hz / 2.
+
+    After CFO compensation the desired carrier is at DC, so a lowpass filter
+    is equivalent to a bandpass centred on zero.  Uses a Hann-windowed sinc.
+    """
+    fc    = bandwidth_hz / 2.0 / sample_rate   # normalised cut-off (0..0.5)
+    # Odd length for linear phase / zero group delay at centre
+    if n_taps % 2 == 0:
+        n_taps += 1
+    half  = n_taps // 2
+    t     = np.arange(-half, half + 1, dtype=np.float64)
+    sinc  = np.sinc(2.0 * fc * t)              # normalised sinc
+    win   = np.hanning(n_taps)
+    h     = sinc * win
+    h    /= h.sum()                            # unity DC gain
+    return h
+
+
+def narrowband_filter_burst(
+    compensated: np.ndarray,
+    sample_rate: int = _SAMPLE_RATE_DEFAULT,
+    bandwidth_hz: float = 28_000.0,
+    n_taps: int = 257,
+) -> np.ndarray:
+    """
+    Apply a narrowband lowpass (= bandpass at DC) FIR filter to a
+    Doppler-compensated 5-channel burst.
+
+    After :func:`compensate_doppler`, the desired Iridium DQPSK carrier is at
+    DC.  However the digitised bandwidth at 1.024 Msps captures ~24 adjacent
+    Iridium FDMA channels (41.667 kHz spacing).  Without filtering, their
+    carriers appear in the covariance matrix as additional signal-subspace
+    components, inflating the estimated signal count D and causing MUSIC to
+    pick spurious directions.
+
+    The Iridium IRA symbol rate is 25 ksps with RRC roll-off β=0.4, so the
+    one-sided bandwidth is Rs × (1+β)/2 = 17.5 kHz; a ±14 kHz passband
+    (bandwidth_hz=28 kHz) retains >99% of signal energy while attenuating
+    adjacent channels by >30 dB (Hann-windowed FIR at n_taps=257,
+    roll-off starts at 14 kHz, first null at ~18 kHz).
+
+    Important: the filter is applied **after** compensate_doppler so it
+    does not corrupt the inter-channel phase differences φ_k − φ_0 used
+    by MUSIC (every channel is filtered with the identical kernel → phase
+    differences are preserved).
+
+    Parameters
+    ----------
+    compensated  : (5, N_burst) complex, output of compensate_doppler().
+    sample_rate  : hardware sample rate [Hz].
+    bandwidth_hz : two-sided passband [Hz].  Default 28 kHz covers the Iridium
+                   IRA burst including RRC tails with ~10 dB guard to adjacent
+                   channels at 41.667 kHz.
+    n_taps       : FIR length (odd preferred).  Default 257 gives ~30 dB
+                   rejection at ±21 kHz (adjacent channel centre).
+
+    Returns
+    -------
+    filtered : (5, N_burst) complex128 — same shape, filtered IQ.
+    """
+    h = _design_bpf(bandwidth_hz, sample_rate, n_taps).astype(np.float64)
+
+    # scipy.signal.lfilter preserves sample count and is O(n_taps × N).
+    # The group delay is (n_taps−1)//2 samples; we compensate by shifting.
+    from scipy.signal import lfilter
+    delay = (len(h) - 1) // 2
+    N_burst = compensated.shape[1]
+
+    filtered = np.empty_like(compensated, dtype=np.complex128)
+    for ch in range(compensated.shape[0]):
+        x = compensated[ch].astype(np.complex128)
+        # Pad with zeros on the right to flush the filter, then trim
+        padded  = np.append(x, np.zeros(delay, dtype=np.complex128))
+        out     = lfilter(h, 1.0, padded)
+        filtered[ch] = out[delay: delay + N_burst]
+
+    return filtered
+
+
 def _cfo_from_preamble(ch0: np.ndarray, sample_rate: int) -> float:
     """
     Estimate the total CFO (channel offset + Doppler) from the IRA preamble.
