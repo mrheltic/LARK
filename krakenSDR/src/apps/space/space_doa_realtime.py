@@ -106,6 +106,12 @@ _SPEC_MIN_PAPR_DB = 3.0    # minimum PAPR [dB] to accept a burst into the EMA
 # Set to 0.0 to disable the filter (accept all power-detected bursts).
 _UW_SCORE_MIN     = 0.5    # 6/12 UW dibits; random match ≈ 0.25; at SNR 6-12 dB genuine bursts score 0.5-0.83
 
+# Eigenvalue spread gate: minimum dB spread between largest and smallest eigenvalue.
+# Bursts below this threshold have insufficient spatial SNR for reliable DoA.
+# Recording analysis shows genuine Iridium bursts: spread 5-19 dB (mean ~12 dB).
+# Bursts with spread < 8 dB increase DoA error and should be skipped.
+_EIG_SPREAD_MIN_DB = 8.0   # dB; set to 0.0 to disable
+
 
 # =============================================================================
 # Config Dialog
@@ -499,6 +505,13 @@ def main() -> None:
                     R_i       = compute_single_shot_covariance(comp_i)
                     if USE_FBA:
                         R_i = _fba(R_i)
+
+                    # ── Eigenvalue spread gate ────────────────────────────────
+                    ev_i    = eigenvalue_spread_db(R_i)
+                    spread_i = float(ev_i[0] - ev_i[-1]) if len(ev_i) > 1 else 0.0
+                    if spread_i < _EIG_SPREAD_MIN_DB:
+                        continue   # reject: insufficient spatial SNR
+
                     spec_i = _doa_fn(b_r, cfg, R_in=R_i)
                     az_i, el_i, papr_i = find_peak_2d(spec_i, cfg)
                     snr_i  = snr_from_covariance(R_i)
@@ -506,12 +519,12 @@ def main() -> None:
                         spec_best = spec_i;  R_best    = R_i
                         az_best   = az_i;    el_best   = el_i
                         papr_best = papr_i;  snr_best  = snr_i
-                        ev_best   = eigenvalue_spread_db(R_i)
-                        coh_best  = coherence_matrix(R_i)
                         burst_input_for_rec = bi
                         uw_score_best  = uw_score_i
                         pilot_snr_best = pilot_snr_i
                         dop_hz_best    = f_dop_i
+                        ev_best        = ev_i
+                        coh_best       = coherence_matrix(R_i)
                     n_bursts_found += 1
                 if n_bursts_found > 0:
                     got_burst = True
@@ -765,6 +778,11 @@ def main() -> None:
 
     def _on_rec(_):
         with S.lock:
+            if not S.recording:
+                # Starting a new session: clear any previous burst buffer
+                S.rec_bursts.clear()
+                S.rec_timestamps.clear()
+                S.t_start = time.time()
             S.recording = not S.recording
         btn_rec.label.set_text("■ Stop rec" if S.recording else "● Record")
         btn_rec.color = "#4b1f1f" if S.recording else BG3
@@ -801,6 +819,8 @@ def main() -> None:
                 print("[DOA] No data recorded."); return
             frames_arr = np.stack(S.rec_bursts, axis=0)
             ts_arr     = np.array(S.rec_timestamps, dtype=np.float64)
+            n_saved    = len(frames_arr)
+            dur_s      = float(time.time() - S.t_start)
         npz_p  = os.path.join(_rec_dir, base + ".npz")
         json_p = os.path.join(_rec_dir, base + ".json")
         np.savez_compressed(npz_p, bursts=frames_arr, timestamps=ts_arr)
@@ -814,10 +834,20 @@ def main() -> None:
                 "solver_channel_order": list(CROSS_ARRAY_CANONICAL_ORDER),
                 "phase_offsets_deg_input_order": list(np.rad2deg(S.ph_offsets)),
                 "burst_threshold_db": THRESHOLD,
-                "n_frames": int(len(S.rec_bursts)),
-                "duration_s": float(time.time() - S.t_start),
+                "n_frames": n_saved,
+                "duration_s": dur_s,
             }, f, indent=2)
-        print(f"[DOA] Saved {npz_p}  ({len(S.rec_bursts)} frames)")
+        n_saved = len(S.rec_bursts)
+        # Clear buffer so that pressing Save again doesn't produce a duplicate.
+        # Also stop recording so the user knows a fresh session is needed.
+        with S.lock:
+            S.rec_bursts.clear()
+            S.rec_timestamps.clear()
+            S.recording = False
+        btn_rec.label.set_text("● Record")
+        btn_rec.color = BG3
+        fig.canvas.draw_idle()
+        print(f"[DOA] Saved {npz_p}  ({n_saved} frames)")
 
     # ── Animation ─────────────────────────────────────────────────────────────
     def _update(_):
@@ -884,8 +914,7 @@ def main() -> None:
 
     def _on_close(_):
         S.running = False
-        if S.rec_bursts:
-            _do_save()
+        _do_save()   # no-op if buffer is empty; avoids data-loss on window close
 
     fig.canvas.mpl_connect("close_event", _on_close)
 
