@@ -61,6 +61,7 @@ import config as C
 from hardware.kraken_iq_source import KrakenIQSource
 from core.iridium_doa_burst import (
     detect_and_extract_burst,
+    detect_and_extract_all_bursts,
     compensate_doppler,
     compute_single_shot_covariance,
 )
@@ -80,7 +81,7 @@ from core.doa_algorithms_3d import (
     reorder_cross_array_channels,
     short_cross_array_labels,
 )
-from core.burst import IRD_CHANS
+from core.burst import IRD_CHANS, BurstDetector, PassTracker
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 BG       = "#1a1d27"; BG2 = "#21253a"; BG3 = "#2a2f47"
@@ -393,6 +394,7 @@ def main() -> None:
         t_start        = time.time()
         frame_count    = 0
         burst_count    = 0
+        pass_count     = 0      # satellite passes detected by PassTracker
         ph_offsets     = PH_OFF.copy()  # live-adjustable
         az_zero_offset = 0.0
         # Accumulated (EMA) spectrum for stable display
@@ -402,6 +404,17 @@ def main() -> None:
 
     # ── Covariance accumulator (CW mode) ─────────────────────────────────────
     accum = CovarianceAccumulator3D(alpha=COV_ALPHA)
+
+    # ── BurstDetector: per-frame RF metrics (PAPR, SNR, Doppler, pilot) ─────
+    _burst_n = max(4096, int(261 * FS / 25_000))   # 10690 at 1.024 Msps
+    bd = BurstDetector(
+        fs        = FS,
+        burst_n   = _burst_n,
+        burst_snr = 4.0,    # loose — just for per-frame metrics
+        burst_papr= 2.0,
+    )
+    # ── PassTracker: detect satellite transitions ────────────────────────────
+    pt = PassTracker()
 
     # ── Heimdall ──────────────────────────────────────────────────────────────
     kraken = KrakenIQSource(
@@ -444,64 +457,102 @@ def main() -> None:
             fft  = np.fft.fftshift(np.fft.fft(seg * win))
             fft_db = np.clip(20.0 * np.log10(np.abs(fft) + 1e-12), -80.0, 0.0)
 
-            R = None
-            got_burst = False
+            # ── Per-frame RF metrics (always, regardless of burst) ────────────
+            bd_result  = bd.process(X_input[0])
+            rf_papr    = bd_result.burst_papr_db
+            rf_dop_khz = bd_result.doppler_hz / 1000.0
+
+            R              = None
+            got_burst      = False
+            n_bursts_found = 0
+            spec_best           = None;  R_best    = None
+            az_best   = 0.0;  el_best   = 45.0
+            papr_best = -999.0; snr_best = 0.0
+            ev_best   = np.zeros(N_ANT);  coh_best = np.eye(N_ANT)
+            burst_input_for_rec = None
 
             if MODE == "BURST":
-                burst_input = detect_and_extract_burst(
+                bursts_all = detect_and_extract_all_bursts(
                     X_input, threshold_db=THRESHOLD, sample_rate=int(FS)
                 )
-                if burst_input is not None:
-                    burst = reorder_cross_array_channels(burst_input, _INPUT_ORDER)
-                    comp, _ = compensate_doppler(burst, sample_rate=int(FS))
-                    R = compute_single_shot_covariance(comp)
-                    got_burst = True
+                for bi in bursts_all:
+                    b_r       = reorder_cross_array_channels(bi, _INPUT_ORDER)
+                    comp_i, _ = compensate_doppler(b_r, sample_rate=int(FS))
+                    R_i       = compute_single_shot_covariance(comp_i)
                     if USE_FBA:
-                        R = _fba(R)
+                        R_i = _fba(R_i)
+                    spec_i = _doa_fn(b_r, cfg, R_in=R_i)
+                    az_i, el_i, papr_i = find_peak_2d(spec_i, cfg)
+                    snr_i  = snr_from_covariance(R_i)
+                    if papr_i > papr_best:
+                        spec_best = spec_i;  R_best    = R_i
+                        az_best   = az_i;    el_best   = el_i
+                        papr_best = papr_i;  snr_best  = snr_i
+                        ev_best   = eigenvalue_spread_db(R_i)
+                        coh_best  = coherence_matrix(R_i)
+                        burst_input_for_rec = bi
+                    n_bursts_found += 1
+                if n_bursts_found > 0:
+                    got_burst = True
+                    R = R_best
             else:  # CW
                 R = accum.update(X)
                 if USE_FBA:
                     R = _fba(R)
-                got_burst = True  # always process in CW mode
+                got_burst = True
 
-            if not got_burst or R is None:
-                with S.lock:
-                    S.last_fft = fft_db
-                    S.frame_count += 1
-                continue
+            # ── PassTracker: detect new satellite pass ────────────────────────
+            new_pass = pt.update(bd_result.doppler_hz, bd_result.is_burst)
 
-            # 2D DoA
-            spec = _doa_fn(X, cfg, R_in=R)
-            az, el, papr = find_peak_2d(spec, cfg)
-            az = (az - np.rad2deg(S.az_zero_offset)) % 360.0
+            # ── Compute DoA outside the lock ──────────────────────────────────
+            if got_burst and R is not None:
+                if MODE == "BURST":
+                    spec = spec_best
+                    az   = (az_best - np.rad2deg(S.az_zero_offset)) % 360.0
+                    el   = el_best;  papr = papr_best;  snr = snr_best
+                    ev   = ev_best;  coh  = coh_best
+                else:
+                    spec = _doa_fn(X, cfg, R_in=R)
+                    az, el, papr = find_peak_2d(spec, cfg)
+                    az   = (az - np.rad2deg(S.az_zero_offset)) % 360.0
+                    snr  = snr_from_covariance(R)
+                    ev   = eigenvalue_spread_db(R)
+                    coh  = coherence_matrix(R)
+            else:
+                spec = None
 
-            snr  = snr_from_covariance(R)
-            ev   = eigenvalue_spread_db(R)
-            coh  = coherence_matrix(R)
-
+            # ── Update shared state (always, every frame) ─────────────────────
             with S.lock:
-                S.spec_2d  = spec
-                S.az_deg   = az;  S.el_deg  = el
-                S.papr_db  = papr; S.snr_db = snr
-                S.ev_db    = ev;  S.coh_mat  = coh
-                S.R_now    = R.copy()
-                S.last_fft = fft_db
-                S.h_az.append(az);   S.h_el.append(el)
-                S.h_papr.append(papr); S.h_snr.append(snr)
+                S.last_fft    = fft_db
                 S.frame_count += 1
-                # EMA accumulation — gate by PAPR to skip sub-noise bursts
-                if papr >= _SPEC_MIN_PAPR_DB:
-                    S.spec_ema = ((1.0 - _SPEC_EMA_ALPHA) * S.spec_ema
-                                  + _SPEC_EMA_ALPHA * spec)
-                    _az_e, _el_e, _ = find_peak_2d(S.spec_ema, cfg)
-                    S.az_smooth = (_az_e - np.rad2deg(S.az_zero_offset)) % 360.0
-                    S.el_smooth = _el_e
-                if got_burst and MODE == "BURST":
-                    S.burst_count += 1
-                    if S.recording:
-                        S.rec_bursts.append(burst_input.astype(np.complex64))
+                # RF PAPR and Doppler scroll every frame — even between bursts
+                S.h_papr.append(rf_papr)
+                S.h_snr.append(rf_dop_khz)       # h_snr repurposed as Doppler kHz
+                if new_pass:
+                    S.pass_count += 1
+                    S.spec_ema[:] = -40.0         # new satellite → reset EMA map
+                if got_burst and spec is not None:
+                    S.spec_2d  = spec
+                    S.az_deg   = az;  S.el_deg   = el
+                    S.papr_db  = papr; S.snr_db  = snr
+                    S.ev_db    = ev;   S.coh_mat = coh
+                    S.R_now    = R.copy()
+                    S.h_az.append(az)
+                    S.h_el.append(el)
+                    S.burst_count += max(1, n_bursts_found)
+                    if rf_papr >= _SPEC_MIN_PAPR_DB:
+                        S.spec_ema = ((1.0 - _SPEC_EMA_ALPHA) * S.spec_ema
+                                      + _SPEC_EMA_ALPHA * spec)
+                        _az_e, _el_e, _ = find_peak_2d(S.spec_ema, cfg)
+                        S.az_smooth = (_az_e - np.rad2deg(S.az_zero_offset)) % 360.0
+                        S.el_smooth = _el_e
+                    if S.recording and burst_input_for_rec is not None:
+                        S.rec_bursts.append(burst_input_for_rec.astype(np.complex64))
                         S.rec_timestamps.append(
                             (time.time() - S.t_start) * 1000.0)
+                else:
+                    S.h_az.append(float("nan"))
+                    S.h_el.append(float("nan"))
 
     acq_thread = threading.Thread(target=_acq_loop, daemon=True)
     acq_thread.start()
@@ -638,16 +689,17 @@ def main() -> None:
     fig.colorbar(coh_img, ax=ax_coh, fraction=0.046, pad=0.04).ax.tick_params(labelsize=6)
 
     # Panel 5: PAPR + SNR ──────────────────────────────────────────────────────
-    _style(ax_pq, "PAPR + SNR History", "frame", "dB")
-    ax_pq.set_xlim(0, HIST - 1); ax_pq.set_ylim(-2, 45)
-    ax_pq.axhline(10, color=C_ROSE, linewidth=0.6, linestyle=":", alpha=0.6)
+    _style(ax_pq, "RF PAPR  +  Doppler", "frame", "PAPR [dB]")
+    ax_pq.set_xlim(0, HIST - 1); ax_pq.set_ylim(-2, 25)
+    ax_pq.axhline(_SPEC_MIN_PAPR_DB, color=C_TEAL, linewidth=0.6, linestyle=":", alpha=0.6)
     ax_pq_snr = ax_pq.twinx()
-    ax_pq_snr.set_facecolor(BG2); ax_pq_snr.set_ylim(-2, 35)
-    ax_pq_snr.tick_params(colors=C_ROSE, labelsize=7)
-    ax_pq_snr.set_ylabel("SNR [dB]", color=C_ROSE, fontsize=7)
+    ax_pq_snr.set_facecolor(BG2); ax_pq_snr.set_ylim(-50, 50)
+    ax_pq_snr.tick_params(colors=C_VIOLET, labelsize=7)
+    ax_pq_snr.set_ylabel("Doppler [kHz]", color=C_VIOLET, fontsize=7)
+    ax_pq_snr.axhline(0, color=C_VIOLET, linewidth=0.5, linestyle="--", alpha=0.4)
     line_papr, = ax_pq.plot(x_h, [0.0] * HIST, color=C_TEAL, linewidth=1.4, label="PAPR")
-    line_snr,  = ax_pq_snr.plot(x_h, [0.0] * HIST, color=C_ROSE, linewidth=1.4, label="SNR")
-    ax_pq.set_ylabel("PAPR [dB]", color=C_TEAL, fontsize=7)
+    line_snr,  = ax_pq_snr.plot(x_h, [0.0] * HIST, color=C_VIOLET, linewidth=1.4, label="Dop")
+    ax_pq.set_ylabel("RF PAPR [dB]", color=C_TEAL, fontsize=7)
     ax_pq.legend(handles=[line_papr, line_snr], loc="upper right",
                  fontsize=6.5, framealpha=0.4, facecolor=BG3, edgecolor=C_BORDER)
 
@@ -758,6 +810,7 @@ def main() -> None:
             h_az   = list(S.h_az);   h_el   = list(S.h_el)
             h_papr = list(S.h_papr); h_snr  = list(S.h_snr)
             n_b    = S.burst_count;  n_f    = S.frame_count
+            n_pass = S.pass_count
             rec    = S.recording
             R      = S.R_now.copy()
 
@@ -767,7 +820,7 @@ def main() -> None:
         sky_peak.set_data([t_peak], [r_peak])
         sky_peak_outer.set_data([t_peak], [r_peak])
         sky_az_line.set_data([t_peak, t_peak], [0, 90])
-        txt_sky.set_text(f"Az: {az_s:6.1f}°   El: {el_s:5.1f}°   PAPR: {papr:.1f} dB")
+        txt_sky.set_text(f"Az: {az_s:6.1f}°   El: {el_s:5.1f}°   PAPR: {papr:.1f} dB  [Sat #{n_pass}]")
 
         # 2D heatmap — accumulated EMA spectrum (stable hot zone)
         heat_img.set_data(spec_e)

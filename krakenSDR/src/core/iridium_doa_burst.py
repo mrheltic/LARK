@@ -315,3 +315,64 @@ def compute_single_shot_covariance(
     # doa_algorithms.covariance(X) → (X @ X.conj().T) / X.shape[1]
     # No additional logic: the comment above is the contract, not the code.
     return covariance(compensated_matrix)
+
+
+# ---------------------------------------------------------------------------
+# Function 4 — All-bursts extractor (multi-satellite support)
+# ---------------------------------------------------------------------------
+
+def detect_and_extract_all_bursts(
+    iq_matrix:     np.ndarray,
+    threshold_db:  float = 10.0,
+    sample_rate:   int   = _SAMPLE_RATE_DEFAULT,
+    max_bursts:    int   = 4,
+) -> list:
+    """
+    Find and return ALL Iridium bursts in a multi-channel IQ frame.
+
+    Iridium uses TDMA: multiple satellites may transmit in distinct time
+    slots within the same 128 ms KrakenSDR frame.  This function scans
+    sequentially: after each burst at offset ``onset``, the search
+    continues from ``onset + N_burst + guard`` to find additional bursts.
+
+    Parameters
+    ----------
+    iq_matrix    : (5, N) complex — coherent 5-channel frame
+    threshold_db : dB above median noise floor for detection
+    sample_rate  : hardware sample rate [Hz]
+    max_bursts   : upper bound on bursts returned per frame
+
+    Returns
+    -------
+    list of np.ndarray, each shape (5, N_burst), dtype complex
+        May be empty.  Order: chronological (by onset time).
+    """
+    N_burst  = int(_BURST_TOTAL_SYM * sample_rate / _SYMBOL_RATE)
+    N        = iq_matrix.shape[1]
+    guard    = int(0.001 * sample_rate)   # 1 ms guard gap after each burst
+
+    # Power envelope on ch0 (computed once for the whole frame)
+    power    = np.abs(iq_matrix[0]) ** 2
+    smooth_n = max(1, int(2e-4 * sample_rate))
+    kernel   = np.ones(smooth_n, dtype=np.float64) / smooth_n
+    smooth   = np.convolve(power, kernel, mode="same")
+
+    noise_floor = float(np.median(smooth))
+    if noise_floor < 1e-20:
+        return []
+
+    thr_lin  = noise_floor * (10.0 ** (threshold_db / 10.0))
+    results  = []
+    search   = 0
+
+    while search < N - N_burst and len(results) < max_bursts:
+        above = np.where(smooth[search:] > thr_lin)[0]
+        if len(above) == 0:
+            break
+        onset = search + int(above[0])
+        if onset + N_burst > N:
+            break
+        results.append(iq_matrix[:, onset : onset + N_burst].copy())
+        search = onset + N_burst + guard
+
+    return results
