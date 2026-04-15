@@ -95,6 +95,10 @@ _INPUT_ORDER = normalize_cross_array_order(
 _INPUT_SHORT = short_cross_array_labels(_INPUT_ORDER)
 _SOLVER_SHORT = short_cross_array_labels(CROSS_ARRAY_CANONICAL_ORDER)
 
+# Spectrum EMA (temporal smoothing of 2D MUSIC map)
+_SPEC_EMA_ALPHA   = 0.35   # blend fraction per new burst (0=frozen, 1=no memory)
+_SPEC_MIN_PAPR_DB = 3.0    # minimum PAPR [dB] to accept a burst into the EMA
+
 
 # =============================================================================
 # Config Dialog
@@ -391,6 +395,10 @@ def main() -> None:
         burst_count    = 0
         ph_offsets     = PH_OFF.copy()  # live-adjustable
         az_zero_offset = 0.0
+        # Accumulated (EMA) spectrum for stable display
+        spec_ema  = np.full((cfg.n_el, cfg.n_az), -40.0)
+        az_smooth = 0.0
+        el_smooth = 45.0
 
     # ── Covariance accumulator (CW mode) ─────────────────────────────────────
     accum = CovarianceAccumulator3D(alpha=COV_ALPHA)
@@ -481,6 +489,13 @@ def main() -> None:
                 S.h_az.append(az);   S.h_el.append(el)
                 S.h_papr.append(papr); S.h_snr.append(snr)
                 S.frame_count += 1
+                # EMA accumulation — gate by PAPR to skip sub-noise bursts
+                if papr >= _SPEC_MIN_PAPR_DB:
+                    S.spec_ema = ((1.0 - _SPEC_EMA_ALPHA) * S.spec_ema
+                                  + _SPEC_EMA_ALPHA * spec)
+                    _az_e, _el_e, _ = find_peak_2d(S.spec_ema, cfg)
+                    S.az_smooth = (_az_e - np.rad2deg(S.az_zero_offset)) % 360.0
+                    S.el_smooth = _el_e
                 if got_burst and MODE == "BURST":
                     S.burst_count += 1
                     if S.recording:
@@ -683,11 +698,13 @@ def main() -> None:
     def _on_az_zero(_):
         with S.lock:
             S.az_zero_offset = np.deg2rad(S.az_deg) % (2 * np.pi)
+            S.spec_ema[:] = -40.0  # reset EMA after az re-zero
 
     def _on_cal_rst(_):
         with S.lock:
             S.az_zero_offset = 0.0
             S.ph_offsets[:] = 0.0
+            S.spec_ema[:] = -40.0  # reset EMA after calibration reset
 
     def _on_save(_):
         _do_save()
@@ -731,7 +748,9 @@ def main() -> None:
     def _update(_):
         with S.lock:
             spec   = S.spec_2d.copy()
+            spec_e = S.spec_ema.copy()
             az     = S.az_deg;   el    = S.el_deg
+            az_s   = S.az_smooth; el_s  = S.el_smooth
             papr   = S.papr_db;  snr   = S.snr_db
             ev     = S.ev_db.copy()
             coh    = S.coh_mat.copy()
@@ -742,19 +761,19 @@ def main() -> None:
             rec    = S.recording
             R      = S.R_now.copy()
 
-        # Sky plot
-        sky_mesh.set_array(np.flipud(spec).ravel())
-        t_peak, r_peak = skyplot_coords(az, el)
+        # Sky plot — use EMA-smoothed spectrum and smoothed peak position
+        sky_mesh.set_array(np.flipud(spec_e).ravel())
+        t_peak, r_peak = skyplot_coords(az_s, el_s)
         sky_peak.set_data([t_peak], [r_peak])
         sky_peak_outer.set_data([t_peak], [r_peak])
         sky_az_line.set_data([t_peak, t_peak], [0, 90])
-        txt_sky.set_text(f"Az: {az:6.1f}°   El: {el:5.1f}°   PAPR: {papr:.1f} dB")
+        txt_sky.set_text(f"Az: {az_s:6.1f}°   El: {el_s:5.1f}°   PAPR: {papr:.1f} dB")
 
-        # 2D heatmap
-        heat_img.set_data(spec)
-        heat_vline.set_xdata([az, az])
-        heat_hline.set_ydata([el, el])
-        txt_heat.set_text(f"Az={az:.1f}°  El={el:.1f}°")
+        # 2D heatmap — accumulated EMA spectrum (stable hot zone)
+        heat_img.set_data(spec_e)
+        heat_vline.set_xdata([az_s, az_s])
+        heat_hline.set_ydata([el_s, el_s])
+        txt_heat.set_text(f"Az={az_s:.1f}°  El={el_s:.1f}°  (raw {az:.0f}°/{el:.0f}°)")
 
         # Az + El history
         line_az.set_ydata(h_az);  line_el.set_ydata(h_el)
