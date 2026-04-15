@@ -112,6 +112,11 @@ _UW_SCORE_MIN     = 0.5    # 6/12 UW dibits; random match ≈ 0.25; at SNR 6-12 
 # Bursts with spread < 8 dB increase DoA error and should be skipped.
 _EIG_SPREAD_MIN_DB = 8.0   # dB; set to 0.0 to disable
 
+# Channel health monitor: a channel is flagged faulty if its EMA power is more
+# than _CH_FAULT_DB below the median of all channels.  The EMA window is 8 frames.
+_CH_FAULT_DB  = 10.0   # dB below median → fault
+_CH_PWR_EMA   = 0.125  # 1 / 8 frames
+
 
 # =============================================================================
 # Config Dialog
@@ -415,6 +420,9 @@ def main() -> None:
         spec_ema  = np.full((cfg.n_el, cfg.n_az), -40.0)
         az_smooth = 0.0
         el_smooth = 45.0
+        # Channel health monitoring
+        ch_pwr_ema  : np.ndarray = np.ones(5, dtype=np.float64)  # linear power EMA
+        ch_fault    : list = []   # list of faulty channel labels (human-readable)
 
     # ── Covariance accumulator (CW mode) ─────────────────────────────────────
     accum = CovarianceAccumulator3D(alpha=COV_ALPHA)
@@ -555,8 +563,24 @@ def main() -> None:
             else:
                 spec = None
 
+            # ── Channel health check (power imbalance, runs every frame) ──────
+            _pwr_lin = np.mean(np.abs(X_input) ** 2, axis=1)   # (5,) linear
+
             # ── Update shared state (always, every frame) ─────────────────────
             with S.lock:
+                S.ch_pwr_ema = (_CH_PWR_EMA * _pwr_lin
+                                + (1.0 - _CH_PWR_EMA) * S.ch_pwr_ema)
+                _pdb = 10.0 * np.log10(S.ch_pwr_ema + 1e-30)
+                _med = float(np.median(_pdb))
+                _fault_new = [_INPUT_ORDER[i] for i, p in enumerate(_pdb)
+                              if _med - p > _CH_FAULT_DB]
+                if _fault_new != S.ch_fault:
+                    S.ch_fault = _fault_new
+                    if _fault_new:
+                        print(f"[DOA] ⚠  Channel fault detected: "
+                              f"{', '.join(_fault_new)} "
+                              f"(>{_CH_FAULT_DB:.0f} dB below median)."
+                              f"  Per-ch dB: {dict(zip(_INPUT_ORDER, _pdb.round(1)))}")
                 S.last_fft    = fft_db
                 S.frame_count += 1
                 # RF PAPR and Doppler scroll every frame — even between bursts
@@ -868,6 +892,7 @@ def main() -> None:
             p_snr  = S.pilot_snr_db
             rec    = S.recording
             R      = S.R_now.copy()
+            ch_fault = list(S.ch_fault)
 
         # Sky plot — use EMA-smoothed spectrum and smoothed peak position
         sky_mesh.set_array(np.flipud(spec_e).ravel())
@@ -908,6 +933,15 @@ def main() -> None:
         max_v = max(R_ab) if max(R_ab) > 1e-10 else 1.0
         for bar, v in zip(bars_ph, R_ab):
             bar.set_height(v / max_v)
+
+        # Channel fault overlay on FFT panel
+        if ch_fault:
+            ax_fft.set_title(
+                f"IQ Spectrum ch0  ⚠ FAULT: {', '.join(ch_fault)}",
+                color="#ff6060", fontsize=8,
+            )
+        else:
+            ax_fft.set_title("IQ Spectrum  ch0", color=C_TEXT, fontsize=8)
 
     ani = animation.FuncAnimation(fig, _update, interval=C.INTERVAL_MS,
                                    cache_frame_data=False)

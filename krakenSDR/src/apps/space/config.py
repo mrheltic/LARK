@@ -39,7 +39,7 @@ from config_hw import *   # noqa: F401, F403
 
 # ── RF / Radio ────────────────────────────────────────────────────────────────
 FREQ_HZ        = 1_626_270_000  # carrier frequency [Hz] — Iridium simplex ring-alert channel
-GAIN_DB        = 15             # IF gain [dB] applied to all channels
+GAIN_DB        = 49.6             # IF gain [dB] applied to all channels
 #                                #  Same guidance as apps/iridium/config.py.
 
 # ── Cross array geometry ──────────────────────────────────────────────────────

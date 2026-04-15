@@ -134,17 +134,24 @@ def _nearest_dibit(diff_phase: float) -> int:
 
 def _cfo_from_preamble(ch0: np.ndarray, sample_rate: int) -> float:
     """
-    Estimate the true Doppler CFO from the IRA preamble pilot tone only.
+    Estimate the total CFO (channel offset + Doppler) from the IRA preamble.
 
     The IRA preamble (64 constant dibits=0, Δφ=+π/4 per symbol) generates a
     pure tone at f_carrier + Rs/8 = f_carrier + 3125 Hz.  This function
     scans the first (GUARD_PRE + PREAMBLE) symbols of the burst window
-    (widened to handle onset timing jitter), finds the spectral peak, and
-    subtracts Rs/8 to return the TRUE carrier Doppler (bias-free).
+    (widened to handle onset timing jitter), finds the spectral peak over the
+    FULL sample-rate bandwidth, and subtracts Rs/8 to return the TRUE carrier
+    frequency offset (channel offset + Doppler), bias-free.
 
-    Accuracy: ≈ ±(sample_rate / (2 × N_pre)) ≈ ±195 Hz at 1.024 Msps.
-    This is better than the full-burst FFT because the preamble tone is
-    coherent, while the DQPSK payload spreads ±12.5 kHz and pulls the peak.
+    Iridium uses FDMA with 41.667 kHz channel spacing.  When digitising a
+    1.024 Msps bandwidth at 1626.27 MHz, active carriers appear at arbitrary
+    offsets up to ±500 kHz from DC (e.g. at −145, +21, +190 kHz in practice).
+    The previous ±40 kHz search limit caused the estimator to return noise for
+    any carrier outside this range, breaking Doppler compensation, the UW
+    check, and all DoA for those channels.
+
+    Accuracy: ≈ ±(sample_rate / (2 × N_pre)) ≈ ±195 Hz at 1.024 Msps due to
+    parabolic sub-bin interpolation on the 2951-sample preamble FFT.
 
     Parameters
     ----------
@@ -153,10 +160,14 @@ def _cfo_from_preamble(ch0: np.ndarray, sample_rate: int) -> float:
 
     Returns
     -------
-    f_dop : float   True Doppler [Hz] = FFT peak − Rs/8.  Clamped to ±MAX_DOP_HZ.
+    f_total : float
+        Total carrier frequency offset [Hz] = f_channel + f_doppler.
+        Clamped to ±(sample_rate / 2).  After compensation all channels land
+        at DC and the pilot tone is at +3125 Hz.
     """
     pilot_hz = float(_SYMBOL_RATE) / 8.0          # = 3125 Hz  (Rs/8)
     sps_f    = sample_rate / _SYMBOL_RATE           # ≈ 40.96 at 1.024 Msps
+    half_bw  = sample_rate * 0.48                   # 96 % of Nyquist (avoid alias edges)
 
     # Wide scan window: include potential guard_pre (silenced but harmless)
     scan_n = min(int((_GUARD_PRE_SYM + _PREAMBLE_SYM) * sps_f), len(ch0))
@@ -171,14 +182,14 @@ def _cfo_from_preamble(ch0: np.ndarray, sample_rate: int) -> float:
     mag    = np.abs(spec)
     bin_hz = float(sample_rate) / N_pre
 
-    # Pilot sits at f_d + pilot_hz → restrict search band
-    f_lo      = -_MAX_DOP_HZ + pilot_hz - 2000.0
-    f_hi      =  _MAX_DOP_HZ + pilot_hz + 2000.0
-    mask      = (freqs >= f_lo) & (freqs <= f_hi)
+    # Full-band search: pilot can be anywhere in [-half_bw, +half_bw].
+    # The preamble pilot is the dominant coherent tone (45–63 dB SNR in
+    # practice); argmax reliably selects it over noise and data side-lobes.
+    mask   = (freqs >= -half_bw) & (freqs <= half_bw)
     if not np.any(mask):
-        mask  = np.ones(N_pre, dtype=bool)
-    mag_m     = np.where(mask, mag, 0.0)
-    pk_idx    = int(np.argmax(mag_m))
+        mask = np.ones(N_pre, dtype=bool)
+    mag_m  = np.where(mask, mag, 0.0)
+    pk_idx = int(np.argmax(mag_m))
 
     # 3-point parabolic sub-bin interpolation
     delta = 0.0
@@ -191,9 +202,9 @@ def _cfo_from_preamble(ch0: np.ndarray, sample_rate: int) -> float:
             delta = 0.5 * (y_m - y_p) / denom
             delta = max(-0.5, min(0.5, delta))
 
-    f_peak = float(freqs[pk_idx]) + delta * bin_hz   # = f_d + pilot_hz
-    f_dop  = f_peak - pilot_hz                         # = f_d (true Doppler)
-    return float(np.clip(f_dop, -_MAX_DOP_HZ, _MAX_DOP_HZ))
+    f_peak  = float(freqs[pk_idx]) + delta * bin_hz   # = f_total + pilot_hz
+    f_total = f_peak - pilot_hz                         # = f_channel + f_doppler
+    return float(np.clip(f_total, -half_bw, half_bw))
 
 
 # ---------------------------------------------------------------------------
@@ -282,26 +293,31 @@ def compensate_doppler(
     sample_rate: int = _SAMPLE_RATE_DEFAULT,
 ) -> Tuple[np.ndarray, float]:
     """
-    Estimate and remove the Doppler frequency offset from a 5-channel burst.
+    Estimate and remove the total carrier frequency offset from a 5-channel burst.
+
+    The total CFO = f_channel + f_doppler, where f_channel is the FDMA channel
+    offset within the digitised bandwidth (e.g. −145 kHz, +190 kHz for Iridium
+    sub-bands visible at 1.024 Msps) and f_doppler is the satellite Doppler
+    (±40 kHz max from LEO).
 
     Uses the preamble pilot tone (first PREAMBLE_SYM symbols, tone at
-    f_carrier + Rs/8 = f_carrier + 3125 Hz) to estimate f_err with sub-bin
-    accuracy, then applies the corrective phasor to all 5 channels.
+    f_carrier + Rs/8 = f_carrier + 3125 Hz) to estimate f_total with sub-bin
+    accuracy (≈±195 Hz), then applies the corrective phasor to all 5 channels.
 
-    This is mathematically superior to a full-burst FFT: the preamble IS a
-    coherent tone, while the DQPSK payload spreads ±12.5 kHz and would bias
-    the peak.  The preamble-only approach is also unbiased: it returns the
-    TRUE Doppler (f_d), not f_d + Rs/8.
+    The previous implementation limited the search to ±MAX_DOP_HZ (±40 kHz),
+    which caused it to return a random noise peak for any burst whose carrier
+    was outside that range.  The search now covers the full digitised bandwidth
+    (±48 % of FS = ±491 kHz at 1.024 Msps).
 
     Applying the identical phasor to every channel is mathematically mandatory:
     the KrakenSDR is a coherent receiver — all channels see the same carrier
     offset.  A different phasor per channel would corrupt the inter-antenna
     phase differences Δφ = φ_k − φ_0 that encode the DoA information.
 
-    After compensation (f_err = f_d):
+    After compensation:
       • Carrier is at DC
-      • Preamble rotates at +Rs/8 = +3125 Hz  (pilot tone visible at +3125 Hz)
-      • UW differentials give the correct DQPSK dibit values  ← key for UW check
+      • Preamble pilot tone is at +Rs/8 = +3125 Hz ← validate_burst_uw expects this
+      • UW differential phases match the DQPSK dibit mapping  ← key for UW check
 
     Parameters
     ----------
@@ -313,11 +329,11 @@ def compensate_doppler(
     Returns
     -------
     compensated : np.ndarray, shape (5, N_burst), dtype complex128
-        IQ matrix with Doppler removed; inter-antenna phase differences
+        IQ matrix with full CFO removed; inter-antenna phase differences
         are preserved.
-    doppler_hz : float
-        True estimated Doppler [Hz] (positive = satellite approaching).
-        Bias-free (unlike the old full-burst FFT which returned f_d + 3125).
+    cfo_hz : float
+        Total estimated carrier offset [Hz] = f_channel + f_doppler.
+        Positive value means the carrier was above DC before compensation.
     """
     N_burst = burst_matrix.shape[1]
 
