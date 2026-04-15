@@ -60,6 +60,79 @@ from typing import Tuple
 import numpy as np
 
 
+CROSS_ARRAY_CANONICAL_ORDER: tuple[str, ...] = (
+    "center", "east", "north", "west", "south"
+)
+
+_CROSS_ARRAY_ORDER_ALIASES = {
+    "c": "center",
+    "ctr": "center",
+    "center": "center",
+    "centre": "center",
+    "e": "east",
+    "east": "east",
+    "n": "north",
+    "north": "north",
+    "s": "south",
+    "south": "south",
+    "w": "west",
+    "west": "west",
+}
+
+_CROSS_ARRAY_SHORT_LABELS = {
+    "center": "C",
+    "east": "E",
+    "north": "N",
+    "west": "W",
+    "south": "S",
+}
+
+
+def normalize_cross_array_order(order: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    """Validate and normalise a 5-channel cross-array order description."""
+    if len(order) != 5:
+        raise ValueError(
+            f"Cross-array order must contain 5 labels, got {len(order)}: {order!r}"
+        )
+
+    norm: list[str] = []
+    for label in order:
+        key = str(label).strip().lower().replace("-", "_").replace(" ", "")
+        if key not in _CROSS_ARRAY_ORDER_ALIASES:
+            raise ValueError(f"Unknown cross-array label: {label!r}")
+        norm.append(_CROSS_ARRAY_ORDER_ALIASES[key])
+
+    if set(norm) != set(CROSS_ARRAY_CANONICAL_ORDER):
+        raise ValueError(
+            "Cross-array order must contain center/east/north/west/south exactly once; "
+            f"got {norm!r}"
+        )
+    return tuple(norm)
+
+
+def reorder_cross_array_channels(
+    X: np.ndarray,
+    input_order: list[str] | tuple[str, ...],
+    *,
+    output_order: list[str] | tuple[str, ...] = CROSS_ARRAY_CANONICAL_ORDER,
+) -> np.ndarray:
+    """Reorder axis 0 of a 5-channel IQ matrix between physical and solver order."""
+    in_order = normalize_cross_array_order(input_order)
+    out_order = normalize_cross_array_order(output_order)
+    if X.shape[0] != len(in_order):
+        raise ValueError(
+            f"Expected axis 0 length {len(in_order)} for cross-array IQ, got {X.shape[0]}"
+        )
+    idx = [in_order.index(label) for label in out_order]
+    return np.take(X, idx, axis=0)
+
+
+def short_cross_array_labels(order: list[str] | tuple[str, ...]) -> list[str]:
+    """Return short display labels like ['C', 'N', 'E', 'S', 'W']."""
+    norm = normalize_cross_array_order(order)
+    return [_CROSS_ARRAY_SHORT_LABELS[label] for label in norm]
+
+
 # =============================================================================
 # Cross array configuration
 # =============================================================================
@@ -68,6 +141,12 @@ import numpy as np
 class CrossArrayConfig:
     """
     5-element cross array configuration for 2D (azimuth + elevation) DoA.
+
+    Internal solver order is fixed to:
+        [center, east, north, west, south]
+
+    If the physical Kraken / Heimdall channel order differs, reorder IQ data
+    with :func:`reorder_cross_array_channels` before calling the solver.
 
     Antenna layout (λ-normalised East-North plane):
         ant0 : center  [ 0,  0]

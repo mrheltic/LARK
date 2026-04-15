@@ -63,6 +63,7 @@ from core.iridium_doa_burst import (
     compute_single_shot_covariance,
 )
 from core.doa_algorithms_3d import (
+    CROSS_ARRAY_CANONICAL_ORDER,
     CrossArrayConfig,
     CovarianceAccumulator3D,
     doa_music_2d,
@@ -73,6 +74,9 @@ from core.doa_algorithms_3d import (
     eigenvalue_spread_db,
     snr_from_covariance,
     coherence_matrix,
+    normalize_cross_array_order,
+    reorder_cross_array_channels,
+    short_cross_array_labels,
 )
 from core.burst import IRD_CHANS
 
@@ -83,6 +87,11 @@ C_BLUE   = "#5ea4e0"; C_TEAL = "#4ecdc4"; C_AMBER = "#f4a431"
 C_VIOLET = "#a78bfa"; C_ROSE  = "#f16b6f"; C_LIME  = "#6dd97d"
 C_TEXT   = "#d8dae8"; C_MUTED = "#8891b0"
 _ANT_COLORS = [C_BLUE, C_TEAL, C_AMBER, C_VIOLET, C_ROSE]
+_INPUT_ORDER = normalize_cross_array_order(
+    getattr(C, "ANTENNA_INPUT_ORDER", CROSS_ARRAY_CANONICAL_ORDER)
+)
+_INPUT_SHORT = short_cross_array_labels(_INPUT_ORDER)
+_SOLVER_SHORT = short_cross_array_labels(CROSS_ARRAY_CANONICAL_ORDER)
 
 
 # =============================================================================
@@ -225,7 +234,7 @@ def _run_config_dialog() -> dict:
     r6 = _row(root)
     _ph_vars = [tk.StringVar(value="0.0") for _ in range(5)]
     for k, (v, col) in enumerate(zip(_ph_vars, _ANT_COLORS)):
-        tk.Label(r6, text=f"ant{k}", fg=col, bg=BG,
+        tk.Label(r6, text=f"ch{k}/{_INPUT_SHORT[k]}", fg=col, bg=BG,
                  font=("Segoe UI", 8)).pack(side="left")
         ttk.Entry(r6, textvariable=v, width=6).pack(side="left", padx=(2, 8))
 
@@ -338,6 +347,8 @@ def main() -> None:
     USE_FBA   = bool(CFG.get("use_fba", True))
     PH_OFF    = np.deg2rad(np.array(CFG.get("phase_offsets", [0.0] * 5),
                                     dtype=np.float64))
+    if PH_OFF.shape != (5,):
+        raise ValueError("phase_offsets must contain 5 values in physical channel order")
     FS        = float(C.SAMPLE_RATE_HZ)
 
     cfg = CrossArrayConfig(
@@ -398,7 +409,7 @@ def main() -> None:
     _doa_fn = doa_music_2d if "MUSIC" in ALGO else doa_capon_2d
 
     def _apply_cal(X: np.ndarray) -> np.ndarray:
-        """Apply per-antenna phase offsets."""
+        """Apply per-channel phase offsets in the physical input order."""
         offsets = S.ph_offsets
         return X * np.exp(1j * offsets[:, np.newaxis])
 
@@ -414,11 +425,12 @@ def main() -> None:
             if frame is None:
                 continue
 
-            X = _apply_cal(frame[:N_ANT].astype(np.complex128))
+            X_input = _apply_cal(frame[:N_ANT].astype(np.complex128))
+            X = reorder_cross_array_channels(X_input, _INPUT_ORDER)
 
             # IQ spectrum (ch 0) for display
             win  = np.hanning(FFT_N)
-            seg  = X[0, :FFT_N] if X.shape[1] >= FFT_N else np.pad(X[0], (0, FFT_N - X.shape[1]))
+            seg  = X_input[0, :FFT_N] if X_input.shape[1] >= FFT_N else np.pad(X_input[0], (0, FFT_N - X_input.shape[1]))
             fft  = np.fft.fftshift(np.fft.fft(seg * win))
             fft_db = np.clip(20.0 * np.log10(np.abs(fft) + 1e-12), -80.0, 0.0)
 
@@ -426,9 +438,11 @@ def main() -> None:
             got_burst = False
 
             if MODE == "BURST":
-                burst = detect_and_extract_burst(X, threshold_db=THRESHOLD,
-                                                  sample_rate=int(FS))
-                if burst is not None:
+                burst_input = detect_and_extract_burst(
+                    X_input, threshold_db=THRESHOLD, sample_rate=int(FS)
+                )
+                if burst_input is not None:
+                    burst = reorder_cross_array_channels(burst_input, _INPUT_ORDER)
                     comp, _ = compensate_doppler(burst, sample_rate=int(FS))
                     R = compute_single_shot_covariance(comp)
                     got_burst = True
@@ -468,7 +482,7 @@ def main() -> None:
                 if got_burst and MODE == "BURST":
                     S.burst_count += 1
                     if S.recording:
-                        S.rec_bursts.append(burst.astype(np.complex64))
+                        S.rec_bursts.append(burst_input.astype(np.complex64))
                         S.rec_timestamps.append(
                             (time.time() - S.t_start) * 1000.0)
 
@@ -602,8 +616,8 @@ def main() -> None:
                              aspect="equal", origin="lower")
     ax_coh.set_xticks(range(N_ANT))
     ax_coh.set_yticks(range(N_ANT))
-    ax_coh.set_xticklabels([f"ch{k}" for k in range(N_ANT)], fontsize=6, color=C_MUTED)
-    ax_coh.set_yticklabels([f"ch{k}" for k in range(N_ANT)], fontsize=6, color=C_MUTED)
+    ax_coh.set_xticklabels(_SOLVER_SHORT, fontsize=6, color=C_MUTED)
+    ax_coh.set_yticklabels(_SOLVER_SHORT, fontsize=6, color=C_MUTED)
     fig.colorbar(coh_img, ax=ax_coh, fraction=0.046, pad=0.04).ax.tick_params(labelsize=6)
 
     # Panel 5: PAPR + SNR ──────────────────────────────────────────────────────
@@ -702,6 +716,9 @@ def main() -> None:
                 "n_antennas": N_ANT, "algo": ALGO, "mode": MODE,
                 "d_lambda": cfg.d_lambda, "n_az": cfg.n_az, "n_el": cfg.n_el,
                 "el_min_deg": cfg.el_min_deg, "n_signals": cfg.num_expected_signals,
+                "antenna_input_order": list(_INPUT_ORDER),
+                "solver_channel_order": list(CROSS_ARRAY_CANONICAL_ORDER),
+                "phase_offsets_deg_input_order": list(np.rad2deg(S.ph_offsets)),
                 "burst_threshold_db": THRESHOLD,
                 "n_frames": int(len(S.rec_bursts)),
                 "duration_s": float(time.time() - S.t_start),

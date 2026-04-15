@@ -4,9 +4,15 @@
 #  Covers Iridium L-band direction-finding using a 5-element cross ("+") array
 #  for simultaneous azimuth + elevation estimation.
 #
-#  Cross array layout (λ-normalised East-North ground plane):
-#      ant0 = center   ant1 = East (+D_LAMBDA, 0)   ant2 = North (0, +D_LAMBDA)
-#      ant3 = West (−D_LAMBDA, 0)                   ant4 = South (0, −D_LAMBDA)
+#  Physical Kraken / Heimdall input order used by this setup:
+#      ch0 = center   ch1 = north   ch2 = east   ch3 = south   ch4 = west
+#
+#  The 3-D solver internally reorders channels to its canonical geometry:
+#      [center, east, north, west, south]
+#
+#  This means you can wire the array as above for field collection and still
+#  obtain correct absolute azimuth/elevation estimates, provided the array is
+#  physically aligned to geographic north.
 #
 #  Hardware constants (Heimdall address, N_ANTENNAS, SAMPLE_RATE_HZ, …) are
 #  re-exported from config_hw.py so scripts can import a single module:
@@ -43,6 +49,9 @@ D_LAMBDA       = 0.5            # arm length [fraction of λ]
 #                                #  start introducing grating-lobe ambiguities.
 #                                #  Measure the physical arm length from center to element tip
 #                                #  and divide by (c / FREQ_HZ).
+ANTENNA_INPUT_ORDER = ["center", "north", "east", "south", "west"]
+#                                #  Physical input order delivered by Heimdall/Kraken.
+#                                #  Keep this aligned with the real coax wiring used in the field.
 
 # ── Processing ────────────────────────────────────────────────────────────────
 COV_ALPHA      = 0.88           # EMA covariance weight for continuous (CW) mode

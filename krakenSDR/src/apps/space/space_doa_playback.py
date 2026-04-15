@@ -58,6 +58,7 @@ from core.iridium_doa_burst import (
     compute_single_shot_covariance,
 )
 from core.doa_algorithms_3d import (
+    CROSS_ARRAY_CANONICAL_ORDER,
     CrossArrayConfig,
     doa_music_2d,
     doa_capon_2d,
@@ -67,6 +68,9 @@ from core.doa_algorithms_3d import (
     eigenvalue_spread_db,
     snr_from_covariance,
     coherence_matrix,
+    normalize_cross_array_order,
+    reorder_cross_array_channels,
+    short_cross_array_labels,
 )
 
 # ── Palette ───────────────────────────────────────────────────────────────────
@@ -170,6 +174,10 @@ def main() -> None:
     ALGO      = (args.algo or meta.get("algo", "2D-MUSIC")).upper().replace("-", "_")
     FREQ_HZ   = float(meta.get("freq_hz", C.FREQ_HZ))
     GAIN_DB   = float(meta.get("gain_db", C.GAIN_DB))
+    INPUT_ORDER = normalize_cross_array_order(
+        meta.get("antenna_input_order", list(CROSS_ARRAY_CANONICAL_ORDER))
+    )
+    SOLVER_SHORT = short_cross_array_labels(CROSS_ARRAY_CANONICAL_ORDER)
 
     cfg = CrossArrayConfig(
         d_lambda             = D_LAMBDA,
@@ -201,7 +209,8 @@ def main() -> None:
 
     win = np.hanning(FFT_N)
     for i in range(N):
-        X = frames[i].astype(np.complex128)
+        X_input = frames[i].astype(np.complex128)
+        X = reorder_cross_array_channels(X_input, INPUT_ORDER)
 
         # Doppler compensation
         if not SKIP_DOP:
@@ -355,8 +364,8 @@ def main() -> None:
     coh_img = ax_coh.imshow(np.eye(N_ANT), cmap="viridis", vmin=0, vmax=1,
                              aspect="equal", origin="lower")
     ax_coh.set_xticks(range(N_ANT)); ax_coh.set_yticks(range(N_ANT))
-    ax_coh.set_xticklabels([f"ch{k}" for k in range(N_ANT)], fontsize=6, color=C_MUTED)
-    ax_coh.set_yticklabels([f"ch{k}" for k in range(N_ANT)], fontsize=6, color=C_MUTED)
+    ax_coh.set_xticklabels(SOLVER_SHORT, fontsize=6, color=C_MUTED)
+    ax_coh.set_yticklabels(SOLVER_SHORT, fontsize=6, color=C_MUTED)
     fig.colorbar(coh_img, ax=ax_coh, fraction=0.046, pad=0.04).ax.tick_params(labelsize=6)
 
     # Panel 5: PAPR + SNR ──────────────────────────────────────────────────────

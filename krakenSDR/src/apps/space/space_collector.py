@@ -61,6 +61,11 @@ from matplotlib.widgets import Button
 
 import config as C
 from hardware.kraken_iq_source import KrakenIQSource
+from core.doa_algorithms_3d import (
+    CROSS_ARRAY_CANONICAL_ORDER,
+    normalize_cross_array_order,
+    short_cross_array_labels,
+)
 from core.iridium_doa_burst import (
     detect_and_extract_burst,
     compensate_doppler,
@@ -75,6 +80,11 @@ C_VIOLET = "#a78bfa"; C_ROSE  = "#f16b6f"; C_LIME  = "#6dd97d"
 C_TEXT   = "#d8dae8"; C_MUTED = "#8891b0"
 
 _ANT_COLORS = [C_BLUE, C_TEAL, C_AMBER, C_VIOLET, C_ROSE]
+_INPUT_ORDER = normalize_cross_array_order(
+    getattr(C, "ANTENNA_INPUT_ORDER", CROSS_ARRAY_CANONICAL_ORDER)
+)
+_INPUT_SHORT = short_cross_array_labels(_INPUT_ORDER)
+_INPUT_TICKS = [f"ch{k}/{label}" for k, label in enumerate(_INPUT_SHORT)]
 
 # =============================================================================
 # Config dialog
@@ -407,6 +417,8 @@ def main() -> None:
         meta = {
             "freq_hz": FREQ_HZ, "sample_rate_hz": FS, "gain_db": GAIN_DB,
             "n_antennas": 5, "burst_threshold_db": THRESHOLD,
+            "antenna_input_order": list(_INPUT_ORDER),
+            "solver_channel_order": list(CROSS_ARRAY_CANONICAL_ORDER),
             "n_bursts": int(len(S.bursts)),
             "duration_s": float(time.time() - S.t_start),
             "timestamp_utc": stamp,
@@ -467,7 +479,7 @@ def main() -> None:
     # A: Channel powers
     _style(ax_pwr, "Channel Powers", "", "dBW")
     ax_pwr.set_xlim(-0.5, 4.5); ax_pwr.set_xticks(range(5))
-    ax_pwr.set_xticklabels([f"ch{k}" for k in range(5)], color=C_MUTED, fontsize=7.5)
+    ax_pwr.set_xticklabels(_INPUT_TICKS, color=C_MUTED, fontsize=7.5)
     ax_pwr.set_ylim(-80, 0)
     bars_pwr = ax_pwr.bar(range(5), [-60.0] * 5, color=_ANT_COLORS, edgecolor="none", alpha=0.85)
 
