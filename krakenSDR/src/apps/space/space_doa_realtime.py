@@ -114,6 +114,11 @@ _UW_SCORE_MIN     = 0.4    # 5/12 UW dibits; random match ≈ 0.25; real-HW burs
 # Bursts with spread < 8 dB increase DoA error and should be skipped.
 _EIG_SPREAD_MIN_DB = 6.0   # dB; real-HW max spread ~7.5 dB (lowered from 8.0)
 
+# Minimum PAPR to accumulate a burst into the SatellitePassAccumulator.
+# Bursts below this threshold still update the EMA spectrum and history
+# panels but are excluded from the weighted accumulation used for az_smooth.
+_PAPR_MIN_DB_ACC   = 1.0   # dB
+
 # Channel health monitor: a channel is flagged faulty if its EMA power is more
 # than _CH_FAULT_DB below the median of all channels.  The EMA window is 8 frames.
 _CH_FAULT_DB  = 10.0   # dB below median → fault
@@ -556,7 +561,8 @@ def main() -> None:
 
             # ── Pass accumulator: weighted average of accepted burst spectra ──
             if got_burst and MODE == "BURST" and spec_best is not None:
-                pass_acc.update(spec_best, papr_db=papr_best, new_pass=new_pass)
+                pass_acc.update(spec_best, papr_db=papr_best, new_pass=new_pass,
+                                papr_min_db=_PAPR_MIN_DB_ACC)
 
             # ── Compute DoA outside the lock ──────────────────────────────────
             if got_burst and R is not None:

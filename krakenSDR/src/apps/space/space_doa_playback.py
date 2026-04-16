@@ -79,8 +79,10 @@ from core.doa_algorithms_3d import (
 )
 
 # ── Gate thresholds (mirrored from space_doa_realtime.py) ────────────────────
-_UW_SCORE_MIN      = 0.4   # minimum UW correlation score
-_EIG_SPREAD_MIN_DB = 6.0   # minimum eigenvalue spread [dB]
+_UW_SCORE_MIN      = 0.4    # minimum UW correlation score
+_EIG_SPREAD_MIN_DB = 6.0    # minimum eigenvalue spread [dB]
+_PAPR_MIN_DB_ACC   = 1.0    # minimum PAPR to accumulate into pass_acc / density map
+_PASS_GAP_S        = 600.0  # inter-burst gap [s] that marks a new satellite pass
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 BG       = "#1a1d27"; BG2 = "#21253a"; BG3 = "#2a2f47"
@@ -227,6 +229,14 @@ def main() -> None:
     pass_acc = SatellitePassAccumulator(cfg)
     win      = np.hanning(FFT_N)
 
+    # Detect pass boundaries from inter-burst timing
+    _pass_start_indices = [0]  # indices where a new pass begins
+    for _j in range(1, N):
+        if timestamps[_j] - timestamps[_j - 1] > _PASS_GAP_S:
+            _pass_start_indices.append(_j)
+    n_detected_passes = len(_pass_start_indices)
+    _pass_boundary_set = set(_pass_start_indices[1:])  # frames that trigger reset
+
     n_rejected_uw = 0; n_rejected_spread = 0
 
     for i in range(N):
@@ -289,8 +299,10 @@ def main() -> None:
         snr  = snr_from_covariance(R)
         coh  = coherence_matrix(R)
 
-        # ── Pass accumulator
-        pass_acc.update(spec, papr_db=papr)
+        # ── Pass accumulator (reset on new satellite pass, gate low-PAPR bursts)
+        _is_new_pass = i in _pass_boundary_set
+        pass_acc.update(spec, papr_db=papr,
+                        new_pass=_is_new_pass, papr_min_db=_PAPR_MIN_DB_ACC)
 
         all_spec[i]     = spec.astype(np.float32)
         all_az[i]       = az;    all_el[i]   = el
@@ -312,27 +324,53 @@ def main() -> None:
     n_accepted = int(all_accepted.sum())
     print(f"\n[PB] Done in {time.time()-t0:.1f}s  —  "
           f"{n_accepted}/{N} accepted  "
-          f"({n_rejected_uw} rej UW, {n_rejected_spread} rej spread)")
+          f"({n_rejected_uw} rej UW, {n_rejected_spread} rej spread)  "
+          f"— {n_detected_passes} passes (gap>{_PASS_GAP_S:.0f}s)")
 
-    # ── Accumulated spectrum via SatellitePassAccumulator ────────────────────
-    acc_spec_db = pass_acc.get_accumulated_spectrum_db()
-    if acc_spec_db is None:
-        # No accepted bursts: fall back to mean of all spectra
-        acc_spec_db = np.full((N_EL, N_AZ), -40.0, dtype=np.float32)
+    # ── Sky density map — PAPR²-weighted 2D histogram of per-burst Az/El peaks
+    # More informative than MUSIC-spectrum accumulation for multi-session data:
+    # correctly shows WHERE satellites are seen most often regardless of whether
+    # bursts come from the same pass or different ones.
+    from scipy.ndimage import gaussian_filter as _gf
+    _az_grid = cfg.az_range_deg()   # (N_AZ,)
+    _el_grid = cfg.el_range_deg()   # (N_EL,)
+    _density = np.zeros((N_EL, N_AZ), dtype=np.float64)
+    for _i in range(N):
+        if not all_accepted[_i] or all_papr[_i] < _PAPR_MIN_DB_ACC:
+            continue
+        _i_az = int(np.argmin(np.abs(_az_grid - all_az[_i])))
+        _i_el = int(np.argmin(np.abs(_el_grid - all_el[_i])))
+        _density[_i_el, _i_az] += float(all_papr[_i]) ** 2  # PAPR² weight
+    _density_sm = _gf(_density, sigma=1.5)
+    _dens_max = float(_density_sm.max())
+    acc_norm = (_density_sm / (_dens_max + 1e-30)).astype(np.float32)
 
-    acc_spec_lin = 10.0 ** (acc_spec_db.astype(np.float64) / 10.0)
-    try:
-        from scipy.ndimage import gaussian_filter
-        acc_spec_lin = gaussian_filter(acc_spec_lin, sigma=1.5)
-    except ImportError:
-        pass
-    _acc_min = acc_spec_lin.min(); _acc_max = acc_spec_lin.max()
-    acc_norm = ((acc_spec_lin - _acc_min) / (_acc_max - _acc_min + 1e-30)).astype(np.float32)
+    # Density peak → best overall sky position
+    _dp_idx = np.unravel_index(np.argmax(_density_sm), _density_sm.shape)
+    best_az  = float(_az_grid[_dp_idx[1]])
+    best_el  = float(_el_grid[_dp_idx[0]])
+    best_papr = float(_dens_max ** 0.5)   # sqrt of summed PAPR² ≈ effective PAPR
 
-    # Peak of accumulated map → best overall estimate
-    best_az, best_el, best_papr = pass_acc.get_best_estimate()
-    print(f"[PB] Pass-accumulator peak: Az={best_az:.1f}°  El={best_el:.1f}°  "
-          f"PAPR={best_papr:.1f} dB  (N_accepted={pass_acc.n_bursts})")
+    # Per-pass console summary
+    _pass_ends = _pass_start_indices[1:] + [N]
+    print(f"[PB] Per-pass summary (gap threshold: {_PASS_GAP_S:.0f} s):")
+    for _p, (_ps, _pe) in enumerate(zip(_pass_start_indices, _pass_ends)):
+        _p_acc = [_i for _i in range(_ps, _pe) if all_accepted[_i]]
+        if not _p_acc:
+            continue
+        _p_az   = [float(all_az[_i])   for _i in _p_acc]
+        _p_el   = [float(all_el[_i])   for _i in _p_acc]
+        _p_papr = [float(all_papr[_i]) for _i in _p_acc]
+        _p_t    = float(timestamps[_ps])
+        if len(_p_acc) == 1:
+            print(f"  Pass {_p+1:3d}  t={_p_t:.0f}s  1 burst → "
+                  f"Az={_p_az[0]:.1f}°  El={_p_el[0]:.1f}°  PAPR={_p_papr[0]:.1f} dB")
+        else:
+            print(f"  Pass {_p+1:3d}  t={_p_t:.0f}s  {len(_p_acc)} bursts → "
+                  f"Az: med={np.median(_p_az):.1f}°  El: med={np.median(_p_el):.1f}°  "
+                  f"PAPR: med={np.median(_p_papr):.1f} dB")
+    print(f"[PB] Sky density peak: Az={best_az:.1f}°  El={best_el:.1f}°  "
+          f"(N_acc={n_accepted}, N_in_density={pass_acc.n_bursts})")
 
     # ── GUI ───────────────────────────────────────────────────────────────────
     plt.rcParams.update({
@@ -418,8 +456,7 @@ def main() -> None:
     )
 
     # Panel 1: Hot zone accumulated map ───────────────────────────────────────
-    n_valid = pass_acc.n_bursts
-    _style(ax_heat, f"Hot Zone  ({n_valid}/{N} bursts accepted)", "Azimuth [°]", "Elevation [°]")
+    _style(ax_heat, f"Sky Density  ({n_accepted}/{N} acc  ·  {n_detected_passes} passes)", "Azimuth [°]", "Elevation [°]")
     az_c, el_c = cfg.az_range_deg(), cfg.el_range_deg()
     heat_img   = ax_heat.imshow(
         acc_norm, aspect="auto", origin="lower",

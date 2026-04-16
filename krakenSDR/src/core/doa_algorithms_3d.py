@@ -648,27 +648,36 @@ class SatellitePassAccumulator:
     # ------------------------------------------------------------------
     def update(
         self,
-        spec:     np.ndarray,
-        papr_db:  float,
-        new_pass: bool = False,
+        spec:         np.ndarray,
+        papr_db:      float,
+        new_pass:     bool  = False,
+        papr_min_db:  float = 0.0,
     ) -> None:
         """
         Add one burst spectrum to the accumulator.
 
         Parameters
         ----------
-        spec     : (n_el, n_az) float — MUSIC pseudospectrum in dB,
-                   peak = 0, floor ≈ −40.
-        papr_db  : peak-to-average power ratio [dB].  Negative values are
-                   treated as 0.
-        new_pass : if True the accumulator is reset before this spectrum is
-                   added (new satellite detected by ``PassTracker``).
+        spec         : (n_el, n_az) float — MUSIC pseudospectrum in dB,
+                       peak = 0, floor ≈ −40.
+        papr_db      : peak-to-average power ratio [dB].  Negative values are
+                       treated as 0.
+        new_pass     : if True the accumulator is reset before this spectrum is
+                       added (new satellite detected by ``PassTracker``).
+        papr_min_db  : minimum PAPR threshold [dB].  Bursts below this value
+                       are silently skipped (not accumulated, n_bursts unchanged).
+                       Default 0.0 = accept all.
         """
         if new_pass:
             self.reset()
 
+        if papr_db < papr_min_db:
+            return
+
         spec_lin = 10.0 ** (np.clip(spec, -200.0, 0.0) / 10.0)
-        w        = float(max(papr_db, 0.0))
+        # Squared PAPR weighting: high-quality bursts contribute quadratically
+        # more than marginal ones (e.g. PAPR 3 dB gets 9× more weight than 1 dB).
+        w = float(max(papr_db, 0.0)) ** 2
 
         if self._acc is None:
             self._acc = np.zeros(spec_lin.shape, dtype=np.float64)
