@@ -58,10 +58,13 @@ import config as C
 from core.iridium_doa_burst import (
     compensate_doppler,
     compute_single_shot_covariance,
+    validate_burst_uw,
+    narrowband_filter_burst,
 )
 from core.doa_algorithms_3d import (
     CROSS_ARRAY_CANONICAL_ORDER,
     CrossArrayConfig,
+    SatellitePassAccumulator,
     doa_music_2d,
     doa_capon_2d,
     find_peak_2d,
@@ -74,6 +77,10 @@ from core.doa_algorithms_3d import (
     reorder_cross_array_channels,
     short_cross_array_labels,
 )
+
+# ── Gate thresholds (mirrored from space_doa_realtime.py) ────────────────────
+_UW_SCORE_MIN      = 0.4   # minimum UW correlation score
+_EIG_SPREAD_MIN_DB = 6.0   # minimum eigenvalue spread [dB]
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 BG       = "#1a1d27"; BG2 = "#21253a"; BG3 = "#2a2f47"
@@ -200,65 +207,120 @@ def main() -> None:
     print(f"[PB] Running {ALGO.replace('_','-')}  {N_AZ}az × {N_EL}el …", end=" ", flush=True)
     t0 = time.time()
 
-    all_spec  = np.zeros((N, N_EL, N_AZ), dtype=np.float32)
-    all_az    = np.zeros(N, dtype=np.float32)
-    all_el    = np.zeros(N, dtype=np.float32)
-    all_papr  = np.zeros(N, dtype=np.float32)
-    all_snr   = np.zeros(N, dtype=np.float32)
-    all_ev    = np.zeros((N, N_ANT), dtype=np.float32)
-    all_coh   = np.zeros((N, N_ANT, N_ANT), dtype=np.float32)
-    all_fft   = np.zeros((N, FFT_N), dtype=np.float32)
+    def _fba(R: np.ndarray) -> np.ndarray:
+        M = R.shape[0]; J = np.fliplr(np.eye(M))
+        return 0.5 * (R + J @ R.conj() @ J)
 
-    win = np.hanning(FFT_N)
+    # burst_n: nominal snapshot count for MDL (261 Iridium IRA symbols at 1.024 Msps / 25 ksps)
+    _burst_n = max(4096, int(261 * FS / 25_000))
+
+    all_spec     = np.zeros((N, N_EL, N_AZ), dtype=np.float32)
+    all_az       = np.zeros(N, dtype=np.float32)
+    all_el       = np.zeros(N, dtype=np.float32)
+    all_papr     = np.full(N, -999.0, dtype=np.float32)   # -999 = rejected
+    all_snr      = np.zeros(N, dtype=np.float32)
+    all_ev       = np.zeros((N, N_ANT), dtype=np.float32)
+    all_coh      = np.zeros((N, N_ANT, N_ANT), dtype=np.float32)
+    all_fft      = np.zeros((N, FFT_N), dtype=np.float32)
+    all_accepted = np.zeros(N, dtype=bool)
+
+    pass_acc = SatellitePassAccumulator(cfg)
+    win      = np.hanning(FFT_N)
+
+    n_rejected_uw = 0; n_rejected_spread = 0
+
     for i in range(N):
         X_input = frames[i].astype(np.complex128)
         X = reorder_cross_array_channels(X_input, INPUT_ORDER)
 
-        # Doppler compensation
+        # ── Doppler compensation
         if not SKIP_DOP:
             try:
                 X, _ = compensate_doppler(X, sample_rate=int(FS))
             except Exception:
                 pass
 
-        # Covariance
-        R = compute_single_shot_covariance(X)
+        # ── Narrowband BPF (28 kHz, Butterworth IIR order 8)
+        X_filt = narrowband_filter_burst(X, sample_rate=int(FS))
 
-        # 2D DoA
-        spec = _doa_fn(X, cfg, R_in=R)
+        # ── UW correlation gate
+        _, uw_score = validate_burst_uw(X_filt, sample_rate=int(FS))
+        if uw_score < _UW_SCORE_MIN:
+            n_rejected_uw += 1
+            # Still fill FFT and ev for display (use unfiltered X)
+            R_raw = compute_single_shot_covariance(X)
+            all_ev[i]  = eigenvalue_spread_db(R_raw).astype(np.float32)
+            all_coh[i] = coherence_matrix(R_raw).astype(np.float32)
+            seg = X[0, :FFT_N] if X.shape[1] >= FFT_N else np.pad(X[0], (0, FFT_N - X.shape[1]))
+            all_fft[i] = np.clip(
+                20.0 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(seg * win))) + 1e-12), -80.0, 0.0
+            ).astype(np.float32)
+            # Carry forward previous valid spectrum if available
+            if i > 0:
+                all_spec[i] = all_spec[i - 1]
+                all_az[i]   = all_az[i - 1]
+                all_el[i]   = all_el[i - 1]
+            continue
 
+        # ── Covariance + FBA
+        R = compute_single_shot_covariance(X_filt)
+        R = _fba(R)
+
+        # ── Eigenvalue spread gate
+        ev = eigenvalue_spread_db(R)
+        spread = float(ev[0] - ev[-1])
+        if spread < _EIG_SPREAD_MIN_DB:
+            n_rejected_spread += 1
+            all_ev[i]  = ev.astype(np.float32)
+            all_coh[i] = coherence_matrix(R).astype(np.float32)
+            seg = X[0, :FFT_N] if X.shape[1] >= FFT_N else np.pad(X[0], (0, FFT_N - X.shape[1]))
+            all_fft[i] = np.clip(
+                20.0 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(seg * win))) + 1e-12), -80.0, 0.0
+            ).astype(np.float32)
+            if i > 0:
+                all_spec[i] = all_spec[i - 1]
+                all_az[i]   = all_az[i - 1]
+                all_el[i]   = all_el[i - 1]
+            continue
+
+        # ── 2D DoA (single satellite → D=1 gives 4 noise eigenvectors, optimal MUSIC)
+        spec = _doa_fn(X_filt, cfg, R_in=R)
         az, el, papr = find_peak_2d(spec, cfg)
         snr  = snr_from_covariance(R)
-        ev   = eigenvalue_spread_db(R)
         coh  = coherence_matrix(R)
 
-        all_spec[i]  = spec.astype(np.float32)
-        all_az[i]    = az;    all_el[i]   = el
-        all_papr[i]  = papr;  all_snr[i]  = snr
-        all_ev[i]    = ev.astype(np.float32)
-        all_coh[i]   = coh.astype(np.float32)
+        # ── Pass accumulator
+        pass_acc.update(spec, papr_db=papr)
 
-        # FFT ch0
-        seg = X[0, :FFT_N] if X.shape[1] >= FFT_N else np.pad(X[0], (0, FFT_N - X.shape[1]))
+        all_spec[i]     = spec.astype(np.float32)
+        all_az[i]       = az;    all_el[i]   = el
+        all_papr[i]     = papr;  all_snr[i]  = snr
+        all_ev[i]       = ev.astype(np.float32)
+        all_coh[i]      = coh.astype(np.float32)
+        all_accepted[i] = True
+
+        # ── FFT ch0 (post-filter)
+        seg = X_filt[0, :FFT_N] if X_filt.shape[1] >= FFT_N else np.pad(X_filt[0], (0, FFT_N - X_filt.shape[1]))
         fft_db = np.clip(20.0 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(seg * win))) + 1e-12), -80.0, 0.0)
-        all_fft[i]   = fft_db.astype(np.float32)
+        all_fft[i] = fft_db.astype(np.float32)
 
         if (i + 1) % 20 == 0 or i == N - 1:
-            print(f"\r[PB] {i+1}/{N} frames processed ({time.time()-t0:.1f}s) …",
-                  end="", flush=True)
+            print(f"\r[PB] {i+1}/{N} frames  accepted={all_accepted.sum()}  "
+                  f"rej_uw={n_rejected_uw}  rej_spread={n_rejected_spread}  "
+                  f"({time.time()-t0:.1f}s) …", end="", flush=True)
 
-    print(f"\n[PB] Done in {time.time()-t0:.1f}s")
+    n_accepted = int(all_accepted.sum())
+    print(f"\n[PB] Done in {time.time()-t0:.1f}s  —  "
+          f"{n_accepted}/{N} accepted  "
+          f"({n_rejected_uw} rej UW, {n_rejected_spread} rej spread)")
 
-    # ── Accumulated PAPR-weighted hot-zone spectrum ───────────────────────────
-    # Convert each 2D MUSIC spectrum from dB to linear, weight by (PAPR - floor),
-    # sum, gaussian-smooth, then normalise to [0,1] for display.
-    _papr_floor = float(np.percentile(all_papr, 25))
-    _papr_w = np.maximum(all_papr - _papr_floor, 0.0).astype(np.float64)
-    _spec_lin = 10.0 ** (all_spec.astype(np.float64) / 10.0)  # (N, N_EL, N_AZ)
-    if _papr_w.sum() > 1e-10:
-        acc_spec_lin = np.einsum('i,ijk->jk', _papr_w / _papr_w.sum(), _spec_lin)
-    else:
-        acc_spec_lin = _spec_lin.mean(axis=0)
+    # ── Accumulated spectrum via SatellitePassAccumulator ────────────────────
+    acc_spec_db = pass_acc.get_accumulated_spectrum_db()
+    if acc_spec_db is None:
+        # No accepted bursts: fall back to mean of all spectra
+        acc_spec_db = np.full((N_EL, N_AZ), -40.0, dtype=np.float32)
+
+    acc_spec_lin = 10.0 ** (acc_spec_db.astype(np.float64) / 10.0)
     try:
         from scipy.ndimage import gaussian_filter
         acc_spec_lin = gaussian_filter(acc_spec_lin, sigma=1.5)
@@ -266,13 +328,11 @@ def main() -> None:
         pass
     _acc_min = acc_spec_lin.min(); _acc_max = acc_spec_lin.max()
     acc_norm = ((acc_spec_lin - _acc_min) / (_acc_max - _acc_min + 1e-30)).astype(np.float32)
+
     # Peak of accumulated map → best overall estimate
-    _best_flat = int(np.argmax(acc_norm))
-    _best_el_i, _best_az_i = np.unravel_index(_best_flat, acc_norm.shape)
-    best_az = float(cfg.az_range_deg()[_best_az_i])
-    best_el = float(cfg.el_range_deg()[_best_el_i])
-    print(f"[PB] Accumulated hot-zone peak:  Az={best_az:.1f}°  El={best_el:.1f}°  "
-          f"(PAPR floor={_papr_floor:.1f} dB)")
+    best_az, best_el, best_papr = pass_acc.get_best_estimate()
+    print(f"[PB] Pass-accumulator peak: Az={best_az:.1f}°  El={best_el:.1f}°  "
+          f"PAPR={best_papr:.1f} dB  (N_accepted={pass_acc.n_bursts})")
 
     # ── GUI ───────────────────────────────────────────────────────────────────
     plt.rcParams.update({
@@ -327,8 +387,10 @@ def main() -> None:
     ax_sky.spines["polar"].set_color(C_BORDER)
 
     # Scatter all burst estimates as faint dots — opacity proportional to PAPR
-    _papr_max = float(all_papr.max()) if all_papr.max() > 1e-6 else 1.0
+    _papr_max = float(all_papr[all_accepted].max()) if n_accepted > 0 else 1.0
     for _si in range(N):
+        if not all_accepted[_si]:
+            continue
         _t_i, _r_i = skyplot_coords(float(all_az[_si]), float(all_el[_si]))
         _alpha = float(np.clip((all_papr[_si] - 1.0) / (_papr_max - 1.0 + 1e-6), 0.05, 0.8))
         ax_sky.plot(_t_i, _r_i, "o", color=C_AMBER, markersize=3.5,
@@ -356,8 +418,8 @@ def main() -> None:
     )
 
     # Panel 1: Hot zone accumulated map ───────────────────────────────────────
-    n_valid = int((all_papr > 3.5).sum())
-    _style(ax_heat, f"Hot Zone  ({n_valid}/{N} bursts PAPR>3.5 dB)", "Azimuth [°]", "Elevation [°]")
+    n_valid = pass_acc.n_bursts
+    _style(ax_heat, f"Hot Zone  ({n_valid}/{N} bursts accepted)", "Azimuth [°]", "Elevation [°]")
     az_c, el_c = cfg.az_range_deg(), cfg.el_range_deg()
     heat_img   = ax_heat.imshow(
         acc_norm, aspect="auto", origin="lower",
@@ -510,12 +572,15 @@ def main() -> None:
         papr = float(all_papr[i]); snr = float(all_snr[i])
         ev   = all_ev[i];    coh = all_coh[i]
         fft_d = all_fft[i]
+        accepted_i = bool(all_accepted[i])
 
         # History window centred on current frame
         i0 = max(0, i - HIST + 1);  i1 = i + 1
         az_w  = np.pad(all_az[i0:i1],   (HIST - (i1-i0), 0), constant_values=0.0)
         el_w  = np.pad(all_el[i0:i1],   (HIST - (i1-i0), 0), constant_values=45.0)
-        pq_w  = np.pad(all_papr[i0:i1], (HIST - (i1-i0), 0), constant_values=0.0)
+        # Clamp -999 (rejected) to 0 for PAPR history display
+        pq_raw = all_papr[i0:i1].copy(); pq_raw[pq_raw < 0] = 0.0
+        pq_w  = np.pad(pq_raw,           (HIST - (i1-i0), 0), constant_values=0.0)
         snr_w = np.pad(all_snr[i0:i1],  (HIST - (i1-i0), 0), constant_values=0.0)
 
         # Sky plot
@@ -524,13 +589,20 @@ def main() -> None:
         sky_peak.set_data([t_pk], [r_pk])
         sky_peak_outer.set_data([t_pk], [r_pk])
         sky_az_line.set_data([t_pk, t_pk], [0, 90])
-        txt_sky.set_text(f"Az: {az:6.1f}°   El: {el:5.1f}°   PAPR: {papr:.1f} dB")
+        txt_sky.set_text(
+            f"Az: {az:6.1f}°   El: {el:5.1f}°   PAPR: {papr:.1f} dB"
+            if accepted_i else
+            f"Az: —   El: —   (rejected)"
+        )
 
         # Hot zone (static accumulated map) — only update crosshair for current frame
         heat_vline.set_xdata([az, az])
         heat_hline.set_ydata([el, el])
-        txt_heat.set_text(f"Best: Az={best_az:.1f}°  El={best_el:.1f}°\n"
-                          f"Frame {i}: Az={az:.1f}°  El={el:.1f}°  PAPR={papr:.1f}dB")
+        txt_heat.set_text(
+            f"Best(accum): Az={best_az:.1f}°  El={best_el:.1f}°\n"
+            f"Frame {i}: "
+            + (f"Az={az:.1f}°  El={el:.1f}°  PAPR={papr:.1f}dB" if accepted_i else "(rejected)")
+        )
 
         # History
         line_az.set_ydata(az_w); line_el.set_ydata(el_w)

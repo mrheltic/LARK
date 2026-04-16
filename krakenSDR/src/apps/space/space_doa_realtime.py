@@ -33,7 +33,6 @@ Usage
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import os
 import sys
@@ -79,7 +78,6 @@ from core.doa_algorithms_3d import (
     make_sky_heatmap_edges,
     skyplot_coords,
     eigenvalue_spread_db,
-    estimate_signal_count,
     snr_from_covariance,
     coherence_matrix,
     normalize_cross_array_order,
@@ -108,13 +106,13 @@ _SPEC_MIN_PAPR_DB = 3.0    # minimum PAPR [dB] to accept a burst into the EMA
 # UW validation gate
 # ≥ 0.67 means at least 8/12 UW dibits match the DL pattern.
 # Set to 0.0 to disable the filter (accept all power-detected bursts).
-_UW_SCORE_MIN     = 0.5    # 6/12 UW dibits; random match ≈ 0.25; at SNR 6-12 dB genuine bursts score 0.5-0.83
+_UW_SCORE_MIN     = 0.4    # 5/12 UW dibits; random match ≈ 0.25; real-HW bursts score 0.4–0.75 (lowered from 0.5)
 
 # Eigenvalue spread gate: minimum dB spread between largest and smallest eigenvalue.
 # Bursts below this threshold have insufficient spatial SNR for reliable DoA.
 # Recording analysis shows genuine Iridium bursts: spread 5-19 dB (mean ~12 dB).
 # Bursts with spread < 8 dB increase DoA error and should be skipped.
-_EIG_SPREAD_MIN_DB = 8.0   # dB; set to 0.0 to disable
+_EIG_SPREAD_MIN_DB = 6.0   # dB; real-HW max spread ~7.5 dB (lowered from 8.0)
 
 # Channel health monitor: a channel is flagged faulty if its EMA power is more
 # than _CH_FAULT_DB below the median of all channels.  The EMA window is 8 frames.
@@ -530,12 +528,8 @@ def main() -> None:
                     if spread_i < _EIG_SPREAD_MIN_DB:
                         continue   # reject: insufficient spatial SNR
 
-                    # ── Dynamic signal count (MDL) ────────────────────────────
-                    n_sig_i = max(1, estimate_signal_count(R_i, _burst_n))
-                    cfg_i   = dataclasses.replace(cfg, num_expected_signals=n_sig_i)
-
-                    spec_i = _doa_fn(comp_i, cfg_i, R_in=R_i)
-                    az_i, el_i, papr_i = find_peak_2d(spec_i, cfg_i)
+                    spec_i = _doa_fn(comp_i, cfg, R_in=R_i)
+                    az_i, el_i, papr_i = find_peak_2d(spec_i, cfg)
                     snr_i  = snr_from_covariance(R_i)
                     if papr_i > papr_best:
                         spec_best = spec_i;  R_best    = R_i
@@ -621,9 +615,16 @@ def main() -> None:
                     if rf_papr >= _SPEC_MIN_PAPR_DB:
                         S.spec_ema = ((1.0 - _SPEC_EMA_ALPHA) * S.spec_ema
                                       + _SPEC_EMA_ALPHA * spec)
-                        _az_e, _el_e, _ = find_peak_2d(S.spec_ema, cfg)
-                        S.az_smooth = (_az_e - np.rad2deg(S.az_zero_offset)) % 360.0
-                        S.el_smooth = _el_e
+                        # Use SatellitePassAccumulator for stable smooth Az/El
+                        _az_e, _el_e, _ = pass_acc.get_best_estimate()
+                        if pass_acc.n_bursts >= 2:
+                            S.az_smooth = (_az_e - np.rad2deg(S.az_zero_offset)) % 360.0
+                            S.el_smooth = _el_e
+                        else:
+                            # Fallback to EMA peak on the first burst of a pass
+                            _az_e2, _el_e2, _ = find_peak_2d(S.spec_ema, cfg)
+                            S.az_smooth = (_az_e2 - np.rad2deg(S.az_zero_offset)) % 360.0
+                            S.el_smooth = _el_e2
                     if S.recording and burst_input_for_rec is not None:
                         S.rec_bursts.append(burst_input_for_rec.astype(np.complex64))
                         S.rec_timestamps.append(
