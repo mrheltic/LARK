@@ -83,6 +83,8 @@ _UW_SCORE_MIN      = 0.4    # minimum UW correlation score
 _EIG_SPREAD_MIN_DB = 6.0    # minimum eigenvalue spread [dB]
 _PAPR_MIN_DB_ACC   = 1.0    # minimum PAPR to accumulate into pass_acc / density map
 _PASS_GAP_S        = 600.0  # inter-burst gap [s] that marks a new satellite pass
+_FDMA_SPACING_HZ   = 41_667.0  # Iridium FDMA channel spacing [Hz]
+_DOPPLER_JUMP_HZ   = 20_000.0  # Doppler jump that marks a new satellite (< half FDMA spacing)
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 BG       = "#1a1d27"; BG2 = "#21253a"; BG3 = "#2a2f47"
@@ -206,7 +208,6 @@ def main() -> None:
 
     # ── Pre-compute all DoA results ────────────────────────────────────────────
     print(f"[PB] {N} frames  ·  {N_ANT} antennas  ·  {N_SAMP} samples/frame")
-    print(f"[PB] Running {ALGO.replace('_','-')}  {N_AZ}az × {N_EL}el …", end=" ", flush=True)
     t0 = time.time()
 
     def _fba(R: np.ndarray) -> np.ndarray:
@@ -225,17 +226,43 @@ def main() -> None:
     all_coh      = np.zeros((N, N_ANT, N_ANT), dtype=np.float32)
     all_fft      = np.zeros((N, FFT_N), dtype=np.float32)
     all_accepted = np.zeros(N, dtype=bool)
+    all_doppler  = np.zeros(N, dtype=np.float64)  # carrier freq offset per burst [Hz]
+    all_fdma_ch  = np.zeros(N, dtype=np.int32)    # FDMA channel index (integer)
+
+    # ── Pre-pass: estimate Doppler for every frame (fast — used for pass boundary detection)
+    # Different Iridium satellites use different FDMA channels (spacing = 41.667 kHz).
+    # A Doppler jump > 20 kHz between consecutive bursts means a channel switch → new satellite.
+    print(f"[PB] Pre-pass Doppler estimation...", end=" ", flush=True)
+    for _pi in range(N):
+        _Xp = reorder_cross_array_channels(frames[_pi].astype(np.complex128), INPUT_ORDER)
+        try:
+            _, _d = compensate_doppler(_Xp, sample_rate=int(FS))
+        except Exception:
+            _d = 0.0
+        all_doppler[_pi] = _d
+        all_fdma_ch[_pi] = int(round(_d / _FDMA_SPACING_HZ))
+    print(f"done ({N} frames)")
+
+    # ── Build Doppler-aware pass boundaries
+    # A new satellite pass is declared when:
+    #   (a) |Doppler jump| > _DOPPLER_JUMP_HZ  →  satellite changed FDMA channel
+    #   (b)  time gap > _PASS_GAP_S            →  long silence / different pass
+    _n_dop_jumps = 0; _n_time_gaps = 0
+    _pass_boundary_set: set = set()
+    for _j in range(1, N):
+        dop_jump = abs(all_doppler[_j] - all_doppler[_j - 1])
+        time_gap = timestamps[_j] - timestamps[_j - 1]
+        if dop_jump > _DOPPLER_JUMP_HZ:
+            _pass_boundary_set.add(_j); _n_dop_jumps += 1
+        elif time_gap > _PASS_GAP_S:
+            _pass_boundary_set.add(_j); _n_time_gaps += 1
+    n_detected_passes = 1 + len(_pass_boundary_set)
+    print(f"[PB] {n_detected_passes} passes detected  "
+          f"(Doppler jumps: {_n_dop_jumps}, time gaps: {_n_time_gaps})")
+    print(f"[PB] Running {ALGO.replace('_','-')}  {N_AZ}az × {N_EL}el …", end=" ", flush=True)
 
     pass_acc = SatellitePassAccumulator(cfg)
     win      = np.hanning(FFT_N)
-
-    # Detect pass boundaries from inter-burst timing
-    _pass_start_indices = [0]  # indices where a new pass begins
-    for _j in range(1, N):
-        if timestamps[_j] - timestamps[_j - 1] > _PASS_GAP_S:
-            _pass_start_indices.append(_j)
-    n_detected_passes = len(_pass_start_indices)
-    _pass_boundary_set = set(_pass_start_indices[1:])  # frames that trigger reset
 
     n_rejected_uw = 0; n_rejected_spread = 0
 
@@ -243,7 +270,7 @@ def main() -> None:
         X_input = frames[i].astype(np.complex128)
         X = reorder_cross_array_channels(X_input, INPUT_ORDER)
 
-        # ── Doppler compensation
+        # ── Doppler compensation (re-run to actually apply the phase correction to X)
         if not SKIP_DOP:
             try:
                 X, _ = compensate_doppler(X, sample_rate=int(FS))
@@ -352,8 +379,10 @@ def main() -> None:
     best_papr = float(_dens_max ** 0.5)   # sqrt of summed PAPR² ≈ effective PAPR
 
     # Per-pass console summary
+    _pass_start_indices = sorted([0] + list(_pass_boundary_set))
     _pass_ends = _pass_start_indices[1:] + [N]
-    print(f"[PB] Per-pass summary (gap threshold: {_PASS_GAP_S:.0f} s):")
+    print(f"[PB] Per-pass summary  (Doppler threshold: {_DOPPLER_JUMP_HZ/1e3:.0f} kHz, "
+          f"time gap: {_PASS_GAP_S:.0f} s):")
     for _p, (_ps, _pe) in enumerate(zip(_pass_start_indices, _pass_ends)):
         _p_acc = [_i for _i in range(_ps, _pe) if all_accepted[_i]]
         if not _p_acc:
@@ -361,13 +390,18 @@ def main() -> None:
         _p_az   = [float(all_az[_i])   for _i in _p_acc]
         _p_el   = [float(all_el[_i])   for _i in _p_acc]
         _p_papr = [float(all_papr[_i]) for _i in _p_acc]
+        _p_dop  = [float(all_doppler[_i]) for _i in _p_acc]  # kHz
+        _p_ch   = int(round(np.median(_p_dop) / _FDMA_SPACING_HZ))
         _p_t    = float(timestamps[_ps])
+        _ch_tag = f"ch{_p_ch:+d} ({_p_ch*_FDMA_SPACING_HZ/1e3:+.0f} kHz)"
         if len(_p_acc) == 1:
-            print(f"  Pass {_p+1:3d}  t={_p_t:.0f}s  1 burst → "
+            print(f"  Pass {_p+1:3d}  t={_p_t:.0f}s  1 burst  {_ch_tag:20s}  "
                   f"Az={_p_az[0]:.1f}°  El={_p_el[0]:.1f}°  PAPR={_p_papr[0]:.1f} dB")
         else:
-            print(f"  Pass {_p+1:3d}  t={_p_t:.0f}s  {len(_p_acc)} bursts → "
-                  f"Az: med={np.median(_p_az):.1f}°  El: med={np.median(_p_el):.1f}°  "
+            _az_std = float(np.std(_p_az))
+            print(f"  Pass {_p+1:3d}  t={_p_t:.0f}s  {len(_p_acc)} bursts  {_ch_tag:20s}  "
+                  f"Az: med={np.median(_p_az):.1f}° ±{_az_std:.1f}°  "
+                  f"El: med={np.median(_p_el):.1f}°  "
                   f"PAPR: med={np.median(_p_papr):.1f} dB")
     print(f"[PB] Sky density peak: Az={best_az:.1f}°  El={best_el:.1f}°  "
           f"(N_acc={n_accepted}, N_in_density={pass_acc.n_bursts})")
@@ -424,15 +458,28 @@ def main() -> None:
     ax_sky.grid(color=C_BORDER, linewidth=0.5, alpha=0.6)
     ax_sky.spines["polar"].set_color(C_BORDER)
 
-    # Scatter all burst estimates as faint dots — opacity proportional to PAPR
+    # Scatter all burst estimates — opacity ∝ PAPR, color by FDMA channel (= satellite)
     _papr_max = float(all_papr[all_accepted].max()) if n_accepted > 0 else 1.0
+    _seen_chs = sorted(set(int(all_fdma_ch[_si]) for _si in range(N) if all_accepted[_si]))
+    _ch_palette = [C_AMBER, C_TEAL, C_BLUE, C_LIME, C_VIOLET, C_ROSE, C_MUTED]
+    _ch_color_map = {ch: _ch_palette[k % len(_ch_palette)] for k, ch in enumerate(_seen_chs)}
+    _ch_plotted: set = set()  # track which channels have been plotted (for legend)
     for _si in range(N):
         if not all_accepted[_si]:
             continue
         _t_i, _r_i = skyplot_coords(float(all_az[_si]), float(all_el[_si]))
         _alpha = float(np.clip((all_papr[_si] - 1.0) / (_papr_max - 1.0 + 1e-6), 0.05, 0.8))
-        ax_sky.plot(_t_i, _r_i, "o", color=C_AMBER, markersize=3.5,
-                    alpha=_alpha, zorder=2, markeredgecolor="none")
+        _ch  = int(all_fdma_ch[_si])
+        _col = _ch_color_map.get(_ch, C_DIM)
+        _lbl = f"ch{_ch:+d} ({_ch * _FDMA_SPACING_HZ / 1e3:+.0f} kHz)" if _ch not in _ch_plotted else None
+        if _lbl:
+            _ch_plotted.add(_ch)
+        ax_sky.plot(_t_i, _r_i, "o", color=_col, markersize=3.5,
+                    alpha=_alpha, zorder=2, markeredgecolor="none",
+                    label=_lbl)
+    if len(_seen_chs) > 1:
+        ax_sky.legend(loc="lower left", fontsize=5.5, framealpha=0.55,
+                      facecolor=BG3, edgecolor=C_BORDER, markerscale=1.4)
     # Mark accumulated best-estimate on sky plot
     _t_best, _r_best = skyplot_coords(best_az, best_el)
     ax_sky.plot(_t_best, _r_best, "*", color=C_LIME, markersize=14,
