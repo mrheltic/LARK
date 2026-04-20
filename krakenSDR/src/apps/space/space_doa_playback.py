@@ -214,9 +214,6 @@ def main() -> None:
         M = R.shape[0]; J = np.fliplr(np.eye(M))
         return 0.5 * (R + J @ R.conj() @ J)
 
-    # burst_n: nominal snapshot count for MDL (261 Iridium IRA symbols at 1.024 Msps / 25 ksps)
-    _burst_n = max(4096, int(261 * FS / 25_000))
-
     all_spec     = np.zeros((N, N_EL, N_AZ), dtype=np.float32)
     all_az       = np.zeros(N, dtype=np.float32)
     all_el       = np.zeros(N, dtype=np.float32)

@@ -263,6 +263,11 @@ def doa_music_2d(
     """
     R = _get_cov(X, R_in)
 
+    # Diagonal loading: δ = 1e-4 · Tr(R) / M  for numerical stability
+    M = R.shape[0]
+    eps = 1e-4 * float(np.real(np.trace(R))) / M
+    R = R + eps * np.eye(M, dtype=complex)
+
     _, eigenvectors = np.linalg.eigh(R)          # ascending eigenvalues
     n_sig = max(1, min(cfg.num_expected_signals, 4))
     En    = eigenvectors[:, :-n_sig]             # (5, 5−n_sig) noise subspace

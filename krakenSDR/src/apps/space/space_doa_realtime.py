@@ -86,6 +86,12 @@ from core.doa_algorithms_3d import (
 )
 from core.burst import IRD_CHANS, BurstDetector, PassTracker
 
+try:
+    from shared.observer import get_observer as _get_observer
+    _HAS_OBSERVER = True
+except ImportError:
+    _HAS_OBSERVER = False
+
 # ── Palette ───────────────────────────────────────────────────────────────────
 BG       = "#1a1d27"; BG2 = "#21253a"; BG3 = "#2a2f47"
 C_BORDER = "#3b4263"; C_DIM = "#4e5680"
@@ -410,7 +416,7 @@ def main() -> None:
         h_az   = collections.deque([0.0]  * HIST, maxlen=HIST)
         h_el   = collections.deque([45.0] * HIST, maxlen=HIST)
         h_papr = collections.deque([0.0]  * HIST, maxlen=HIST)
-        h_snr  = collections.deque([0.0]  * HIST, maxlen=HIST)
+        h_dop  = collections.deque([0.0]  * HIST, maxlen=HIST)  # Doppler [kHz]
         # recording
         rec_bursts     : list = []
         rec_timestamps : list = []
@@ -603,7 +609,7 @@ def main() -> None:
                 S.frame_count += 1
                 # RF PAPR and Doppler scroll every frame — even between bursts
                 S.h_papr.append(rf_papr)
-                S.h_snr.append(rf_dop_khz)       # h_snr repurposed as Doppler kHz
+                S.h_dop.append(rf_dop_khz)
                 if new_pass:
                     S.pass_count += 1
                     S.spec_ema[:] = -40.0         # new satellite → reset EMA map
@@ -627,10 +633,9 @@ def main() -> None:
                             S.az_smooth = (_az_e - np.rad2deg(S.az_zero_offset)) % 360.0
                             S.el_smooth = _el_e
                         else:
-                            # Fallback to EMA peak on the first burst of a pass
-                            _az_e2, _el_e2, _ = find_peak_2d(S.spec_ema, cfg)
-                            S.az_smooth = (_az_e2 - np.rad2deg(S.az_zero_offset)) % 360.0
-                            S.el_smooth = _el_e2
+                            # First burst of a new pass: use raw single-burst DoA
+                            S.az_smooth = az
+                            S.el_smooth = el
                     if S.recording and burst_input_for_rec is not None:
                         S.rec_bursts.append(burst_input_for_rec.astype(np.complex64))
                         S.rec_timestamps.append(
@@ -873,19 +878,29 @@ def main() -> None:
         npz_p  = os.path.join(_rec_dir, base + ".npz")
         json_p = os.path.join(_rec_dir, base + ".json")
         np.savez_compressed(npz_p, bursts=frames_arr, timestamps=ts_arr)
+        _meta = {
+            "freq_hz": FREQ_HZ, "sample_rate_hz": FS, "gain_db": GAIN_DB,
+            "n_antennas": N_ANT, "algo": ALGO, "mode": MODE,
+            "d_lambda": cfg.d_lambda, "n_az": cfg.n_az, "n_el": cfg.n_el,
+            "el_min_deg": cfg.el_min_deg, "n_signals": cfg.num_expected_signals,
+            "antenna_input_order": list(_INPUT_ORDER),
+            "solver_channel_order": list(CROSS_ARRAY_CANONICAL_ORDER),
+            "phase_offsets_deg_input_order": list(np.rad2deg(S.ph_offsets)),
+            "burst_threshold_db": THRESHOLD,
+            "n_frames": n_saved,
+            "duration_s": dur_s,
+            "timestamp_utc": stamp,
+        }
+        if _HAS_OBSERVER:
+            try:
+                _lat, _lon, _alt = _get_observer(interactive=False)
+                _meta["observer_lat"] = round(_lat, 7)
+                _meta["observer_lon"] = round(_lon, 7)
+                _meta["observer_alt_m"] = round(_alt, 1)
+            except Exception:
+                pass
         with open(json_p, "w") as f:
-            json.dump({
-                "freq_hz": FREQ_HZ, "sample_rate_hz": FS, "gain_db": GAIN_DB,
-                "n_antennas": N_ANT, "algo": ALGO, "mode": MODE,
-                "d_lambda": cfg.d_lambda, "n_az": cfg.n_az, "n_el": cfg.n_el,
-                "el_min_deg": cfg.el_min_deg, "n_signals": cfg.num_expected_signals,
-                "antenna_input_order": list(_INPUT_ORDER),
-                "solver_channel_order": list(CROSS_ARRAY_CANONICAL_ORDER),
-                "phase_offsets_deg_input_order": list(np.rad2deg(S.ph_offsets)),
-                "burst_threshold_db": THRESHOLD,
-                "n_frames": n_saved,
-                "duration_s": dur_s,
-            }, f, indent=2)
+            json.dump(_meta, f, indent=2)
         n_saved = len(S.rec_bursts)
         # Clear buffer so that pressing Save again doesn't produce a duplicate.
         # Also stop recording so the user knows a fresh session is needed.
@@ -910,7 +925,7 @@ def main() -> None:
             coh    = S.coh_mat.copy()
             fft_d  = S.last_fft.copy()
             h_az   = list(S.h_az);   h_el   = list(S.h_el)
-            h_papr = list(S.h_papr); h_snr  = list(S.h_snr)
+            h_papr = list(S.h_papr); h_dop  = list(S.h_dop)
             n_b    = S.burst_count;  n_f    = S.frame_count
             n_pass = S.pass_count
             uw_sc  = S.uw_score
@@ -947,7 +962,7 @@ def main() -> None:
         coh_img.set_data(coh)
 
         # PAPR + SNR
-        line_papr.set_ydata(h_papr); line_snr.set_ydata(h_snr)
+        line_papr.set_ydata(h_papr); line_snr.set_ydata(h_dop)
 
         # FFT
         line_fft.set_ydata(fft_d)

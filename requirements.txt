@@ -27,6 +27,9 @@ pyadi-iio>=0.0.17
 # ── Protobuf — gnss-sdr UDP monitoring ───────────────────────────────────────
 protobuf>=4.21
 
+# ── Satellite orbit propagation (Iridium pass prediction) ────────────────────
+skyfield>=1.45
+
 # ── Test runner ──────────────────────────────────────────────────────────────
 pytest>=7.0
 

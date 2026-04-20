@@ -97,3 +97,7 @@ Thumbs.db
 
 # ── LibreSDR: temp TX files ───────────────────────────────────────────────────
 /tmp/libresdr_*
+paper/parsed/
+paper/images/
+*.npz
+*.wav

@@ -47,8 +47,8 @@
                 "pattern": { "regexp": "^(.*)$", "message": 1 },
                 "background": {
                     "activeOnStart": true,
-                    "beginsPattern": "Starting DAQ",
-                    "endsPattern": "Have a coffee"
+                    "beginsPattern": "Starting Heimdall DAQ",
+                    "endsPattern": "Heimdall ready after"
                 }
             }
         },
@@ -68,8 +68,8 @@
                 "pattern": { "regexp": "^(.*)$", "message": 1 },
                 "background": {
                     "activeOnStart": true,
-                    "beginsPattern": "Starting DAQ",
-                    "endsPattern": "Have a coffee"
+                    "beginsPattern": "Starting Heimdall DAQ",
+                    "endsPattern": "Heimdall ready after"
                 }
             }
         },
@@ -93,7 +93,7 @@
             "label": "KrakenSDR: Iridium — burst detect (single channel)",
             "detail": "Iridium burst detector on a single antenna. Validates the HW chain before DoA.",
             "type": "shell",
-            "command": "python3 apps/iridium/iridium_detector.py",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/iridium/iridium_detector.py",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
             "group": "test",
             "presentation": {
@@ -106,7 +106,7 @@
             "label": "KrakenSDR: Iridium — receiver → parser (pipe)",
             "detail": "Demodulates Iridium bursts and pipes RAW: lines to iridium-toolkit/iridium-parser.py for full protocol decode.",
             "type": "shell",
-            "command": "python3 apps/iridium/iridium_live.py --freq 1626270000 | python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/iridium/iridium_live.py --freq 1626270000 | python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
             "group": "test",
             "presentation": {
@@ -119,7 +119,7 @@
             "label": "KrakenSDR: Iridium — DoA L-band (multi-channel)",
             "detail": "DoA on Iridium bursts with MUSIC + Doppler tracking. Requires Heimdall active.",
             "type": "shell",
-            "command": "python3 apps/doa/doa_runner.py",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa/doa_runner.py",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
             "group": "test",
             "dependsOn": "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
@@ -133,7 +133,7 @@
             "label": "KrakenSDR: Run test suite",
             "detail": "Unit tests for DoA algorithms (MUSIC, ESPRIT, Capon, ML). No hardware needed.",
             "type": "shell",
-            "command": "python3 -m pytest tests/test_doa.py -v --tb=short",
+            "command": "${workspaceFolder}/.venv/bin/python3 -m pytest tests/ -v --tb=short",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
             "group": { "kind": "test", "isDefault": true },
             "presentation": {
@@ -193,7 +193,7 @@
             "label": "iridium-toolkit: Parse .bits file",
             "detail": "Parses a RAW: lines file with iridium-parser.py from external/iridium-toolkit/.",
             "type": "shell",
-            "command": "python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p ${input:bitsFile}",
+            "command": "${workspaceFolder}/.venv/bin/python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p ${input:bitsFile}",
             "options": { "cwd": "${workspaceFolder}" },
             "group": "test",
             "presentation": {
@@ -208,12 +208,11 @@
         // ═══════════════════════════════════════════════════════════════════
         {
             "label": "KrakenSDR: Space DoA — Collect bursts",
-            "detail": "Opens config dialog, connects to Heimdall, gates Iridium bursts from all 5 antennas, saves .npz/.json for offline 3D DoA.",
+            "detail": "Opens config dialog, connects to Heimdall, gates Iridium bursts from all 5 antennas, saves .npz/.json for offline 3D DoA. Requires Heimdall already running.",
             "type": "shell",
-            "command": "python3 apps/space/space_collector.py",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/space_collector.py",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
-            "isBackground": true,
-            "dependsOn": "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
+            "group": "test",
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated"
@@ -222,12 +221,11 @@
         },
         {
             "label": "KrakenSDR: Space DoA — Real-time (2D-MUSIC)",
-            "detail": "Real-time 3D DoA with sky plot + 8-panel display. Opens config dialog; supports BURST (Iridium gated) or CW mode. Requires Heimdall active.",
+            "detail": "Real-time 3D DoA with sky plot + 8-panel display. Opens config dialog; supports BURST (Iridium gated) or CW mode. Requires Heimdall already running.",
             "type": "shell",
-            "command": "python3 apps/space/space_doa_realtime.py",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/space_doa_realtime.py",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
-            "isBackground": true,
-            "dependsOn": "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
+            "group": "test",
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated"
@@ -238,12 +236,51 @@
             "label": "KrakenSDR: Space DoA — Playback (offline)",
             "detail": "Opens a .npz capture from space_collector or the realtime recorder and replays the full 2D DoA pipeline offline.",
             "type": "shell",
-            "command": "python3 apps/space/space_doa_playback.py",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/space_doa_playback.py",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
             "group": "test",
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated"
+            },
+            "problemMatcher": "$python"
+        },
+        {
+            "label": "KrakenSDR: Iridium Pass Predict — compare DoA vs TLE",
+            "detail": "Loads a .npz recording, runs DoA pipeline, downloads Iridium TLE catalogue, and compares observed vs predicted satellite positions.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/iridium_pass_predict.py",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": "$python"
+        },
+        {
+            "label": "KrakenSDR: Iridium — visible satellites NOW",
+            "detail": "Shows currently visible Iridium NEXT satellites with Az/El/Doppler (auto-detects GPS position).",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/iridium_pass_predict.py --predict-now",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": "$python"
+        },
+        {
+            "label": "KrakenSDR: Iridium — predict passes (next 2h)",
+            "detail": "Predicts all Iridium NEXT passes above 10° for the next 2 hours.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/iridium_pass_predict.py --predict-window 2",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
             },
             "problemMatcher": "$python"
         }    ],

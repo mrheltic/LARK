@@ -7,7 +7,8 @@ Public API
 ----------
 IRD_CHANS          : dict[str, float]   channel label → centre frequency [Hz]
 TDMA_FRAME_S       : float
-TDMA_SLOT_S        : float
+TDMA_SLOT_S        : float   # active burst duration (261 sym / 25 ksps = 10.44 ms)
+TDMA_PERIOD_S      : float   # full slot period   (281 sym / 25 ksps = 11.25 ms)
 MAX_DOP_HZ         : float
 NEW_PASS_HZ        : float
 PASS_TIMEOUT_S     : float
@@ -35,7 +36,8 @@ IRD_CHANS: dict[str, float] = {
 }
 
 TDMA_FRAME_S   = 0.090         # one Iridium super-frame [s]
-TDMA_SLOT_S    = 0.00828       # one simplex slot [s]
+TDMA_SLOT_S    = 0.01044       # active burst duration: 261 symbols / 25000 sps [s]
+TDMA_PERIOD_S  = 0.01125       # full TDMA slot period: 281 symbols / 25000 sps [s]
 MAX_DOP_HZ     = 40_000.0      # maximum Doppler shift from LEO orbit [Hz]
 NEW_PASS_HZ    = 12_000.0      # Doppler jump that marks a new satellite [Hz]
 PASS_TIMEOUT_S = 6.0           # silence after which a new pass is assumed [s]

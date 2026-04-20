@@ -74,7 +74,11 @@ from core.iridium_doa_burst import (
     compensate_doppler,
 )
 from core.burst import IRD_CHANS
-
+try:
+    from shared.observer import get_observer as _get_observer
+    _HAS_OBSERVER = True
+except ImportError:
+    _HAS_OBSERVER = False
 # ── Colour palette ───────────────────────────────────────────────────────────
 BG       = "#1a1d27"; BG2 = "#21253a"; BG3 = "#2a2f47"
 C_BORDER = "#3b4263"; C_DIM = "#4e5680"
@@ -431,6 +435,14 @@ def main() -> None:
             "duration_s": float(time.time() - S.t_start),
             "timestamp_utc": stamp,
         }
+        if _HAS_OBSERVER:
+            try:
+                _lat, _lon, _alt = _get_observer(interactive=False)
+                meta["observer_lat"] = round(_lat, 7)
+                meta["observer_lon"] = round(_lon, 7)
+                meta["observer_alt_m"] = round(_alt, 1)
+            except Exception:
+                pass
         with open(json_path, "w") as f:
             json.dump(meta, f, indent=2)
         print(f"[COL] Saved {npz_path}  ({len(S.bursts)} bursts)")
