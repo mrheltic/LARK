@@ -73,6 +73,7 @@ from core.doa_algorithms_3d import (
     eigenvalue_spread_db,
     snr_from_covariance,
     coherence_matrix,
+    estimate_signal_count,
     normalize_cross_array_order,
     reorder_cross_array_channels,
     short_cross_array_labels,
@@ -93,6 +94,41 @@ C_BLUE   = "#5ea4e0"; C_TEAL = "#4ecdc4"; C_AMBER = "#f4a431"
 C_VIOLET = "#a78bfa"; C_ROSE  = "#f16b6f"; C_LIME  = "#6dd97d"
 C_TEXT   = "#d8dae8"; C_MUTED = "#8891b0"
 _ANT_COLORS = [C_BLUE, C_TEAL, C_AMBER, C_VIOLET, C_ROSE]
+
+# ── Per-satellite visual catalogue ────────────────────────────────────────────
+# Each detected FDMA channel (= satellite) gets a unique colour + marker style.
+_SAT_PALETTE = [C_AMBER, C_TEAL, C_BLUE, C_LIME, C_VIOLET, C_ROSE, "#e879f9", "#fb923c"]
+_SAT_MARKERS = ["o", "s", "D", "^", "v", "P", "*", "X"]   # ●■◆▲▼✚★✕
+
+
+from dataclasses import dataclass, field as _field
+
+
+@dataclass
+class PassInfo:
+    """Metadata and accumulation state for one satellite pass."""
+    pass_id:    int
+    fdma_ch:    int                             # FDMA channel index
+    color:      str                             # hex color
+    marker:     str                             # matplotlib marker char
+    start_idx:  int                             # first frame index in this pass
+    end_idx:    int         = -1                # last frame index (inclusive)
+    acc:        SatellitePassAccumulator | None = _field(default=None, repr=False)
+    indices:    list        = _field(default_factory=list, repr=False)   # accepted frame indices
+    az_list:    list        = _field(default_factory=list, repr=False)
+    el_list:    list        = _field(default_factory=list, repr=False)
+    papr_list:  list        = _field(default_factory=list, repr=False)
+    dop_list:   list        = _field(default_factory=list, repr=False)
+    t_list:     list        = _field(default_factory=list, repr=False)   # timestamps [ms]
+
+    @property
+    def label(self) -> str:
+        kHz = self.fdma_ch * _FDMA_SPACING_HZ / 1e3
+        return f"Pass {self.pass_id+1} · ch{self.fdma_ch:+d} ({kHz:+.0f} kHz)"
+
+    @property
+    def n_accepted(self) -> int:
+        return len(self.indices)
 
 
 # =============================================================================
@@ -225,6 +261,8 @@ def main() -> None:
     all_accepted = np.zeros(N, dtype=bool)
     all_doppler  = np.zeros(N, dtype=np.float64)  # carrier freq offset per burst [Hz]
     all_fdma_ch  = np.zeros(N, dtype=np.int32)    # FDMA channel index (integer)
+    all_pass_id  = np.full(N, -1, dtype=np.int32)  # pass index per frame
+    all_n_sig    = np.zeros(N, dtype=np.int32)     # MDL-estimated signal count per burst
 
     # ── Pre-pass: estimate Doppler for every frame (fast — used for pass boundary detection)
     # Different Iridium satellites use different FDMA channels (spacing = 41.667 kHz).
@@ -241,9 +279,6 @@ def main() -> None:
     print(f"done ({N} frames)")
 
     # ── Build Doppler-aware pass boundaries
-    # A new satellite pass is declared when:
-    #   (a) |Doppler jump| > _DOPPLER_JUMP_HZ  →  satellite changed FDMA channel
-    #   (b)  time gap > _PASS_GAP_S            →  long silence / different pass
     _n_dop_jumps = 0; _n_time_gaps = 0
     _pass_boundary_set: set = set()
     for _j in range(1, N):
@@ -256,6 +291,26 @@ def main() -> None:
     n_detected_passes = 1 + len(_pass_boundary_set)
     print(f"[PB] {n_detected_passes} passes detected  "
           f"(Doppler jumps: {_n_dop_jumps}, time gaps: {_n_time_gaps})")
+
+    # ── Build per-pass PassInfo objects ────────────────────────────────────────
+    _pass_start_indices = sorted([0] + list(_pass_boundary_set))
+    _pass_ends = _pass_start_indices[1:] + [N]
+    passes: list[PassInfo] = []
+    for _p, (_ps, _pe) in enumerate(zip(_pass_start_indices, _pass_ends)):
+        _med_dop = float(np.median(all_doppler[_ps:_pe]))
+        _fch = int(round(_med_dop / _FDMA_SPACING_HZ))
+        passes.append(PassInfo(
+            pass_id   = _p,
+            fdma_ch   = _fch,
+            color     = _SAT_PALETTE[_p % len(_SAT_PALETTE)],
+            marker    = _SAT_MARKERS[_p % len(_SAT_MARKERS)],
+            start_idx = _ps,
+            end_idx   = _pe - 1,
+            acc       = SatellitePassAccumulator(cfg),
+        ))
+        for _fi in range(_ps, _pe):
+            all_pass_id[_fi] = _p
+
     print(f"[PB] Running {ALGO.replace('_','-')}  {N_AZ}az × {N_EL}el …", end=" ", flush=True)
 
     pass_acc = SatellitePassAccumulator(cfg)
@@ -317,16 +372,45 @@ def main() -> None:
                 all_el[i]   = all_el[i - 1]
             continue
 
-        # ── 2D DoA (single satellite → D=1 gives 4 noise eigenvectors, optimal MUSIC)
-        spec = _doa_fn(X_filt, cfg, R_in=R)
+        # ── MDL signal count estimation (diagnostic — does NOT override D for MUSIC)
+        #
+        # MDL frequently over-estimates D (3–4) after narrowband filtering because:
+        #   (a) residual FDMA carriers leak through the 28 kHz BPF
+        #   (b) FBA introduces eigenvalue structure
+        #   (c) N_samples=10690 >> M²=25, making MDL overly aggressive
+        # For MUSIC resolution: D=1 (→ 4 noise eigenvectors) is always optimal
+        # for single-satellite bursts.  MDL=0 means "pure noise" → flag it.
+        n_sig_mdl = estimate_signal_count(R, N_SAMP, method="mdl", max_signals=3)
+        all_n_sig[i] = n_sig_mdl
+
+        # Use D from CLI/config (default 1).  Only override if MDL says 0 (noise).
+        cfg_i = cfg
+        if n_sig_mdl == 0:
+            # MDL says no signal — still process but flag for user
+            pass
+
+        # ── 2D DoA
+        spec = _doa_fn(X_filt, cfg_i, R_in=R)
         az, el, papr = find_peak_2d(spec, cfg)
         snr  = snr_from_covariance(R)
         coh  = coherence_matrix(R)
 
-        # ── Pass accumulator (reset on new satellite pass, gate low-PAPR bursts)
+        # ── Pass accumulator (global + per-pass)
         _is_new_pass = i in _pass_boundary_set
         pass_acc.update(spec, papr_db=papr,
                         new_pass=_is_new_pass, papr_min_db=_PAPR_MIN_DB_ACC)
+
+        # Per-pass accumulation
+        _pid = int(all_pass_id[i])
+        if 0 <= _pid < len(passes):
+            pi = passes[_pid]
+            pi.acc.update(spec, papr_db=papr, papr_min_db=_PAPR_MIN_DB_ACC)
+            pi.indices.append(i)
+            pi.az_list.append(float(az))
+            pi.el_list.append(float(el))
+            pi.papr_list.append(float(papr))
+            pi.dop_list.append(float(all_doppler[i]))
+            pi.t_list.append(float(timestamps[i]))
 
         all_spec[i]     = spec.astype(np.float32)
         all_az[i]       = az;    all_el[i]   = el
@@ -351,10 +435,14 @@ def main() -> None:
           f"({n_rejected_uw} rej UW, {n_rejected_spread} rej spread)  "
           f"— {n_detected_passes} passes (gap>{_PASS_GAP_S:.0f}s)")
 
+    # ── MDL statistics
+    _mdl_vals = all_n_sig[all_accepted]
+    if len(_mdl_vals):
+        print(f"[PB] MDL D estimates: D=0:{np.sum(_mdl_vals==0)} "
+              f"D=1:{np.sum(_mdl_vals==1)} D=2:{np.sum(_mdl_vals==2)} "
+              f"D≥3:{np.sum(_mdl_vals>=3)}")
+
     # ── Sky density map — PAPR²-weighted 2D histogram of per-burst Az/El peaks
-    # More informative than MUSIC-spectrum accumulation for multi-session data:
-    # correctly shows WHERE satellites are seen most often regardless of whether
-    # bursts come from the same pass or different ones.
     from scipy.ndimage import gaussian_filter as _gf
     _az_grid = cfg.az_range_deg()   # (N_AZ,)
     _el_grid = cfg.el_range_deg()   # (N_EL,)
@@ -369,6 +457,22 @@ def main() -> None:
     _dens_max = float(_density_sm.max())
     acc_norm = (_density_sm / (_dens_max + 1e-30)).astype(np.float32)
 
+    # Per-pass density maps
+    pass_density = {}
+    for pi in passes:
+        if not pi.indices:
+            continue
+        _pd = np.zeros((N_EL, N_AZ), dtype=np.float64)
+        for _i in pi.indices:
+            if all_papr[_i] < _PAPR_MIN_DB_ACC:
+                continue
+            _i_az = int(np.argmin(np.abs(_az_grid - all_az[_i])))
+            _i_el = int(np.argmin(np.abs(_el_grid - all_el[_i])))
+            _pd[_i_el, _i_az] += float(all_papr[_i]) ** 2
+        _pd_sm = _gf(_pd, sigma=1.5)
+        _pd_mx = float(_pd_sm.max())
+        pass_density[pi.pass_id] = (_pd_sm / (_pd_mx + 1e-30)).astype(np.float32)
+
     # Density peak → best overall sky position
     _dp_idx = np.unravel_index(np.argmax(_density_sm), _density_sm.shape)
     best_az  = float(_az_grid[_dp_idx[1]])
@@ -376,30 +480,25 @@ def main() -> None:
     best_papr = float(_dens_max ** 0.5)   # sqrt of summed PAPR² ≈ effective PAPR
 
     # Per-pass console summary
-    _pass_start_indices = sorted([0] + list(_pass_boundary_set))
-    _pass_ends = _pass_start_indices[1:] + [N]
     print(f"[PB] Per-pass summary  (Doppler threshold: {_DOPPLER_JUMP_HZ/1e3:.0f} kHz, "
           f"time gap: {_PASS_GAP_S:.0f} s):")
-    for _p, (_ps, _pe) in enumerate(zip(_pass_start_indices, _pass_ends)):
-        _p_acc = [_i for _i in range(_ps, _pe) if all_accepted[_i]]
-        if not _p_acc:
+    for pi in passes:
+        if not pi.indices:
             continue
-        _p_az   = [float(all_az[_i])   for _i in _p_acc]
-        _p_el   = [float(all_el[_i])   for _i in _p_acc]
-        _p_papr = [float(all_papr[_i]) for _i in _p_acc]
-        _p_dop  = [float(all_doppler[_i]) for _i in _p_acc]  # kHz
-        _p_ch   = int(round(np.median(_p_dop) / _FDMA_SPACING_HZ))
-        _p_t    = float(timestamps[_ps])
-        _ch_tag = f"ch{_p_ch:+d} ({_p_ch*_FDMA_SPACING_HZ/1e3:+.0f} kHz)"
-        if len(_p_acc) == 1:
-            print(f"  Pass {_p+1:3d}  t={_p_t:.0f}s  1 burst  {_ch_tag:20s}  "
-                  f"Az={_p_az[0]:.1f}°  El={_p_el[0]:.1f}°  PAPR={_p_papr[0]:.1f} dB")
+        n_acc = pi.n_accepted
+        _p_t    = pi.t_list[0] if pi.t_list else 0.0
+        # Per-pass best estimate from accumulator
+        _best_az, _best_el, _best_papr = pi.acc.get_best_estimate() if pi.acc else (0, 0, 0)
+        if n_acc == 1:
+            print(f"  {pi.label:40s}  t={_p_t:.0f}s  1 burst   "
+                  f"Az={pi.az_list[0]:.1f}°  El={pi.el_list[0]:.1f}°  PAPR={pi.papr_list[0]:.1f} dB")
         else:
-            _az_std = float(np.std(_p_az))
-            print(f"  Pass {_p+1:3d}  t={_p_t:.0f}s  {len(_p_acc)} bursts  {_ch_tag:20s}  "
-                  f"Az: med={np.median(_p_az):.1f}° ±{_az_std:.1f}°  "
-                  f"El: med={np.median(_p_el):.1f}°  "
-                  f"PAPR: med={np.median(_p_papr):.1f} dB")
+            _az_std = float(np.std(pi.az_list))
+            print(f"  {pi.label:40s}  t={_p_t:.0f}s  {n_acc} bursts  "
+                  f"Az: med={np.median(pi.az_list):.1f}° ±{_az_std:.1f}°  "
+                  f"El: med={np.median(pi.el_list):.1f}°  "
+                  f"PAPR: med={np.median(pi.papr_list):.1f} dB  "
+                  f"Best▸ Az={_best_az:.1f}° El={_best_el:.1f}°")
     print(f"[PB] Sky density peak: Az={best_az:.1f}°  El={best_el:.1f}°  "
           f"(N_acc={n_accepted}, N_in_density={pass_acc.n_bursts})")
 
@@ -428,7 +527,7 @@ def main() -> None:
     ax_coh  = fig.add_subplot(gs[1, 0])
     ax_pq   = fig.add_subplot(gs[1, 1])
     ax_fft  = fig.add_subplot(gs[1, 2])
-    ax_ph   = fig.add_subplot(gs[1, 3])
+    ax_dop  = fig.add_subplot(gs[1, 3])    # replaces "Phase stability"
 
     def _style(ax, title="", xlabel="", ylabel=""):
         ax.set_facecolor(BG2)
@@ -451,32 +550,41 @@ def main() -> None:
     ax_sky.set_xticks(np.deg2rad([0, 45, 90, 135, 180, 225, 270, 315]))
     ax_sky.set_xticklabels(["N", "NE", "E", "SE", "S", "SW", "W", "NW"],
                             color=C_MUTED, fontsize=6.5)
-    ax_sky.set_title("Sky Plot", color=C_TEXT, fontsize=8.5, pad=10, fontweight="semibold")
+    ax_sky.set_title("Sky Plot — Per-satellite tracks", color=C_TEXT, fontsize=8.5, pad=10, fontweight="semibold")
     ax_sky.grid(color=C_BORDER, linewidth=0.5, alpha=0.6)
     ax_sky.spines["polar"].set_color(C_BORDER)
 
-    # Scatter all burst estimates — opacity ∝ PAPR, color by FDMA channel (= satellite)
+    # Per-pass trajectory lines + scatter with distinct markers/colors
     _papr_max = float(all_papr[all_accepted].max()) if n_accepted > 0 else 1.0
-    _seen_chs = sorted(set(int(all_fdma_ch[_si]) for _si in range(N) if all_accepted[_si]))
-    _ch_palette = [C_AMBER, C_TEAL, C_BLUE, C_LIME, C_VIOLET, C_ROSE, C_MUTED]
-    _ch_color_map = {ch: _ch_palette[k % len(_ch_palette)] for k, ch in enumerate(_seen_chs)}
-    _ch_plotted: set = set()  # track which channels have been plotted (for legend)
-    for _si in range(N):
-        if not all_accepted[_si]:
+    for pi in passes:
+        if not pi.indices:
             continue
-        _t_i, _r_i = skyplot_coords(float(all_az[_si]), float(all_el[_si]))
-        _alpha = float(np.clip((all_papr[_si] - 1.0) / (_papr_max - 1.0 + 1e-6), 0.05, 0.8))
-        _ch  = int(all_fdma_ch[_si])
-        _col = _ch_color_map.get(_ch, C_DIM)
-        _lbl = f"ch{_ch:+d} ({_ch * _FDMA_SPACING_HZ / 1e3:+.0f} kHz)" if _ch not in _ch_plotted else None
-        if _lbl:
-            _ch_plotted.add(_ch)
-        ax_sky.plot(_t_i, _r_i, "o", color=_col, markersize=3.5,
-                    alpha=_alpha, zorder=2, markeredgecolor="none",
-                    label=_lbl)
-    if len(_seen_chs) > 1:
-        ax_sky.legend(loc="lower left", fontsize=5.5, framealpha=0.55,
-                      facecolor=BG3, edgecolor=C_BORDER, markerscale=1.4)
+        # ── Trajectory line (connected burst positions, chronological)
+        _t_pts = [skyplot_coords(az, el) for az, el in zip(pi.az_list, pi.el_list)]
+        if len(_t_pts) >= 2:
+            _th_arr = [p[0] for p in _t_pts]
+            _r_arr  = [p[1] for p in _t_pts]
+            ax_sky.plot(_th_arr, _r_arr, color=pi.color, linewidth=1.2,
+                        alpha=0.35, zorder=1, linestyle="-")
+        # ── Scatter points with per-pass marker
+        for _k, _idx in enumerate(pi.indices):
+            _t_i, _r_i = skyplot_coords(float(all_az[_idx]), float(all_el[_idx]))
+            _alpha = float(np.clip((all_papr[_idx] - 1.0) / (_papr_max - 1.0 + 1e-6), 0.15, 0.9))
+            _sz = 4.0 + 4.0 * float(np.clip(all_papr[_idx] / (_papr_max + 1e-6), 0, 1))
+            _lbl = pi.label if _k == 0 else None
+            ax_sky.plot(_t_i, _r_i, pi.marker, color=pi.color, markersize=_sz,
+                        alpha=_alpha, zorder=2, markeredgecolor="none", label=_lbl)
+        # ── Per-pass accumulated best estimate (large marker)
+        _best_az_p, _best_el_p, _best_papr_p = pi.acc.get_best_estimate() if pi.acc else (0, 0, 0)
+        if _best_papr_p > 0:
+            _tb, _rb = skyplot_coords(_best_az_p, _best_el_p)
+            ax_sky.plot(_tb, _rb, pi.marker, color=pi.color, markersize=12,
+                        markeredgecolor=BG, markeredgewidth=1.5, zorder=5)
+    # Compact multi-column legend (only if multiple passes)
+    if n_detected_passes > 1:
+        ax_sky.legend(loc="lower left", fontsize=5.0, framealpha=0.55,
+                      facecolor=BG3, edgecolor=C_BORDER, markerscale=1.4,
+                      ncol=max(1, n_detected_passes // 4))
     # Mark accumulated best-estimate on sky plot
     _t_best, _r_best = skyplot_coords(best_az, best_el)
     ax_sky.plot(_t_best, _r_best, "*", color=C_LIME, markersize=14,
@@ -507,16 +615,35 @@ def main() -> None:
         extent=[az_c[0], az_c[-1], el_c[0], el_c[-1]],
         cmap="hot", vmin=0, vmax=1,
     )
-    # Contour lines at 50% and 80% of peak
+    # Per-pass contours at 50% of each pass's density peak
+    for pi in passes:
+        if pi.pass_id not in pass_density:
+            continue
+        _pd = pass_density[pi.pass_id]
+        try:
+            ax_heat.contour(az_c, el_c, _pd,
+                            levels=[0.5], colors=[pi.color],
+                            linewidths=[1.0], alpha=0.85)
+        except Exception:
+            pass
+    # Global contour at 80%
     try:
         ax_heat.contour(az_c, el_c, acc_norm,
-                        levels=[0.5, 0.8], colors=[C_TEAL, C_LIME],
-                        linewidths=[0.8, 1.2], alpha=0.9)
+                        levels=[0.8], colors=[C_LIME],
+                        linewidths=[1.2], alpha=0.9)
     except Exception:
         pass
-    # Mark accumulated peak
+    # Mark accumulated peak (global)
     ax_heat.plot(best_az, best_el, "*", color=C_LIME, markersize=12,
                  markeredgecolor=BG, markeredgewidth=1.0, zorder=6)
+    # Mark per-pass best positions
+    for pi in passes:
+        if not pi.indices:
+            continue
+        _baz, _bel, _bp = pi.acc.get_best_estimate() if pi.acc else (0, 0, 0)
+        if _bp > 0:
+            ax_heat.plot(_baz, _bel, pi.marker, color=pi.color, markersize=8,
+                         markeredgecolor=BG, markeredgewidth=0.8, zorder=5)
     heat_vline = ax_heat.axvline(best_az, color=C_AMBER, linewidth=1.0, alpha=0.6, linestyle="--")
     heat_hline = ax_heat.axhline(best_el, color=C_AMBER, linewidth=1.0, alpha=0.6, linestyle="--")
     txt_heat   = ax_heat.text(0.02, 0.97, f"Best: Az={best_az:.1f}°  El={best_el:.1f}°",
@@ -583,15 +710,21 @@ def main() -> None:
     ax_fft.set_xlim(freq_axis[0], freq_axis[-1]); ax_fft.set_ylim(-80, 5)
     ax_fft.axvline(0, color=C_ROSE, linewidth=0.7, linestyle="--", alpha=0.5)
 
-    # Panel 7: Phase stability ─────────────────────────────────────────────────
-    _style(ax_ph, "Phase  (off-diag |R|)", "ant pair", "norm.")
-    _pairs = ["01", "02", "03", "04", "12", "13", "14", "23", "24", "34"]
-    ax_ph.set_xlim(-0.5, len(_pairs) - 0.5)
-    ax_ph.set_xticks(range(len(_pairs)))
-    ax_ph.set_xticklabels(_pairs, fontsize=5.5, color=C_MUTED, rotation=45)
-    ax_ph.set_ylim(0, 1.1)
-    bars_ph = ax_ph.bar(range(len(_pairs)), [0.0] * len(_pairs),
-                        color=C_VIOLET, edgecolor="none", alpha=0.8)
+    # Panel 7: Doppler per satellite (replaces Phase stability) ──────────────
+    _style(ax_dop, "Doppler per satellite", "time [s]", "Doppler [kHz]")
+    _t_axis_s = timestamps / 1000.0
+    for pi in passes:
+        if not pi.indices:
+            continue
+        _dt = np.array(pi.t_list) / 1000.0
+        _dd = np.array(pi.dop_list) / 1e3  # kHz
+        ax_dop.plot(_dd, color=pi.color, linewidth=1.2, alpha=0.85,
+                    marker=pi.marker, markersize=3, markeredgecolor="none",
+                    label=pi.label)
+    ax_dop.legend(loc="best", fontsize=5.0, framealpha=0.5,
+                  facecolor=BG3, edgecolor=C_BORDER,
+                  ncol=max(1, n_detected_passes // 3))
+    dop_vline = ax_dop.axvline(0, color=C_AMBER, linewidth=1.0, alpha=0.6, linestyle="--")
 
     fig.suptitle(
         f"Space DoA — Playback  │  {os.path.basename(npz_path)}  │  "
@@ -671,7 +804,7 @@ def main() -> None:
         sky_peak_outer.set_data([t_pk], [r_pk])
         sky_az_line.set_data([t_pk, t_pk], [0, 90])
         txt_sky.set_text(
-            f"Az: {az:6.1f}°   El: {el:5.1f}°   PAPR: {papr:.1f} dB"
+            f"Az: {az:6.1f}°   El: {el:5.1f}°   PAPR: {papr:.1f} dB   D={int(all_n_sig[i])}"
             if accepted_i else
             f"Az: —   El: —   (rejected)"
         )
@@ -682,7 +815,9 @@ def main() -> None:
         txt_heat.set_text(
             f"Best(accum): Az={best_az:.1f}°  El={best_el:.1f}°\n"
             f"Frame {i}: "
-            + (f"Az={az:.1f}°  El={el:.1f}°  PAPR={papr:.1f}dB" if accepted_i else "(rejected)")
+            + (f"Az={az:.1f}°  El={el:.1f}°  PAPR={papr:.1f}dB  "
+               f"Dop={all_doppler[i]/1e3:+.1f}kHz  D={int(all_n_sig[i])}"
+               if accepted_i else "(rejected)")
         )
 
         # History
@@ -704,12 +839,14 @@ def main() -> None:
         # FFT
         line_fft.set_ydata(fft_d)
 
-        # Phase (off-diag of covariance reconstructed from coherence × diagonal)
-        pairs_idx = [(0,1),(0,2),(0,3),(0,4),(1,2),(1,3),(1,4),(2,3),(2,4),(3,4)]
-        coh_vals  = [float(coh[p[0], p[1]]) for p in pairs_idx]
-        max_v     = max(coh_vals) if max(coh_vals) > 1e-10 else 1.0
-        for bar, v in zip(bars_ph, coh_vals):
-            bar.set_height(v / max_v)
+        # Doppler panel: update vertical cursor to current frame's burst index
+        # Find which burst-within-pass is current frame
+        _pid = int(all_pass_id[i])
+        if 0 <= _pid < len(passes) and i in passes[_pid].indices:
+            _bidx = passes[_pid].indices.index(i)
+            dop_vline.set_xdata([_bidx, _bidx])
+        else:
+            dop_vline.set_xdata([-1, -1])  # hide
 
         # Slider + frame label (eventson=False prevents re-entrant _on_slider call)
         sld_frame.eventson = False

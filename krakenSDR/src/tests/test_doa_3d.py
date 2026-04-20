@@ -6,6 +6,7 @@ from core.doa_algorithms_3d import (
     doa_music_2d,
     find_peak_2d,
     reorder_cross_array_channels,
+    estimate_signal_count,
 )
 
 
@@ -92,3 +93,40 @@ def test_wrong_channel_order_causes_large_azimuth_error() -> None:
     az_wrong, _, _ = find_peak_2d(spec_wrong, cfg)
 
     assert _circ_err_deg(az_wrong, az_vals[i_az]) >= 15.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MDL signal-count estimator
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_mdl_one_signal():
+    """MDL correctly identifies D=1 from a synthetic single-source covariance."""
+    rng = np.random.default_rng(42)
+    M, N = 5, 10_000
+    a = np.array([1.0, np.exp(1j*0.5), np.exp(1j*1.0), np.exp(-1j*0.5), np.exp(-1j*1.0)])
+    s = np.exp(1j * 2 * np.pi * 0.1 * np.arange(N))
+    X = np.outer(a, s) + 0.1 * (rng.standard_normal((M, N)) + 1j * rng.standard_normal((M, N)))
+    R = (X @ X.conj().T) / N
+    assert estimate_signal_count(R, N, method="mdl") == 1
+
+
+def test_mdl_two_signals():
+    """MDL correctly identifies D=2 from two uncorrelated sources."""
+    rng = np.random.default_rng(123)
+    M, N = 5, 10_000
+    a1 = np.array([1.0, np.exp(1j*0.5), np.exp(1j*1.0), np.exp(-1j*0.5), np.exp(-1j*1.0)])
+    a2 = np.array([1.0, np.exp(1j*1.5), np.exp(1j*0.3), np.exp(-1j*1.5), np.exp(-1j*0.3)])
+    s1 = np.exp(1j * 2 * np.pi * 0.1 * np.arange(N))
+    s2 = np.exp(1j * 2 * np.pi * 0.3 * np.arange(N))
+    X = np.outer(a1, s1) + 0.5 * np.outer(a2, s2) + 0.1 * (rng.standard_normal((M, N)) + 1j * rng.standard_normal((M, N)))
+    R = (X @ X.conj().T) / N
+    assert estimate_signal_count(R, N, method="mdl") == 2
+
+
+def test_mdl_noise_only():
+    """MDL returns 0 when input is pure noise."""
+    rng = np.random.default_rng(77)
+    M, N = 5, 10_000
+    X = 0.1 * (rng.standard_normal((M, N)) + 1j * rng.standard_normal((M, N)))
+    R = (X @ X.conj().T) / N
+    assert estimate_signal_count(R, N, method="mdl") == 0

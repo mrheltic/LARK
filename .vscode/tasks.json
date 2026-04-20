@@ -283,6 +283,49 @@
                 "panel": "shared"
             },
             "problemMatcher": "$python"
+        },
+
+        // ═══════════════════════════════════════════════════════════════════
+        // CALIBRATION — Phase-diff → (az, el) NN pipeline
+        // ═══════════════════════════════════════════════════════════════════
+        {
+            "label": "KrakenSDR: Calibration — auto (collect + train + validate)",
+            "detail": "Full NN calibration pipeline: extract features from recordings, match with TLE ground truth, train MLP, validate, and produce report + plots.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py auto ${input:calibInput}",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            },
+            "problemMatcher": "$python"
+        },
+        {
+            "label": "KrakenSDR: Calibration — collect dataset",
+            "detail": "Extract phase-diff features + TLE labels from .npz recordings. Produces calibration_dataset.npz.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py collect ${input:calibInput}",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": "$python"
+        },
+        {
+            "label": "KrakenSDR: Calibration — train model",
+            "detail": "Train MLP on a collected calibration dataset.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py train ${input:calibDataset}",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            },
+            "problemMatcher": "$python"
         }    ],
 
     "inputs": [
@@ -290,6 +333,18 @@
             "id": "bitsFile",
             "description": "Path to the .bits RAW: lines file",
             "default": "session.bits",
+            "type": "promptString"
+        },
+        {
+            "id": "calibInput",
+            "description": "Recording .npz file or directory for calibration",
+            "default": "recordings/",
+            "type": "promptString"
+        },
+        {
+            "id": "calibDataset",
+            "description": "Calibration dataset .npz (from collect step)",
+            "default": "krakenSDR/calibration/calibration_dataset.npz",
             "type": "promptString"
         }
     ]
