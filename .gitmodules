@@ -2,10 +2,7 @@
 	path = external/heimdall_daq_fw
 	url = https://github.com/krakenrf/heimdall_daq_fw.git
 	shallow = true
-
-[submodule "external/iridium-toolkit"]
-	path = external/iridium-toolkit
-	url = https://github.com/muccc/iridium-toolkit.git
+        ignore = dirty
 	shallow = true
 
 [submodule "external/gr-iridium"]

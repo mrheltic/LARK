@@ -55,6 +55,9 @@ captures/
 *.grc.bak
 *.wav
 
+# ── Calibration outputs (generated artefacts) ────────────────────────────────
+krakenSDR/calibration/
+
 # ── Heimdall / DAQ ────────────────────────────────────────────────────────────
 # Build artefacts produced by heimdall_daq_fw
 external/heimdall_daq_fw/build/
