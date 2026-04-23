@@ -355,21 +355,28 @@ def phase_calibrate(
     el_mae_before = float(np.mean(np.abs(el_before - el_gt_arr2)))
     el_mae_after  = float(np.mean(np.abs(el_after  - el_gt_arr2)))
 
+    # Systematic signed bias (useful for az_zero_offset auto-correction)
+    az_bias = float(np.mean([(float(a) - float(b) + 180) % 360 - 180
+                              for a, b in zip(az_after, az_gt_arr2)]))
+    el_bias = float(np.mean([float(a) - float(b) for a, b in zip(el_after, el_gt_arr2)]))
+
     if verbose:
         print(f"\n  Phase offsets (canonical) [°]: {np.round(np.rad2deg(ph_can), 2).tolist()}")
         print(f"  Phase offsets (input order) [°]: {np.round(ph_phys, 2).tolist()}")
-        print(f"  Az MAE:  {az_mae_before:.1f}° → {az_mae_after:.1f}°")
-        print(f"  El MAE:  {el_mae_before:.1f}° → {el_mae_after:.1f}°")
+        print(f"  Az MAE:  {az_mae_before:.1f}° → {az_mae_after:.1f}°  (bias {az_bias:+.1f}°)")
+        print(f"  El MAE:  {el_mae_before:.1f}° → {el_mae_after:.1f}°  (bias {el_bias:+.1f}°)")
 
     return {
         "phase_offsets_rad_canonical":   ph_can,
         "phase_offsets_deg_canonical":   np.rad2deg(ph_can),
         "phase_offsets_deg_input_order": ph_phys,
-        "n_bursts":         n_valid,
+        "n_bursts":          n_valid,
         "az_mae_before_deg": az_mae_before,
         "az_mae_after_deg":  az_mae_after,
         "el_mae_before_deg": el_mae_before,
         "el_mae_after_deg":  el_mae_after,
+        "az_bias_deg":       az_bias,
+        "el_bias_deg":       el_bias,
         "input_order":       shared_input_order,
     }
 
@@ -1133,6 +1140,8 @@ def main():
                 "az_mae_after_deg":             round(ph_result["az_mae_after_deg"], 2),
                 "el_mae_before_deg":            round(ph_result["el_mae_before_deg"], 2),
                 "el_mae_after_deg":             round(ph_result["el_mae_after_deg"], 2),
+                "az_bias_deg":                  round(ph_result["az_bias_deg"], 2),
+                "el_bias_deg":                  round(ph_result["el_bias_deg"], 2),
             }
             with open(ph_path, "w") as f:
                 json.dump(ph_export, f, indent=2)
@@ -1153,7 +1162,8 @@ def main():
             print(f"  Phase-cal Az MAE: {ph_result['az_mae_before_deg']:.1f}° → "
                   f"{ph_result['az_mae_after_deg']:.1f}°  "
                   f"El: {ph_result['el_mae_before_deg']:.1f}° → "
-                  f"{ph_result['el_mae_after_deg']:.1f}°")
+                  f"{ph_result['el_mae_after_deg']:.1f}°  "
+                  f"(az_bias={ph_result['az_bias_deg']:+.1f}°)")
         print(f"{'═'*60}")
 
     elif args.command == "compare":
@@ -1197,6 +1207,8 @@ def main():
             "az_mae_after_deg":             round(ph_result["az_mae_after_deg"], 2),
             "el_mae_before_deg":            round(ph_result["el_mae_before_deg"], 2),
             "el_mae_after_deg":             round(ph_result["el_mae_after_deg"], 2),
+            "az_bias_deg":                  round(ph_result["az_bias_deg"], 2),
+            "el_bias_deg":                  round(ph_result["el_bias_deg"], 2),
         }
         with open(ph_path, "w") as f:
             json.dump(ph_export, f, indent=2)
@@ -1206,10 +1218,13 @@ def main():
         print(f"\n{'═'*60}")
         print(f"  Phase calibration complete!")
         print(f"  Bursts used: {ph_result['n_bursts']}")
-        print(f"  Az MAE:  {ph_result['az_mae_before_deg']:.1f}° → {ph_result['az_mae_after_deg']:.1f}°")
-        print(f"  El MAE:  {ph_result['el_mae_before_deg']:.1f}° → {ph_result['el_mae_after_deg']:.1f}°")
+        print(f"  Az MAE:  {ph_result['az_mae_before_deg']:.1f}° → {ph_result['az_mae_after_deg']:.1f}°  (bias {ph_result['az_bias_deg']:+.1f}°)")
+        print(f"  El MAE:  {ph_result['el_mae_before_deg']:.1f}° → {ph_result['el_mae_after_deg']:.1f}°  (bias {ph_result['el_bias_deg']:+.1f}°)")
         print(f"  Saved:   {ph_path}")
         print(f"  Auto-load file: {out_dir / 'phase_offsets_latest.json'}")
+        if abs(ph_result["az_bias_deg"]) > 2.0:
+            print(f"  ⚠  Systematic az_bias={ph_result['az_bias_deg']:+.1f}° remains after phase-cal.")
+            print(f"     This will be applied as az_zero_offset at next startup.")
         print(f"{'═'*60}")
 
 

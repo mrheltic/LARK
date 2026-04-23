@@ -39,9 +39,11 @@ import sys
 import time
 import collections
 import threading
+from pathlib import Path
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
+_ROOT = os.path.dirname(os.path.dirname(_SRC))    # LARK/
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 # Always re-insert _HERE at 0: Python may have already added it further down
@@ -388,7 +390,8 @@ def main() -> None:
         raise ValueError("phase_offsets must contain 5 values in physical channel order")
 
     # Auto-load latest phase calibration if no manual offsets were configured
-    _ph_latest = Path(_ROOT, "krakenSDR", "calibration", "phase_offsets_latest.json")
+    _ph_latest  = Path(_ROOT, "krakenSDR", "calibration", "phase_offsets_latest.json")
+    PH_AZ_BIAS  = 0.0   # systematic az offset [rad] from last phase-cal (applied as az_zero_offset)
     if _ph_latest.is_file() and not any(v != 0.0 for v in CFG.get("phase_offsets", [0.0] * 5)):
         try:
             with open(_ph_latest) as _f:
@@ -401,6 +404,10 @@ def main() -> None:
                       f"{_ph_data.get('az_mae_after_deg','?')}°  "
                       f"El {_ph_data.get('el_mae_before_deg','?')}°→"
                       f"{_ph_data.get('el_mae_after_deg','?')}°)")
+            _az_bias = _ph_data.get("az_bias_deg")
+            if _az_bias is not None:
+                PH_AZ_BIAS = np.deg2rad(float(_az_bias))
+                print(f"[CAL] Auto-applied az_bias={float(_az_bias):.2f}° as initial az_zero_offset")
         except Exception as _e:
             print(f"[CAL] Warning: could not load {_ph_latest.name}: {_e}")
     FS        = float(C.SAMPLE_RATE_HZ)
@@ -447,7 +454,7 @@ def main() -> None:
         uw_score       = 0.0    # last accepted burst UW correlation [0–1]
         pilot_snr_db   = 0.0    # preamble pilot SNR of last accepted burst [dB]
         ph_offsets     = PH_OFF.copy()  # live-adjustable
-        az_zero_offset = 0.0
+        az_zero_offset = PH_AZ_BIAS     # auto-set from last phase-cal az_bias_deg
         # Accumulated (EMA) spectrum for stable display
         spec_ema  = np.full((cfg.n_el, cfg.n_az), -40.0)
         az_smooth = 0.0
@@ -455,6 +462,13 @@ def main() -> None:
         # Channel health monitoring
         ch_pwr_ema  : np.ndarray = np.ones(5, dtype=np.float64)  # linear power EMA
         ch_fault    : list = []   # list of faulty channel labels (human-readable)
+        # Real-time satellite visibility (background thread, updated every 15 s)
+        visible_sats   : list = []
+        # Per-burst ground-truth via Doppler matching (during recording)
+        rec_gt_name    : list = []
+        rec_gt_az      : list = []   # [deg]
+        rec_gt_el      : list = []   # [deg]
+        rec_gt_norad   : list = []
 
     # ── Covariance accumulator (CW mode) ─────────────────────────────────────
     accum = CovarianceAccumulator3D(alpha=COV_ALPHA)
@@ -661,12 +675,52 @@ def main() -> None:
                             (time.time() - S.t_start) * 1000.0)
                         S.rec_az.append(az)
                         S.rec_el.append(el)
+                        # Real-time GT: match this burst to the closest visible
+                        # satellite by Doppler (threshold 8 kHz).  Since Iridium
+                        # uses TDMA each burst comes from exactly one satellite;
+                        # simultaneous satellites differ by 20-40 kHz.
+                        _vsat = S.visible_sats  # already holding lock → safe read
+                        if _vsat:
+                            _bs = min(_vsat, key=lambda s: abs(s["doppler_hz"] - dop_hz_best))
+                            if abs(_bs["doppler_hz"] - dop_hz_best) < 8000:
+                                S.rec_gt_name.append(_bs["name"])
+                                S.rec_gt_az.append(_bs["az_deg"])
+                                S.rec_gt_el.append(_bs["el_deg"])
+                                S.rec_gt_norad.append(_bs.get("norad_id", 0))
+                            else:
+                                S.rec_gt_name.append("")
+                                S.rec_gt_az.append(float("nan"))
+                                S.rec_gt_el.append(float("nan"))
+                                S.rec_gt_norad.append(0)
+                        else:
+                            S.rec_gt_name.append("")
+                            S.rec_gt_az.append(float("nan"))
+                            S.rec_gt_el.append(float("nan"))
+                            S.rec_gt_norad.append(0)
                 else:
                     S.h_az.append(float("nan"))
                     S.h_el.append(float("nan"))
 
     acq_thread = threading.Thread(target=_acq_loop, daemon=True)
     acq_thread.start()
+
+    # ── Satellite tracker thread (visible_now every 15 s) ─────────────────────
+    def _sat_tracker_loop():
+        while S.running:
+            if _HAS_OBSERVER:
+                try:
+                    _lat, _lon, _alt = _get_observer(interactive=False)
+                    from shared.iridium_tle import load_catalogue as _load_cat
+                    _cat = _load_cat()
+                    _vis = _cat.visible_now(_lat, _lon, _alt, el_min_deg=5.0)
+                    with S.lock:
+                        S.visible_sats = _vis
+                except Exception:
+                    pass
+            time.sleep(15.0)
+
+    sat_tracker_thread = threading.Thread(target=_sat_tracker_loop, daemon=True)
+    sat_tracker_thread.start()
 
     # ── GUI setup ─────────────────────────────────────────────────────────────
     plt.rcParams.update({
@@ -857,6 +911,12 @@ def main() -> None:
                 # Starting a new session: clear any previous burst buffer
                 S.rec_bursts.clear()
                 S.rec_timestamps.clear()
+                S.rec_az.clear()
+                S.rec_el.clear()
+                S.rec_gt_name.clear()
+                S.rec_gt_az.clear()
+                S.rec_gt_el.clear()
+                S.rec_gt_norad.clear()
                 S.t_start = time.time()
             S.recording = not S.recording
         btn_rec.label.set_text("■ Stop rec" if S.recording else "● Record")
@@ -898,15 +958,34 @@ def main() -> None:
             ts_arr     = np.array(S.rec_timestamps, dtype=np.float64)
             az_arr     = np.array(S.rec_az,         dtype=np.float32)
             el_arr     = np.array(S.rec_el,         dtype=np.float32)
+            gt_name_arr  = list(S.rec_gt_name)
+            gt_az_arr    = np.array(S.rec_gt_az,    dtype=np.float32)
+            gt_el_arr    = np.array(S.rec_gt_el,    dtype=np.float32)
+            gt_norad_arr = np.array(S.rec_gt_norad, dtype=np.int32)
             n_saved    = len(frames_arr)
             dur_s      = float(time.time() - S.t_start)
         npz_p  = os.path.join(_rec_dir, base + ".npz")
         json_p = os.path.join(_rec_dir, base + ".json")
 
-        # ── Ground-truth satellite positions (angle-based matching) ───────────
+        # ── Ground-truth satellite positions ──────────────────────────────────
+        # Primary: real-time Doppler-based matching collected during recording
+        # Fallback: post-hoc angle-based matching (if no live GT was collected)
         npz_extra: dict = {}
         _meta_gt: dict  = {}
-        if _HAS_OBSERVER:
+        n_rt_gt = int(np.sum(np.isfinite(gt_az_arr)))
+        if n_rt_gt > 0:
+            npz_extra = {
+                "gt_az_deg":     gt_az_arr,
+                "gt_el_deg":     gt_el_arr,
+                "gt_sat_name":   np.array(gt_name_arr, dtype="U32"),
+                "gt_norad_id":   gt_norad_arr,
+            }
+            _meta_gt = {
+                "ground_truth_source":    "doppler_realtime",
+                "ground_truth_n_matched": n_rt_gt,
+            }
+            print(f"[DOA] Ground-truth: {n_rt_gt}/{n_saved} bursts matched via Doppler")
+        elif _HAS_OBSERVER:
             try:
                 _lat, _lon, _alt = _get_observer(interactive=False)
                 from shared.satellite_tracker import match_bursts_by_angle
@@ -963,6 +1042,10 @@ def main() -> None:
             S.rec_timestamps.clear()
             S.rec_az.clear()
             S.rec_el.clear()
+            S.rec_gt_name.clear()
+            S.rec_gt_az.clear()
+            S.rec_gt_el.clear()
+            S.rec_gt_norad.clear()
             S.recording = False
         btn_rec.label.set_text("● Record")
         btn_rec.color = BG3
@@ -970,6 +1053,8 @@ def main() -> None:
         print(f"[DOA] Saved {npz_p}  ({n_saved} frames)")
 
     # ── Animation ─────────────────────────────────────────────────────────────
+    _sat_artists: list = []   # matplotlib artists for visible-satellite overlay
+
     def _update(_):
         with S.lock:
             spec   = S.spec_2d.copy()
@@ -989,6 +1074,7 @@ def main() -> None:
             rec    = S.recording
             R      = S.R_now.copy()
             ch_fault = list(S.ch_fault)
+            vis_sats = list(S.visible_sats)
 
         # Sky plot — use EMA-smoothed spectrum and smoothed peak position
         sky_mesh.set_array(np.flipud(spec_e).ravel())
@@ -996,7 +1082,30 @@ def main() -> None:
         sky_peak.set_data([t_peak], [r_peak])
         sky_peak_outer.set_data([t_peak], [r_peak])
         sky_az_line.set_data([t_peak, t_peak], [0, 90])
-        txt_sky.set_text(f"Az: {az_s:6.1f}°   El: {el_s:5.1f}°   PAPR: {papr:.1f} dB  [Sat #{n_pass}]")
+        _n_vis = len(vis_sats)
+        txt_sky.set_text(
+            f"Az: {az_s:6.1f}°   El: {el_s:5.1f}°   PAPR: {papr:.1f} dB"
+            f"  [Sat #{n_pass}]  ({_n_vis} vis.)"
+        )
+
+        # Visible satellite overlay on sky plot (refreshed every animation frame)
+        for _art in _sat_artists:
+            try:
+                _art.remove()
+            except Exception:
+                pass
+        _sat_artists.clear()
+        for sv in vis_sats:
+            _th = np.deg2rad(sv["az_deg"])
+            _r  = 90.0 - sv["el_deg"]
+            _m, = ax_sky.plot([_th], [_r], "s", color=C_AMBER,
+                              markersize=7, zorder=6, markeredgecolor=BG, markeredgewidth=0.8)
+            _dop_khz = sv.get("doppler_hz", 0) / 1000.0
+            _label = sv["name"].replace("IRIDIUM ", "#") + f"\n{_dop_khz:+.0f}kHz"
+            _t = ax_sky.text(_th, min(_r + 7, 89), _label,
+                             color=C_AMBER, fontsize=5.0, ha="center",
+                             va="bottom", zorder=7)
+            _sat_artists.extend([_m, _t])
 
         # 2D heatmap — accumulated EMA spectrum (stable hot zone)
         heat_img.set_data(spec_e)
