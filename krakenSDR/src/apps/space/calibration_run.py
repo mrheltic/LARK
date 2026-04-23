@@ -682,8 +682,8 @@ def main():
 
     # ── collect ───────────────────────────────────────────────────────────────
     p_col = sub.add_parser("collect", help="Extract features + ground-truth labels from recordings")
-    p_col.add_argument("inputs", type=Path, nargs="+",
-                       help="One or more .npz recording files or directories")
+    p_col.add_argument("inputs", type=Path, nargs="*",
+                       help="One or more .npz recording files or directories (default: recordings/)")
     p_col.add_argument("-o", "--out", type=Path, default=None,
                        help="Output dataset .npz (default: krakenSDR/calibration/calibration_dataset.npz)")
     p_col.add_argument("--lat", type=float, default=None)
@@ -711,8 +711,8 @@ def main():
 
     # ── auto ──────────────────────────────────────────────────────────────────
     p_auto = sub.add_parser("auto", help="Full pipeline: collect → train → validate → plot")
-    p_auto.add_argument("inputs", type=Path, nargs="+",
-                        help="One or more .npz recording files or directories")
+    p_auto.add_argument("inputs", type=Path, nargs="*",
+                        help="One or more .npz recording files or directories (default: recordings/)")
     p_auto.add_argument("-o", "--out-dir", type=Path, default=None,
                         help="Output directory (default: krakenSDR/calibration/)")
     p_auto.add_argument("--epochs", type=int, default=200)
@@ -737,8 +737,9 @@ def main():
 
     if args.command == "collect":
         lat, lon, alt = get_observer(args.lat, args.lon, args.alt)
+        inputs = args.inputs or [Path(_ROOT) / "recordings"]
         npz_files: list[Path] = []
-        for inp in args.inputs:
+        for inp in inputs:
             found = _find_npz_files(inp)
             if not found:
                 print(f"[WARN] No .npz files found at {inp}")
@@ -781,8 +782,9 @@ def main():
 
         # 1. Collect
         lat, lon, alt = get_observer(args.lat, args.lon, args.alt)
+        inputs = args.inputs or [Path(_ROOT) / "recordings"]
         npz_files: list[Path] = []
-        for inp in args.inputs:
+        for inp in inputs:
             found = _find_npz_files(inp)
             if not found:
                 print(f"[WARN] No .npz files found at {inp}")
