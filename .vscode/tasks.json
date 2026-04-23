@@ -290,7 +290,7 @@
         // ═══════════════════════════════════════════════════════════════════
         {
             "label": "KrakenSDR: Calibration — auto (collect + train + validate)",
-            "detail": "Full NN calibration pipeline: extract features from recordings, match with TLE ground truth, train MLP, validate, and produce report + plots.",
+            "detail": "Full NN calibration pipeline on one or more recordings. Fetches satellite Az/El from CelesTrak, trains MLP, and produces report + plots. Accepts a single .npz file, multiple files (space-separated), or a directory.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py auto ${input:calibInput}",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
@@ -303,7 +303,7 @@
         },
         {
             "label": "KrakenSDR: Calibration — collect dataset",
-            "detail": "Extract phase-diff features + TLE labels from .npz recordings. Produces calibration_dataset.npz.",
+            "detail": "Extract phase-diff features + ground-truth labels from .npz recordings. Accepts single file, multiple files, or directory.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py collect ${input:calibInput}",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
@@ -337,8 +337,8 @@
         },
         {
             "id": "calibInput",
-            "description": "Recording .npz file or directory for calibration",
-            "default": "recordings/",
+            "description": "Recording(s) for calibration — single .npz, space-separated .npz files, or a directory. Paths relative to LARK root are resolved automatically (e.g. \"recordings/\" or \"recordings/kraken_space_rt_20260415_163512.npz\").",
+            "default": "../../recordings/",
             "type": "promptString"
         },
         {

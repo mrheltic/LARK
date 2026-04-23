@@ -262,6 +262,7 @@ def main() -> None:
     parser.add_argument("--time",      type=float, default=0.0,  help="Max session time [s] (0=∞)")
     parser.add_argument("--out",       type=str,   default=None, help="Output directory")
     parser.add_argument("--no-gui",    action="store_true",      help="Run without display (headless)")
+    parser.add_argument("--no-gt",     action="store_true",      help="Skip ground-truth satellite annotation at save time")
     parser.add_argument("--profile",   type=str,   default=None, metavar="NAME",
                         help="Named config profile (e.g. iridium_1626). Overrides LARK_PROFILE env var.")
     args = parser.parse_args()
@@ -412,6 +413,7 @@ def main() -> None:
     _saved = [False]   # guard against double-save (close_event + post-show)
 
     def _save():
+        from datetime import datetime, timezone, timedelta
         if _saved[0]:
             return
         _saved[0] = True
@@ -423,9 +425,43 @@ def main() -> None:
             ts_arr     = np.array(S.timestamps, dtype=np.float64)
             dop_arr    = np.array(S.doppler_list, dtype=np.float64)
             snr_arr    = np.array(S.snr_list,     dtype=np.float32)
+
+        utc_iso = datetime.now(timezone.utc).isoformat()
+
+        # ── Ground-truth satellite positions (highest-elevation heuristic) ──
+        npz_extra: dict = {}
+        meta_gt:   dict = {}
+        if _HAS_OBSERVER and not getattr(args, "no_gt", False):
+            try:
+                _lat, _lon, _alt = _get_observer(interactive=False)
+                from shared.satellite_tracker import match_bursts_to_satellites
+                t0_utc = datetime.fromisoformat(utc_iso)
+                print("[COL] Computing ground-truth satellite positions …")
+                # Without per-burst DoA, select the highest-elevation visible
+                # satellite as the most likely transmitter.  The calibration
+                # pipeline will use angle-based matching during 'collect'.
+                gt = match_bursts_to_satellites(
+                    ts_arr, dop_arr, t0_utc, _lat, _lon, _alt,
+                    use_elevation_heuristic=True, verbose=True,
+                )
+                npz_extra = {
+                    "gt_az_deg":     gt["az_deg"],
+                    "gt_el_deg":     gt["el_deg"],
+                    "gt_sat_name":   gt["sat_name"],
+                    "gt_norad_id":   gt["norad_id"],
+                    "gt_doppler_hz": gt["doppler_hz"],
+                }
+                meta_gt = {
+                    "ground_truth_source":    gt["source"],
+                    "ground_truth_n_matched": gt["n_matched"],
+                }
+            except Exception as exc:
+                print(f"[COL] Ground-truth annotation skipped: {exc}")
+
         np.savez_compressed(npz_path,
                             bursts=frames_arr, timestamps=ts_arr,
-                            doppler_hz=dop_arr, snr_db=snr_arr)
+                            doppler_hz=dop_arr, snr_db=snr_arr,
+                            **npz_extra)
         meta = {
             "freq_hz": FREQ_HZ, "sample_rate_hz": FS, "gain_db": GAIN_DB,
             "n_antennas": 5, "burst_threshold_db": THRESHOLD,
@@ -433,14 +469,15 @@ def main() -> None:
             "solver_channel_order": list(CROSS_ARRAY_CANONICAL_ORDER),
             "n_bursts": int(len(S.bursts)),
             "duration_s": float(time.time() - S.t_start),
-            "timestamp_utc": stamp,
+            "timestamp_utc": utc_iso,
+            **meta_gt,
         }
         if _HAS_OBSERVER:
             try:
-                _lat, _lon, _alt = _get_observer(interactive=False)
-                meta["observer_lat"] = round(_lat, 7)
-                meta["observer_lon"] = round(_lon, 7)
-                meta["observer_alt_m"] = round(_alt, 1)
+                _lat2, _lon2, _alt2 = _get_observer(interactive=False)
+                meta["observer_lat"] = round(_lat2, 7)
+                meta["observer_lon"] = round(_lon2, 7)
+                meta["observer_alt_m"] = round(_alt2, 1)
             except Exception:
                 pass
         with open(json_path, "w") as f:

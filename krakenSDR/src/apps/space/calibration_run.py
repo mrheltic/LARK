@@ -111,9 +111,28 @@ C_DIM    = "#4e5680"
 _CALIB_DIR = Path(_ROOT) / "krakenSDR" / "calibration"
 
 
-# =============================================================================
-# Step 1: Collect — features + TLE ground truth
-# =============================================================================
+def _parse_timestamp(ts_str: str) -> datetime:
+    """Parse a recording timestamp string in any of the supported formats.
+
+    Handles:
+    * ISO 8601 with timezone (``2026-04-15T16:35:12+00:00``)
+    * ISO 8601 without timezone (assumed UTC)
+    * Legacy compact format from strftime (``20260415_163512``)
+    """
+    # Try ISO formats first (fromisoformat handles many variants)
+    try:
+        dt = datetime.fromisoformat(ts_str)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        pass
+    # Legacy: strftime "%Y%m%d_%H%M%S"
+    for fmt in ("%Y%m%d_%H%M%S", "%Y%m%d_%H%M%S.%f"):
+        try:
+            return datetime.strptime(ts_str, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    raise ValueError(f"Cannot parse recording timestamp: {ts_str!r}")
+
 
 def collect_dataset(
     npz_paths: list[Path],
@@ -146,7 +165,12 @@ def collect_dataset(
         sat_names    list[str]          — matched satellite name per sample
         recording    list[str]          — source recording per sample
     """
-    catalogue = load_catalogue()
+    _catalogue = [None]   # lazy-load TLE catalogue only if needed by fallback
+
+    def _get_catalogue():
+        if _catalogue[0] is None:
+            _catalogue[0] = load_catalogue()
+        return _catalogue[0]
 
     all_features = []
     all_az_tle = []
@@ -164,7 +188,11 @@ def collect_dataset(
             print(f"\n[COLLECT] {npz_path.name}")
 
         # Load recording
-        data = np.load(str(npz_path))
+        try:
+            data = np.load(str(npz_path))
+        except (EOFError, Exception) as exc:
+            print(f"  [SKIP] Cannot load {npz_path.name}: {exc}")
+            continue
         frames = data.get("bursts", data.get("frames"))
         if frames is None:
             print(f"  [SKIP] No 'bursts' or 'frames' array in {npz_path.name}")
@@ -178,18 +206,27 @@ def collect_dataset(
             with open(json_path) as f:
                 meta = json.load(f)
 
-        # Get recording UTC start time
+        # Check whether this recording has embedded ground truth
+        has_embedded_gt = (
+            "gt_az_deg" in data
+            and len(data["gt_az_deg"]) == len(frames)
+            and np.any(np.isfinite(data["gt_az_deg"].astype(float)))
+        )
+
+        # Get recording UTC start time (for TLE fallback)
+        t0_utc = None
         ts_str = meta.get("timestamp_utc")
         if ts_str:
-            t0_utc = datetime.fromisoformat(ts_str)
-            if t0_utc.tzinfo is None:
-                t0_utc = t0_utc.replace(tzinfo=timezone.utc)
-        else:
-            # Fallback: use file modification time
+            try:
+                t0_utc = _parse_timestamp(str(ts_str))
+            except ValueError as exc:
+                if verbose:
+                    print(f"  [WARN] Timestamp parse error: {exc}")
+        if t0_utc is None:
             mtime = npz_path.stat().st_mtime
             t0_utc = datetime.fromtimestamp(mtime, tz=timezone.utc)
             if verbose:
-                print(f"  [WARN] No timestamp_utc in metadata, using file mtime")
+                print("  [WARN] No valid timestamp_utc in metadata, using file mtime")
 
         # Extract features
         result = extract_features_from_recording(frames, timestamps, meta)
@@ -199,71 +236,107 @@ def collect_dataset(
             continue
 
         if verbose:
-            print(f"  {M} accepted bursts, matching to TLE …")
+            src = "embedded GT" if has_embedded_gt else "TLE match"
+            print(f"  {M} accepted bursts — ground truth via {src} …")
 
-        # Match each accepted burst with TLE
         n_matched = 0
-        _vis_cache = {}
 
-        for j in range(M):
-            burst_idx = int(result["burst_indices"][j])
-            burst_ts_ms = float(result["timestamps"][j])
-            burst_dt = t0_utc + timedelta(milliseconds=burst_ts_ms)
+        # ── Path A: embedded ground truth ──────────────────────────────────────
+        if has_embedded_gt:
+            gt_az_raw   = data["gt_az_deg"].astype(float)
+            gt_el_raw   = data["gt_el_deg"].astype(float)
+            gt_name_raw = data["gt_sat_name"] if "gt_sat_name" in data else None
+            gt_nor_raw  = data["gt_norad_id"] if "gt_norad_id" in data else None
 
-            # Cache visible satellites (5s resolution)
-            cache_key = int(burst_dt.timestamp() // 5)
-            if cache_key not in _vis_cache:
-                _vis_cache[cache_key] = catalogue.visible_now(
-                    lat, lon, alt, burst_dt, el_min_deg=0.0,
+            for j in range(M):
+                burst_idx = int(result["burst_indices"][j])
+                if burst_idx >= len(gt_az_raw):
+                    continue
+                az_gt = gt_az_raw[burst_idx]
+                el_gt = gt_el_raw[burst_idx]
+                if not (np.isfinite(az_gt) and np.isfinite(el_gt)):
+                    continue
+                sat_name = (
+                    str(gt_name_raw[burst_idx])
+                    if gt_name_raw is not None and len(gt_name_raw) > burst_idx
+                    else "embedded"
                 )
-            visible = _vis_cache[cache_key]
+                all_features.append(result["features"][j])
+                all_az_tle.append(float(az_gt))
+                all_el_tle.append(float(el_gt))
+                all_az_music.append(float(result["az_music"][j]))
+                all_el_music.append(float(result["el_music"][j]))
+                all_doppler.append(float(result["doppler_hz"][j]))
+                all_papr.append(float(result["papr_db"][j]))
+                all_timestamps.append(float(result["timestamps"][j]))
+                all_sat_names.append(sat_name)
+                all_recordings.append(npz_path.name)
+                n_matched += 1
 
-            if not visible:
-                continue
+            if verbose:
+                print(f"  → {n_matched} embedded-GT samples used")
 
-            # Find nearest satellite by angular distance + Doppler
-            doa_az = float(result["az_music"][j])
-            doa_el = float(result["el_music"][j])
-            doa_dop = float(result["doppler_hz"][j])
+        # ── Path B: TLE re-matching (fallback for legacy recordings) ───────────
+        else:
+            _vis_cache = {}
+            catalogue = _get_catalogue()
+            for j in range(M):
+                burst_ts_ms = float(result["timestamps"][j])
+                burst_dt = t0_utc + timedelta(milliseconds=burst_ts_ms)
 
-            best_sat = None
-            best_score = 999.0
+                # Cache visible satellites (5 s resolution)
+                cache_key = int(burst_dt.timestamp() // 5)
+                if cache_key not in _vis_cache:
+                    _vis_cache[cache_key] = catalogue.visible_now(
+                        lat, lon, alt, burst_dt, el_min_deg=0.0,
+                    )
+                visible = _vis_cache[cache_key]
 
-            for sat in visible:
-                az_err = abs((doa_az - sat["az_deg"] + 180) % 360 - 180)
-                el_err = abs(doa_el - sat["el_deg"])
-                # Angular distance (approximate)
-                sep = np.sqrt(az_err**2 * np.cos(np.deg2rad(doa_el))**2 + el_err**2)
-                dop_penalty = abs(doa_dop - sat["doppler_hz"]) / 5000.0
-                score = sep + dop_penalty
+                if not visible:
+                    continue
 
-                if score < best_score:
-                    best_score = score
-                    best_sat = sat
+                # Find nearest satellite by angular distance + Doppler
+                doa_az = float(result["az_music"][j])
+                doa_el = float(result["el_music"][j])
+                doa_dop = float(result["doppler_hz"][j])
 
-            # Compute true angular separation for quality gate
-            if best_sat is not None:
-                az_e = abs((doa_az - best_sat["az_deg"] + 180) % 360 - 180)
-                el_e = abs(doa_el - best_sat["el_deg"])
-                true_sep = np.sqrt(
-                    az_e**2 * np.cos(np.deg2rad(doa_el))**2 + el_e**2
-                )
+                best_sat = None
+                best_score = 999.0
 
-                if true_sep <= max_angular_sep_deg:
-                    all_features.append(result["features"][j])
-                    all_az_tle.append(best_sat["az_deg"])
-                    all_el_tle.append(best_sat["el_deg"])
-                    all_az_music.append(doa_az)
-                    all_el_music.append(doa_el)
-                    all_doppler.append(doa_dop)
-                    all_papr.append(float(result["papr_db"][j]))
-                    all_timestamps.append(burst_ts_ms)
-                    all_sat_names.append(best_sat["name"])
-                    all_recordings.append(npz_path.name)
-                    n_matched += 1
+                for sat in visible:
+                    az_err = abs((doa_az - sat["az_deg"] + 180) % 360 - 180)
+                    el_err = abs(doa_el - sat["el_deg"])
+                    # Pure angular distance — no Doppler term.
+                    # The CFO returned by compensate_doppler includes the FDMA
+                    # channel offset and cannot be directly compared to the
+                    # satellite's predicted Doppler shift.
+                    sep = np.sqrt(az_err**2 * np.cos(np.deg2rad(doa_el))**2 + el_err**2)
 
-        if verbose:
-            print(f"  → {n_matched} TLE-matched samples (sep ≤ {max_angular_sep_deg}°)")
+                    if sep < best_score:
+                        best_score = sep
+                        best_sat = sat
+
+                if best_sat is not None:
+                    az_e = abs((doa_az - best_sat["az_deg"] + 180) % 360 - 180)
+                    el_e = abs(doa_el - best_sat["el_deg"])
+                    true_sep = np.sqrt(
+                        az_e**2 * np.cos(np.deg2rad(doa_el))**2 + el_e**2
+                    )
+
+                    if true_sep <= max_angular_sep_deg:
+                        all_features.append(result["features"][j])
+                        all_az_tle.append(best_sat["az_deg"])
+                        all_el_tle.append(best_sat["el_deg"])
+                        all_az_music.append(doa_az)
+                        all_el_music.append(doa_el)
+                        all_doppler.append(doa_dop)
+                        all_papr.append(float(result["papr_db"][j]))
+                        all_timestamps.append(burst_ts_ms)
+                        all_sat_names.append(best_sat["name"])
+                        all_recordings.append(npz_path.name)
+                        n_matched += 1
+
+
 
     N_total = len(all_features)
     if verbose:
@@ -577,15 +650,28 @@ def append_validation_log(
 # =============================================================================
 
 def _find_npz_files(path: Path) -> list[Path]:
-    """Resolve single file or directory to list of .npz paths."""
-    if path.is_file() and path.suffix == ".npz":
-        return [path]
-    if path.is_dir():
-        files = sorted(path.glob("*.npz"))
-        # Exclude calibration dataset files
-        files = [f for f in files if "calibration_dataset" not in f.name
-                 and "calib_model" not in f.name]
-        return files
+    """Resolve a file path or directory to a list of recording .npz files.
+
+    Tries ``path`` as-is first, then relative to the LARK repository root,
+    so callers can pass either an absolute path, a CWD-relative path, or a
+    path relative to the project root (e.g. ``recordings/session.npz``).
+    """
+    # Build candidate list: given path + LARK-root-relative path
+    candidates = [path]
+    if not path.is_absolute():
+        candidates.append(Path(_ROOT) / path)
+
+    for p in candidates:
+        if p.is_file() and p.suffix == ".npz":
+            return [p]
+        if p.is_dir():
+            files = sorted(p.glob("*.npz"))
+            # Exclude pipeline artefacts
+            files = [f for f in files
+                     if "calibration_dataset" not in f.name
+                     and "calib_model" not in f.name]
+            if files:
+                return files
     return []
 
 
@@ -597,15 +683,16 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     # ── collect ───────────────────────────────────────────────────────────────
-    p_col = sub.add_parser("collect", help="Extract features + TLE labels from recordings")
-    p_col.add_argument("input", type=Path, help=".npz file or directory")
+    p_col = sub.add_parser("collect", help="Extract features + ground-truth labels from recordings")
+    p_col.add_argument("inputs", type=Path, nargs="+",
+                       help="One or more .npz recording files or directories")
     p_col.add_argument("-o", "--out", type=Path, default=None,
-                       help="Output dataset .npz (default: calibration_dataset.npz)")
+                       help="Output dataset .npz (default: krakenSDR/calibration/calibration_dataset.npz)")
     p_col.add_argument("--lat", type=float, default=None)
     p_col.add_argument("--lon", type=float, default=None)
     p_col.add_argument("--alt", type=float, default=None)
-    p_col.add_argument("--max-sep", type=float, default=15.0,
-                       help="Max angular separation for TLE matching [deg]")
+    p_col.add_argument("--max-sep", type=float, default=50.0,
+                       help="Max angular separation for TLE fallback matching [deg] (default: 50)")
 
     # ── train ─────────────────────────────────────────────────────────────────
     p_tr = sub.add_parser("train", help="Train MLP on calibration dataset")
@@ -626,7 +713,8 @@ def main():
 
     # ── auto ──────────────────────────────────────────────────────────────────
     p_auto = sub.add_parser("auto", help="Full pipeline: collect → train → validate → plot")
-    p_auto.add_argument("input", type=Path, help=".npz file or directory")
+    p_auto.add_argument("inputs", type=Path, nargs="+",
+                        help="One or more .npz recording files or directories")
     p_auto.add_argument("-o", "--out-dir", type=Path, default=None,
                         help="Output directory (default: krakenSDR/calibration/)")
     p_auto.add_argument("--epochs", type=int, default=200)
@@ -634,7 +722,7 @@ def main():
     p_auto.add_argument("--lat", type=float, default=None)
     p_auto.add_argument("--lon", type=float, default=None)
     p_auto.add_argument("--alt", type=float, default=None)
-    p_auto.add_argument("--max-sep", type=float, default=15.0)
+    p_auto.add_argument("--max-sep", type=float, default=50.0)
     p_auto.add_argument("--no-plot", action="store_true")
 
     # ── compare ───────────────────────────────────────────────────────────────
@@ -651,12 +739,18 @@ def main():
 
     if args.command == "collect":
         lat, lon, alt = get_observer(args.lat, args.lon, args.alt)
-        npz_files = _find_npz_files(args.input)
+        npz_files: list[Path] = []
+        for inp in args.inputs:
+            found = _find_npz_files(inp)
+            if not found:
+                print(f"[WARN] No .npz files found at {inp}")
+            npz_files.extend(found)
         if not npz_files:
-            print(f"[ERROR] No .npz files found at {args.input}")
+            print("[ERROR] No .npz recording files found")
             sys.exit(1)
         ds = collect_dataset(npz_files, lat, lon, alt, max_angular_sep_deg=args.max_sep)
-        out = args.out or (args.input.parent / "calibration_dataset.npz")
+        out = args.out or (_CALIB_DIR / "calibration_dataset.npz")
+        out.parent.mkdir(parents=True, exist_ok=True)
         save_dataset(ds, out)
         print(f"\n[COLLECT] Saved {ds['features'].shape[0]} samples → {out}")
 
@@ -689,10 +783,16 @@ def main():
 
         # 1. Collect
         lat, lon, alt = get_observer(args.lat, args.lon, args.alt)
-        npz_files = _find_npz_files(args.input)
+        npz_files: list[Path] = []
+        for inp in args.inputs:
+            found = _find_npz_files(inp)
+            if not found:
+                print(f"[WARN] No .npz files found at {inp}")
+            npz_files.extend(found)
         if not npz_files:
-            print(f"[ERROR] No .npz files found at {args.input}")
+            print("[ERROR] No .npz recording files found")
             sys.exit(1)
+        print(f"[AUTO] Processing {len(npz_files)} recording(s)")
         ds = collect_dataset(npz_files, lat, lon, alt, max_angular_sep_deg=args.max_sep)
         ds_path = out_dir / "calibration_dataset.npz"
         save_dataset(ds, ds_path)

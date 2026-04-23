@@ -420,6 +420,8 @@ def main() -> None:
         # recording
         rec_bursts     : list = []
         rec_timestamps : list = []
+        rec_az         : list = []
+        rec_el         : list = []
         recording      = False
         t_start        = time.time()
         frame_count    = 0
@@ -640,6 +642,8 @@ def main() -> None:
                         S.rec_bursts.append(burst_input_for_rec.astype(np.complex64))
                         S.rec_timestamps.append(
                             (time.time() - S.t_start) * 1000.0)
+                        S.rec_az.append(az)
+                        S.rec_el.append(el)
                 else:
                     S.h_az.append(float("nan"))
                     S.h_el.append(float("nan"))
@@ -865,19 +869,51 @@ def main() -> None:
     _rec_dir = os.path.normpath(os.path.join(_SRC, "..", "..", "recordings"))
 
     def _do_save():
+        from datetime import datetime, timezone, timedelta
         os.makedirs(_rec_dir, exist_ok=True)
-        stamp = time.strftime("%Y%m%d_%H%M%S")
+        stamp     = time.strftime("%Y%m%d_%H%M%S")
+        utc_iso   = datetime.now(timezone.utc).isoformat()
         base  = f"kraken_space_rt_{stamp}"
         with S.lock:
             if not S.rec_bursts:
                 print("[DOA] No data recorded."); return
             frames_arr = np.stack(S.rec_bursts, axis=0)
             ts_arr     = np.array(S.rec_timestamps, dtype=np.float64)
+            az_arr     = np.array(S.rec_az,         dtype=np.float32)
+            el_arr     = np.array(S.rec_el,         dtype=np.float32)
             n_saved    = len(frames_arr)
             dur_s      = float(time.time() - S.t_start)
         npz_p  = os.path.join(_rec_dir, base + ".npz")
         json_p = os.path.join(_rec_dir, base + ".json")
-        np.savez_compressed(npz_p, bursts=frames_arr, timestamps=ts_arr)
+
+        # ── Ground-truth satellite positions (angle-based matching) ───────────
+        npz_extra: dict = {}
+        _meta_gt: dict  = {}
+        if _HAS_OBSERVER:
+            try:
+                _lat, _lon, _alt = _get_observer(interactive=False)
+                from shared.satellite_tracker import match_bursts_by_angle
+                t0_utc = datetime.fromisoformat(utc_iso)
+                gt = match_bursts_by_angle(
+                    ts_arr, az_arr, el_arr, t0_utc, _lat, _lon, _alt,
+                    verbose=True,
+                )
+                npz_extra = {
+                    "gt_az_deg":     gt["az_deg"],
+                    "gt_el_deg":     gt["el_deg"],
+                    "gt_sat_name":   gt["sat_name"],
+                    "gt_norad_id":   gt["norad_id"],
+                    "gt_doppler_hz": gt["doppler_hz"],
+                }
+                _meta_gt = {
+                    "ground_truth_source":    gt["source"],
+                    "ground_truth_n_matched": gt["n_matched"],
+                }
+            except Exception as exc:
+                print(f"[DOA] Ground-truth annotation skipped: {exc}")
+
+        np.savez_compressed(npz_p, bursts=frames_arr, timestamps=ts_arr,
+                            **npz_extra)
         _meta = {
             "freq_hz": FREQ_HZ, "sample_rate_hz": FS, "gain_db": GAIN_DB,
             "n_antennas": N_ANT, "algo": ALGO, "mode": MODE,
@@ -889,14 +925,15 @@ def main() -> None:
             "burst_threshold_db": THRESHOLD,
             "n_frames": n_saved,
             "duration_s": dur_s,
-            "timestamp_utc": stamp,
+            "timestamp_utc": utc_iso,
+            **(_meta_gt),
         }
         if _HAS_OBSERVER:
             try:
-                _lat, _lon, _alt = _get_observer(interactive=False)
-                _meta["observer_lat"] = round(_lat, 7)
-                _meta["observer_lon"] = round(_lon, 7)
-                _meta["observer_alt_m"] = round(_alt, 1)
+                _lat2, _lon2, _alt2 = _get_observer(interactive=False)
+                _meta["observer_lat"] = round(_lat2, 7)
+                _meta["observer_lon"] = round(_lon2, 7)
+                _meta["observer_alt_m"] = round(_alt2, 1)
             except Exception:
                 pass
         with open(json_p, "w") as f:
@@ -907,6 +944,8 @@ def main() -> None:
         with S.lock:
             S.rec_bursts.clear()
             S.rec_timestamps.clear()
+            S.rec_az.clear()
+            S.rec_el.clear()
             S.recording = False
         btn_rec.label.set_text("● Record")
         btn_rec.color = BG3
