@@ -665,11 +665,9 @@ def _find_npz_files(path: Path) -> list[Path]:
         if p.is_file() and p.suffix == ".npz":
             return [p]
         if p.is_dir():
-            files = sorted(p.glob("*.npz"))
-            # Exclude pipeline artefacts
-            files = [f for f in files
-                     if "calibration_dataset" not in f.name
-                     and "calib_model" not in f.name]
+            # Only match recordings produced by LARK scripts (kraken_space_raw_* / kraken_space_doa_*)
+            # This automatically excludes calibration_dataset.npz, calib_model.npz, etc.
+            files = sorted(p.glob("kraken_space_*.npz"))
             if files:
                 return files
     return []

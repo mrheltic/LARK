@@ -337,7 +337,7 @@
         },
         {
             "id": "calibInput",
-            "description": "Recording(s) for calibration — single .npz, space-separated .npz files, or a directory. Paths relative to LARK root are resolved automatically (e.g. \"recordings/\" or \"recordings/kraken_space_rt_20260415_163512.npz\").",
+            "description": "Recording(s) for calibration — single .npz, space-separated .npz files, or a directory. File naming: kraken_space_raw_* (collector) / kraken_space_doa_* (realtime DoA). Default: all recordings/ folder.",
             "default": "../../recordings/",
             "type": "promptString"
         },

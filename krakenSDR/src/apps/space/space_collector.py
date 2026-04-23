@@ -17,13 +17,13 @@ and space_doa_playback.py.  It focuses on:
 
 Saved format
 ------------
-  <outdir>/kraken_space_YYYYMMDD_HHMMSS.npz
+  <outdir>/kraken_space_raw_YYYYMMDD_HHMMSS.npz
     bursts      : (N, 5, N_burst)  complex64   — raw burst IQ per antenna
     timestamps  : (N,)             float64     — burst onset [ms] from session start
     doppler_hz  : (N,)             float64     — coarse Doppler estimate [Hz]
     snr_db      : (N,)             float32     — burst SNR [dB]
 
-  <outdir>/kraken_space_YYYYMMDD_HHMMSS.json
+  <outdir>/kraken_space_raw_YYYYMMDD_HHMMSS.json
     freq_hz, sample_rate_hz, gain_db, n_antennas, burst_threshold_db,
     n_bursts, duration_s, timestamp_utc
 
@@ -308,7 +308,7 @@ def main() -> None:
 
     # ── Session file ──────────────────────────────────────────────────────────
     stamp     = time.strftime("%Y%m%d_%H%M%S")
-    base_name = f"kraken_space_{stamp}"
+    base_name = f"kraken_space_raw_{stamp}"
     npz_path  = os.path.join(OUT_DIR, base_name + ".npz")
     json_path = os.path.join(OUT_DIR, base_name + ".json")
 

@@ -873,7 +873,7 @@ def main() -> None:
         os.makedirs(_rec_dir, exist_ok=True)
         stamp     = time.strftime("%Y%m%d_%H%M%S")
         utc_iso   = datetime.now(timezone.utc).isoformat()
-        base  = f"kraken_space_rt_{stamp}"
+        base  = f"kraken_space_doa_{stamp}"
         with S.lock:
             if not S.rec_bursts:
                 print("[DOA] No data recorded."); return
