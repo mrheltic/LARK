@@ -386,6 +386,23 @@ def main() -> None:
                                     dtype=np.float64))
     if PH_OFF.shape != (5,):
         raise ValueError("phase_offsets must contain 5 values in physical channel order")
+
+    # Auto-load latest phase calibration if no manual offsets were configured
+    _ph_latest = Path(_ROOT, "krakenSDR", "calibration", "phase_offsets_latest.json")
+    if _ph_latest.is_file() and not any(v != 0.0 for v in CFG.get("phase_offsets", [0.0] * 5)):
+        try:
+            with open(_ph_latest) as _f:
+                _ph_data = json.load(_f)
+            _ph_input = _ph_data.get("phase_offsets_deg_input_order")
+            if _ph_input and len(_ph_input) == 5:
+                PH_OFF = np.deg2rad(np.array(_ph_input, dtype=np.float64))
+                print(f"[CAL] Auto-loaded phase offsets from {_ph_latest.name}  "
+                      f"(Az {_ph_data.get('az_mae_before_deg','?')}°→"
+                      f"{_ph_data.get('az_mae_after_deg','?')}°  "
+                      f"El {_ph_data.get('el_mae_before_deg','?')}°→"
+                      f"{_ph_data.get('el_mae_after_deg','?')}°)")
+        except Exception as _e:
+            print(f"[CAL] Warning: could not load {_ph_latest.name}: {_e}")
     FS        = float(C.SAMPLE_RATE_HZ)
 
     cfg = CrossArrayConfig(

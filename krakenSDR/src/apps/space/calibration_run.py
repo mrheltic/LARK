@@ -110,6 +110,269 @@ C_DIM    = "#4e5680"
 # ── Default output directory ──────────────────────────────────────────────────
 _CALIB_DIR = Path(_ROOT) / "krakenSDR" / "calibration"
 
+# ── Cross-array canonical order (mirrors doa_algorithms_3d.py) ───────────────
+_CANONICAL_ORDER = ["center", "east", "north", "west", "south"]
+
+
+def _steering_vec_canonical(az_deg: float, el_deg: float, d_lambda: float = 0.5) -> np.ndarray:
+    """Ideal 5-element steering vector in canonical order [C, E, N, W, S]."""
+    az = np.deg2rad(az_deg)
+    el = np.deg2rad(el_deg)
+    ue = np.cos(el) * np.sin(az)
+    un = np.cos(el) * np.cos(az)
+    pos = np.array([
+        [0.0,        0.0       ],   # center
+        [+d_lambda,  0.0       ],   # east
+        [0.0,       +d_lambda  ],   # north
+        [-d_lambda,  0.0       ],   # west
+        [0.0,       -d_lambda  ],   # south
+    ], dtype=np.float64)
+    tau = 2.0 * np.pi * (pos[:, 0] * ue + pos[:, 1] * un)
+    return np.exp(1j * tau)
+
+
+def _reorder_canonical_to_physical(ph_canonical: np.ndarray,
+                                   input_order: list[str]) -> np.ndarray:
+    """Convert phase offsets from canonical order to physical input order."""
+    ph_phys = np.zeros(5, dtype=np.float64)
+    for c_idx, label in enumerate(_CANONICAL_ORDER):
+        label_norm = label.lower().strip()
+        for p_idx, inp_label in enumerate(input_order):
+            if inp_label.lower().strip() == label_norm:
+                ph_phys[p_idx] = ph_canonical[c_idx]
+                break
+    return ph_phys
+
+
+def phase_calibrate(
+    npz_paths: list[Path],
+    lat: float,
+    lon: float,
+    alt: float,
+    *,
+    max_angular_sep_deg: float = 50.0,
+    verbose: bool = True,
+) -> dict | None:
+    """Estimate per-channel phase offsets using GT-matched burst covariances.
+
+    Method
+    ------
+    For each burst that passes the DSP gates (UW / SNR / PAPR) and has a
+    valid GT match (az_gt, el_gt):
+
+      1. Dominant eigenvector v of the FBA covariance R (signal subspace)
+         approximates:  v ≈ exp(jψ) · diag(exp(jφ_err)) · a(az_gt, el_gt)
+      2. Phase residual per channel:  r_k = v_k · conj(a_k)
+      3. Normalise by channel 0:  r_k /= r_0  (remove ambiguity ψ)
+      4. Circular-average over all valid bursts → mean phasor per channel
+      5. Phase correction:  ph_offsets[k] = −∠(mean_phasor_k)
+
+    Returns
+    -------
+    dict with:
+        phase_offsets_rad_canonical    (5,) float64
+        phase_offsets_deg_canonical    (5,) float64
+        phase_offsets_deg_input_order  (5,) float64  — use in CFG["phase_offsets"]
+        n_bursts                       int
+        az_mae_before_deg              float
+        az_mae_after_deg               float
+        el_mae_before_deg              float
+        el_mae_after_deg               float
+        input_order                    list[str]
+    Returns None if < 10 valid bursts.
+    """
+    from shared.iridium_tle import load_catalogue
+    from shared.satellite_tracker import match_bursts_to_satellites, match_bursts_by_angle
+    from core.doa_algorithms_3d import (
+        CrossArrayConfig, doa_music_2d, find_peak_2d,
+    )
+
+    _catalogue = [None]
+
+    def _get_cat():
+        if _catalogue[0] is None:
+            _catalogue[0] = load_catalogue()
+        return _catalogue[0]
+
+    # Per-channel accumulator (complex, in canonical order)
+    acc = np.zeros(5, dtype=np.complex128)
+    n_valid = 0
+
+    all_az_gt, all_el_gt = [], []
+    all_az_before, all_el_before = [], []
+    all_R: list[np.ndarray] = []
+    shared_d_lambda = 0.5
+    shared_input_order = ["center", "north", "east", "south", "west"]  # default
+
+    for npz_path in npz_paths:
+        if verbose:
+            print(f"  [PHASECAL] {npz_path.name}")
+        try:
+            data = np.load(str(npz_path))
+        except Exception as exc:
+            print(f"    [SKIP] {exc}"); continue
+
+        frames = data.get("bursts", data.get("frames"))
+        if frames is None:
+            continue
+        timestamps = data["timestamps"]
+
+        json_path = npz_path.with_suffix(".json")
+        meta: dict = {}
+        if json_path.is_file():
+            with open(json_path) as f:
+                meta = json.load(f)
+
+        d_lambda   = float(meta.get("d_lambda", 0.5))
+        input_order = list(meta.get("antenna_input_order",
+                                    ["center", "north", "east", "south", "west"]))
+        shared_d_lambda   = d_lambda
+        shared_input_order = input_order
+
+        # Recording UTC start
+        t0_utc = None
+        ts_str = meta.get("timestamp_utc")
+        if ts_str:
+            try:
+                t0_utc = _parse_timestamp(str(ts_str))
+            except ValueError:
+                pass
+        if t0_utc is None:
+            t0_utc = datetime.fromtimestamp(npz_path.stat().st_mtime, tz=timezone.utc)
+
+        # Extract covariance matrices + MUSIC estimates
+        result = extract_features_from_recording(frames, timestamps, meta)
+        M = result["features"].shape[0]
+        if M == 0:
+            if verbose: print("    no accepted bursts"); continue
+
+        cov_matrices = result["cov_matrices"]   # (M, 5, 5) complex128
+        az_music     = result["az_music"]        # (M,) float32
+        el_music     = result["el_music"]        # (M,) float32
+        ts_arr       = result["timestamps"]      # (M,) float64 [ms]
+
+        # Ground truth: embedded or TLE fallback
+        has_embedded = (
+            "gt_az_deg" in data
+            and len(data["gt_az_deg"]) == frames.shape[0]
+            and np.any(np.isfinite(data["gt_az_deg"].astype(float)))
+        )
+
+        az_gt_arr = np.full(M, np.nan)
+        el_gt_arr = np.full(M, np.nan)
+
+        if has_embedded:
+            gt_az_raw = data["gt_az_deg"].astype(float)
+            gt_el_raw = data["gt_el_deg"].astype(float)
+            for j in range(M):
+                bi = int(result["burst_indices"][j])
+                if bi < len(gt_az_raw):
+                    az_gt_arr[j] = gt_az_raw[bi]
+                    el_gt_arr[j] = gt_el_raw[bi]
+        else:
+            # TLE fallback: angle-based match using MUSIC az/el estimates
+            # (more robust than Doppler when CFO is uncalibrated)
+            try:
+                gt = match_bursts_by_angle(
+                    ts_arr, az_music.astype(float), el_music.astype(float),
+                    t0_utc, lat, lon, alt,
+                    max_angular_sep_deg=max_angular_sep_deg,
+                    verbose=False,
+                )
+                az_gt_arr = gt["az_deg"]
+                el_gt_arr = gt["el_deg"]
+            except Exception as exc:
+                if verbose: print(f"    [WARN] TLE match failed: {exc}"); continue
+
+        # Accumulate phase residuals for valid bursts
+        for j in range(M):
+            if not (np.isfinite(az_gt_arr[j]) and np.isfinite(el_gt_arr[j])):
+                continue
+            az_gt = float(az_gt_arr[j])
+            el_gt = float(el_gt_arr[j])
+            R = cov_matrices[j]
+
+            # Dominant eigenvector (largest eigenvalue = last after eigh)
+            _, evecs = np.linalg.eigh(R)
+            v = evecs[:, -1]   # (5,) complex
+
+            # Ideal steering vector
+            a = _steering_vec_canonical(az_gt, el_gt, d_lambda)
+
+            # Phase residual relative to ch0
+            r = v * np.conj(a)
+            r_rel = r / (r[0] + 1e-30)   # normalise by channel 0
+
+            acc += r_rel
+            n_valid += 1
+            all_az_gt.append(az_gt);  all_el_gt.append(el_gt)
+            all_az_before.append(float(az_music[j]))
+            all_el_before.append(float(el_music[j]))
+            all_R.append(R.copy())
+
+        if verbose:
+            print(f"    {n_valid} valid bursts accumulated so far")
+
+    if n_valid < 10:
+        if verbose:
+            print(f"  [PHASECAL] Only {n_valid} valid bursts — need ≥10. Aborting.")
+        return None
+
+    # Phase offsets in canonical order (ch0 = 0 by construction)
+    ph_can = -np.angle(acc)
+    ph_can[0] = 0.0   # reference
+
+    # Convert to physical input order (working in degrees)
+    ph_phys = _reorder_canonical_to_physical(np.rad2deg(ph_can), shared_input_order)
+
+    # ── Evaluate: MUSIC before vs after correction ────────────────────────────
+    cfg_eval = CrossArrayConfig(d_lambda=shared_d_lambda, n_az=72, n_el=18)
+    az_gt_arr2  = np.array(all_az_gt)
+    el_gt_arr2  = np.array(all_el_gt)
+    az_before   = np.array(all_az_before)
+    el_before   = np.array(all_el_before)
+
+    # Phase correction matrix (Hadamard)
+    ph_corr = np.exp(1j * ph_can)
+    P = np.outer(ph_corr, ph_corr.conj())   # (5, 5)
+
+    az_after, el_after = [], []
+    for R in all_R:
+        R_cal = P * R   # apply phase correction
+        spec = doa_music_2d(None, cfg_eval, R_in=R_cal)
+        az_i, el_i, _ = find_peak_2d(spec, cfg_eval)
+        az_after.append(az_i); el_after.append(el_i)
+
+    az_after = np.array(az_after)
+    el_after = np.array(el_after)
+
+    def _ang_diff(a, b):
+        d = (a - b + 180) % 360 - 180
+        return np.abs(d)
+
+    az_mae_before = float(np.mean(_ang_diff(az_before, az_gt_arr2)))
+    az_mae_after  = float(np.mean(_ang_diff(az_after,  az_gt_arr2)))
+    el_mae_before = float(np.mean(np.abs(el_before - el_gt_arr2)))
+    el_mae_after  = float(np.mean(np.abs(el_after  - el_gt_arr2)))
+
+    if verbose:
+        print(f"\n  Phase offsets (canonical) [°]: {np.round(np.rad2deg(ph_can), 2).tolist()}")
+        print(f"  Phase offsets (input order) [°]: {np.round(ph_phys, 2).tolist()}")
+        print(f"  Az MAE:  {az_mae_before:.1f}° → {az_mae_after:.1f}°")
+        print(f"  El MAE:  {el_mae_before:.1f}° → {el_mae_after:.1f}°")
+
+    return {
+        "phase_offsets_rad_canonical":   ph_can,
+        "phase_offsets_deg_canonical":   np.rad2deg(ph_can),
+        "phase_offsets_deg_input_order": ph_phys,
+        "n_bursts":         n_valid,
+        "az_mae_before_deg": az_mae_before,
+        "az_mae_after_deg":  az_mae_after,
+        "el_mae_before_deg": el_mae_before,
+        "el_mae_after_deg":  el_mae_after,
+        "input_order":       shared_input_order,
+    }
+
 
 def _parse_timestamp(ts_str: str) -> datetime:
     """Parse a recording timestamp string in any of the supported formats.
@@ -731,6 +994,17 @@ def main():
     p_cmp.add_argument("--lon", type=float, default=None)
     p_cmp.add_argument("--alt", type=float, default=None)
 
+    # ── phase-cal ─────────────────────────────────────────────────────────────
+    p_ph = sub.add_parser("phase-cal",
+                          help="Estimate per-channel phase offsets from GT data")
+    p_ph.add_argument("inputs", type=Path, nargs="*",
+                      help="Recording files or directories (default: recordings/)")
+    p_ph.add_argument("-o", "--out-dir", type=Path, default=None)
+    p_ph.add_argument("--lat", type=float, default=None)
+    p_ph.add_argument("--lon", type=float, default=None)
+    p_ph.add_argument("--alt", type=float, default=None)
+    p_ph.add_argument("--max-sep", type=float, default=50.0)
+
     args = parser.parse_args()
 
     # ── Dispatch ──────────────────────────────────────────────────────────────
@@ -843,6 +1117,30 @@ def main():
             plot_path = out_dir / f"calibration_plot_{ts}.png"
             plot_results(model, ds, save_path=plot_path)
 
+        # 7. Phase calibration (bonus step — runs always, even if NN is poor)
+        print("\n[AUTO] Running phase calibration …")
+        ph_result = phase_calibrate(npz_files, lat, lon, alt,
+                                    max_angular_sep_deg=args.max_sep)
+        if ph_result:
+            ph_path = out_dir / f"phase_offsets_{ts}.json"
+            ph_export = {
+                "timestamp_utc":                datetime.now(timezone.utc).isoformat(),
+                "n_bursts":                     ph_result["n_bursts"],
+                "phase_offsets_deg_canonical":  [round(v, 4) for v in ph_result["phase_offsets_deg_canonical"].tolist()],
+                "phase_offsets_deg_input_order": [round(v, 4) for v in ph_result["phase_offsets_deg_input_order"].tolist()],
+                "antenna_input_order":          ph_result["input_order"],
+                "az_mae_before_deg":            round(ph_result["az_mae_before_deg"], 2),
+                "az_mae_after_deg":             round(ph_result["az_mae_after_deg"], 2),
+                "el_mae_before_deg":            round(ph_result["el_mae_before_deg"], 2),
+                "el_mae_after_deg":             round(ph_result["el_mae_after_deg"], 2),
+            }
+            with open(ph_path, "w") as f:
+                json.dump(ph_export, f, indent=2)
+            # Also keep a "latest" copy for auto-load
+            with open(out_dir / "phase_offsets_latest.json", "w") as f:
+                json.dump(ph_export, f, indent=2)
+            print(f"[PHASECAL] Saved → {ph_path}")
+
         print(f"\n{'═'*60}")
         print(f"  Calibration complete!")
         print(f"  Model:   {model_path}")
@@ -851,6 +1149,11 @@ def main():
               f"El MAE: {metrics['nn']['el_mae']:.1f}°")
         print(f"  MUSIC Az MAE: {metrics['music']['az_mae']:.1f}°  "
               f"El MAE: {metrics['music']['el_mae']:.1f}°")
+        if ph_result:
+            print(f"  Phase-cal Az MAE: {ph_result['az_mae_before_deg']:.1f}° → "
+                  f"{ph_result['az_mae_after_deg']:.1f}°  "
+                  f"El: {ph_result['el_mae_before_deg']:.1f}° → "
+                  f"{ph_result['el_mae_after_deg']:.1f}°")
         print(f"{'═'*60}")
 
     elif args.command == "compare":
@@ -860,6 +1163,54 @@ def main():
         ds = collect_dataset(npz_files, lat, lon, alt)
         metrics = validate_pipeline(model, ds)
         plot_results(model, ds)
+
+    elif args.command == "phase-cal":
+        lat, lon, alt = get_observer(args.lat, args.lon, args.alt)
+        out_dir = args.out_dir or _CALIB_DIR
+        out_dir.mkdir(parents=True, exist_ok=True)
+        inputs = args.inputs or [Path(_ROOT) / "recordings"]
+        npz_files: list[Path] = []
+        for inp in inputs:
+            found = _find_npz_files(inp)
+            if not found:
+                print(f"[WARN] No .npz files found at {inp}")
+            npz_files.extend(found)
+        if not npz_files:
+            print("[ERROR] No .npz recording files found"); sys.exit(1)
+
+        print(f"[PHASECAL] Processing {len(npz_files)} recording(s) …")
+        ph_result = phase_calibrate(npz_files, lat, lon, alt,
+                                    max_angular_sep_deg=args.max_sep)
+        if ph_result is None:
+            print("[ERROR] Phase calibration failed — not enough matched bursts")
+            sys.exit(1)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ph_path = out_dir / f"phase_offsets_{ts}.json"
+        ph_export = {
+            "timestamp_utc":                datetime.now(timezone.utc).isoformat(),
+            "n_bursts":                     ph_result["n_bursts"],
+            "phase_offsets_deg_canonical":  [round(v, 4) for v in ph_result["phase_offsets_deg_canonical"].tolist()],
+            "phase_offsets_deg_input_order": [round(v, 4) for v in ph_result["phase_offsets_deg_input_order"].tolist()],
+            "antenna_input_order":          ph_result["input_order"],
+            "az_mae_before_deg":            round(ph_result["az_mae_before_deg"], 2),
+            "az_mae_after_deg":             round(ph_result["az_mae_after_deg"], 2),
+            "el_mae_before_deg":            round(ph_result["el_mae_before_deg"], 2),
+            "el_mae_after_deg":             round(ph_result["el_mae_after_deg"], 2),
+        }
+        with open(ph_path, "w") as f:
+            json.dump(ph_export, f, indent=2)
+        with open(out_dir / "phase_offsets_latest.json", "w") as f:
+            json.dump(ph_export, f, indent=2)
+
+        print(f"\n{'═'*60}")
+        print(f"  Phase calibration complete!")
+        print(f"  Bursts used: {ph_result['n_bursts']}")
+        print(f"  Az MAE:  {ph_result['az_mae_before_deg']:.1f}° → {ph_result['az_mae_after_deg']:.1f}°")
+        print(f"  El MAE:  {ph_result['el_mae_before_deg']:.1f}° → {ph_result['el_mae_after_deg']:.1f}°")
+        print(f"  Saved:   {ph_path}")
+        print(f"  Auto-load file: {out_dir / 'phase_offsets_latest.json'}")
+        print(f"{'═'*60}")
 
 
 if __name__ == "__main__":

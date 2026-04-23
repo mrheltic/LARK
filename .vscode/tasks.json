@@ -326,6 +326,32 @@
                 "panel": "new"
             },
             "problemMatcher": "$python"
+        },
+        {
+            "label": "KrakenSDR: Calibration — train model",
+            "detail": "Train MLP on a collected calibration dataset.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py train ${input:calibDataset}",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            },
+            "problemMatcher": "$python"
+        },
+        {
+            "label": "KrakenSDR: Calibration — phase offsets (direct MUSIC fix)",
+            "detail": "Stima i phase offset per canale dal GT TLE. Salva phase_offsets_latest.json che viene caricato automaticamente all'avvio di space_doa_realtime.py.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py phase-cal ${input:calibInput}",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            },
+            "problemMatcher": "$python"
         }    ],
 
     "inputs": [

@@ -231,6 +231,7 @@ def extract_features_from_recording(
     ts_list = []
     az_list = []
     el_list = []
+    cov_list = []
 
     for i in range(N):
         X = reorder_cross_array_channels(
@@ -277,6 +278,7 @@ def extract_features_from_recording(
         ts_list.append(float(timestamps[i]))
         az_list.append(az)
         el_list.append(el)
+        cov_list.append(R.copy())
 
     M = len(feat_list)
     return {
@@ -287,4 +289,5 @@ def extract_features_from_recording(
         "timestamps":    np.array(ts_list, dtype=np.float64) if M else np.empty(0, dtype=np.float64),
         "az_music":      np.array(az_list, dtype=np.float32) if M else np.empty(0, dtype=np.float32),
         "el_music":      np.array(el_list, dtype=np.float32) if M else np.empty(0, dtype=np.float32),
+        "cov_matrices":  np.array(cov_list, dtype=np.complex128) if M else np.empty((0, 5, 5), dtype=np.complex128),
     }
