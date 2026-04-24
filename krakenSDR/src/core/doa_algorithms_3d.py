@@ -268,8 +268,19 @@ def doa_music_2d(
     eps = 1e-4 * float(np.real(np.trace(R))) / M
     R = R + eps * np.eye(M, dtype=complex)
 
-    _, eigenvectors = np.linalg.eigh(R)          # ascending eigenvalues
-    n_sig = max(1, min(cfg.num_expected_signals, 4))
+    eigenvalues, eigenvectors = np.linalg.eigh(R)  # ascending eigenvalues
+
+    # Auto-detect source count via MDL (Wax & Kailath 1985) when
+    # cfg.num_expected_signals == 0 (the "auto" mode set from the dialog).
+    # N_burst = 10_690 samples at 1.024 Msps; fall back to 1 if MDL returns 0.
+    if cfg.num_expected_signals == 0:
+        _N_snap = int(R.shape[0] * 2137)   # ≈ 10690 for M=5; a conservative estimate
+        n_sig = estimate_signal_count(R, _N_snap, method="mdl", max_signals=4)
+        if n_sig == 0:
+            n_sig = 1   # noise-only frame: treat as 1 source (conservative)
+    else:
+        n_sig = max(1, min(cfg.num_expected_signals, 4))
+
     En    = eigenvectors[:, :-n_sig]             # (5, 5−n_sig) noise subspace
 
     A  = cfg.get_steering_matrix()               # (5, N_grid)

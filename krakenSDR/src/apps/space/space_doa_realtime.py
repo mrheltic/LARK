@@ -127,6 +127,13 @@ _EIG_SPREAD_MIN_DB = 6.0   # dB; real-HW max spread ~7.5 dB (lowered from 8.0)
 # panels but are excluded from the weighted accumulation used for az_smooth.
 _PAPR_MIN_DB_ACC   = 1.0   # dB
 
+# GT Doppler matching: only annotate bursts on the ring-alert FDMA channel.
+# compensate_doppler() returns total CFO = f_FDMA_offset + f_Doppler.
+# For 1626.270 MHz ring-alert bursts f_FDMA_offset ≈ 0; max Iridium Doppler ≈ ±42 kHz.
+# Bursts with |CFO| > this limit are on adjacent FDMA channels (≥±80 kHz offset)
+# and carry no meaningful GT information from our TLE predictions.
+_GT_RING_BW_HZ    = 50_000  # Hz — accept GT match only if |f_dop| < 50 kHz
+
 # Channel health monitor: a channel is flagged faulty if its EMA power is more
 # than _CH_FAULT_DB below the median of all channels.  The EMA window is 8 frames.
 _CH_FAULT_DB  = 10.0   # dB below median → fault
@@ -251,8 +258,8 @@ def _run_config_dialog() -> dict:
     ttk.Combobox(r4, textvariable=_v_mode,
                  values=["BURST", "CW"],
                  state="readonly", width=10).pack(side="left", padx=(6, 14))
-    _lbl(r4, "# signals (D)").pack(side="left")
-    _v_nsig = tk.StringVar(value="1")
+    _lbl(r4, "# signals (D)  [0=auto-MDL]").pack(side="left")
+    _v_nsig = tk.StringVar(value="0")
     ttk.Entry(r4, textvariable=_v_nsig, width=5).pack(side="left", padx=6)
 
     # ── Burst settings ────────────────────────────────────────────────────────
@@ -294,7 +301,8 @@ def _run_config_dialog() -> dict:
             CFG["el_min_deg"]         = float(_v_elmin.get())
             CFG["algo"]               = _v_algo.get().upper().replace("-", "_")
             CFG["mode"]               = _v_mode.get().upper()
-            CFG["n_signals"]          = int(_v_nsig.get())
+            _nsig_raw = _v_nsig.get().strip().lower()
+            CFG["n_signals"]          = 0 if _nsig_raw in ("0", "auto", "") else int(_nsig_raw)
             CFG["burst_threshold_db"] = float(_v_thr.get())
             CFG["cov_alpha"]          = float(_v_alpha.get())
             CFG["use_fba"]            = bool(_v_fba.get())
@@ -368,7 +376,7 @@ def main() -> None:
             "el_min_deg":         5.0,
             "algo":               args.algo.upper(),
             "mode":               args.mode.upper(),
-            "n_signals":          1,
+            "n_signals":          0,   # 0 = auto MDL
             "burst_threshold_db": args.threshold,
             "cov_alpha":          0.90,
             "use_fba":            True,
@@ -682,8 +690,12 @@ def main() -> None:
                         # satellite by Doppler (threshold 8 kHz).  Since Iridium
                         # uses TDMA each burst comes from exactly one satellite;
                         # simultaneous satellites differ by 20-40 kHz.
+                        # Guard: only match bursts on the ring-alert FDMA channel
+                        # (|CFO| < 50 kHz). Bursts at ±185/±313 kHz are on adjacent
+                        # Iridium FDMA channels — their CFO includes the channel
+                        # offset, so TLE Doppler comparison is meaningless.
                         _vsat = S.visible_sats  # already holding lock → safe read
-                        if _vsat:
+                        if _vsat and abs(dop_hz_best) < _GT_RING_BW_HZ:
                             _bs = min(_vsat, key=lambda s: abs(s["doppler_hz"] - dop_hz_best))
                             if abs(_bs["doppler_hz"] - dop_hz_best) < 8000:
                                 S.rec_gt_name.append(_bs["name"])
