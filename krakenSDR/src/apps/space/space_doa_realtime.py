@@ -469,6 +469,9 @@ def main() -> None:
         rec_gt_az      : list = []   # [deg]
         rec_gt_el      : list = []   # [deg]
         rec_gt_norad   : list = []
+        # GT match counters (for the status bar)
+        rec_gt_matched : int  = 0    # bursts with valid GT this session
+        rec_gt_by_sat  : dict = {}   # {sat_name: matched_count}
 
     # ── Covariance accumulator (CW mode) ─────────────────────────────────────
     accum = CovarianceAccumulator3D(alpha=COV_ALPHA)
@@ -687,6 +690,10 @@ def main() -> None:
                                 S.rec_gt_az.append(_bs["az_deg"])
                                 S.rec_gt_el.append(_bs["el_deg"])
                                 S.rec_gt_norad.append(_bs.get("norad_id", 0))
+                                S.rec_gt_matched += 1
+                                S.rec_gt_by_sat[_bs["name"]] = (
+                                    S.rec_gt_by_sat.get(_bs["name"], 0) + 1
+                                )
                             else:
                                 S.rec_gt_name.append("")
                                 S.rec_gt_az.append(float("nan"))
@@ -706,17 +713,40 @@ def main() -> None:
 
     # ── Satellite tracker thread (visible_now every 15 s) ─────────────────────
     def _sat_tracker_loop():
+        # Load once at startup; the catalogue auto-uses 24h TLE cache.
+        _trk_cat = None
+        _trk_lat = _trk_lon = _trk_alt = None
+        if _HAS_OBSERVER:
+            try:
+                _trk_lat, _trk_lon, _trk_alt = _get_observer(interactive=False)
+            except Exception as _e:
+                print(f"[TRACKER] Cannot read observer position: {_e}")
+        if _trk_lat is not None:
+            try:
+                from shared.iridium_tle import load_catalogue as _load_cat
+                _trk_cat = _load_cat()
+                print(f"[TRACKER] TLE catalogue loaded — {len(_trk_cat.satellites)} satellites")
+            except Exception as _e:
+                print(f"[TRACKER] Failed to load TLE catalogue: {_e}")
+
         while S.running:
-            if _HAS_OBSERVER:
+            if _trk_cat is not None:
                 try:
-                    _lat, _lon, _alt = _get_observer(interactive=False)
-                    from shared.iridium_tle import load_catalogue as _load_cat
-                    _cat = _load_cat()
-                    _vis = _cat.visible_now(_lat, _lon, _alt, el_min_deg=5.0)
+                    _vis = _trk_cat.visible_now(
+                        _trk_lat, _trk_lon, _trk_alt, el_min_deg=5.0
+                    )
                     with S.lock:
                         S.visible_sats = _vis
-                except Exception:
-                    pass
+                    if _vis:
+                        _names = ", ".join(
+                            f"{sv['name'].replace('IRIDIUM ','#')}"
+                            f" az={sv['az_deg']:.0f}° el={sv['el_deg']:.0f}°"
+                            f" dop={sv['doppler_hz']/1e3:+.1f}kHz"
+                            for sv in _vis
+                        )
+                        print(f"[TRACKER] {len(_vis)} visible: {_names}")
+                except Exception as _e:
+                    print(f"[TRACKER] visible_now error: {_e}")
             time.sleep(15.0)
 
     sat_tracker_thread = threading.Thread(target=_sat_tracker_loop, daemon=True)
@@ -898,6 +928,20 @@ def main() -> None:
     ax_cal_rst = fig.add_axes((0.24,  BTN_Y, 0.10, BTN_H))
     ax_save    = fig.add_axes((0.355, BTN_Y, 0.08, BTN_H))
 
+    # ── Recording / satellite status bar ──────────────────────────────────────
+    ax_status = fig.add_axes((0.45, BTN_Y, 0.535, BTN_H))
+    ax_status.set_facecolor(BG3)
+    ax_status.set_xticks([]); ax_status.set_yticks([])
+    for _sp in ax_status.spines.values():
+        _sp.set_color(C_BORDER); _sp.set_linewidth(0.6)
+    txt_status = ax_status.text(
+        0.012, 0.5,
+        "Ready — press ● Record to start a session",
+        transform=ax_status.transAxes,
+        ha="left", va="center", fontsize=7.5,
+        color=C_MUTED, fontweight="normal",
+    )
+
     btn_rec     = Button(ax_rec,     "● Record",    color=BG3, hovercolor="#3a4060")
     btn_az_zero = Button(ax_az_zero, "Set Az Zero", color=BG3, hovercolor="#3a4060")
     btn_cal_rst = Button(ax_cal_rst, "Reset Cal",   color=BG3, hovercolor="#3a4060")
@@ -917,6 +961,8 @@ def main() -> None:
                 S.rec_gt_az.clear()
                 S.rec_gt_el.clear()
                 S.rec_gt_norad.clear()
+                S.rec_gt_matched = 0
+                S.rec_gt_by_sat.clear()
                 S.t_start = time.time()
             S.recording = not S.recording
         btn_rec.label.set_text("■ Stop rec" if S.recording else "● Record")
@@ -1046,6 +1092,8 @@ def main() -> None:
             S.rec_gt_az.clear()
             S.rec_gt_el.clear()
             S.rec_gt_norad.clear()
+            S.rec_gt_matched = 0
+            S.rec_gt_by_sat.clear()
             S.recording = False
         btn_rec.label.set_text("● Record")
         btn_rec.color = BG3
@@ -1071,7 +1119,11 @@ def main() -> None:
             n_pass = S.pass_count
             uw_sc  = S.uw_score
             p_snr  = S.pilot_snr_db
-            rec    = S.recording
+            rec      = S.recording
+            r_n      = len(S.rec_bursts)
+            r_gt     = S.rec_gt_matched
+            r_by_sat = dict(S.rec_gt_by_sat)
+            r_tstart = S.t_start
             R      = S.R_now.copy()
             ch_fault = list(S.ch_fault)
             vis_sats = list(S.visible_sats)
@@ -1147,6 +1199,46 @@ def main() -> None:
             )
         else:
             ax_fft.set_title("IQ Spectrum  ch0", color=C_TEXT, fontsize=8)
+
+        # Recording / satellite status bar
+        if rec:
+            _el = time.time() - r_tstart
+            _mm, _ss = divmod(int(_el), 60)
+            _pct = 100 * r_gt // r_n if r_n else 0
+            _sat_parts = "  │  ".join(
+                f"#{k.replace('IRIDIUM ', '')}: {v}"
+                for k, v in sorted(r_by_sat.items(), key=lambda x: -x[1])
+            )
+            if not _sat_parts:
+                _sat_parts = "(no GT — TLE tracker initialising)"
+            txt_status.set_text(
+                f"⏺ REC  {r_n} bursts  │  GT {r_gt}/{r_n} ({_pct}%)  │  {_sat_parts}  │  {_mm:02d}:{_ss:02d}"
+            )
+            txt_status.set_color(C_ROSE)
+            ax_status.set_facecolor("#2d1010")
+        elif r_n > 0:
+            # Stopped but not yet saved
+            _pct = 100 * r_gt // r_n if r_n else 0
+            txt_status.set_text(
+                f"{r_n} bursts buffered  │  GT {r_gt}/{r_n} ({_pct}%)  │  press Save .npz"
+            )
+            txt_status.set_color(C_AMBER)
+            ax_status.set_facecolor(BG3)
+        else:
+            # Idle: show visible satellites
+            if vis_sats:
+                _vis_str = "  │  ".join(
+                    f"#{sv['name'].replace('IRIDIUM ', '')}"
+                    f" az={sv['az_deg']:.0f}° el={sv['el_deg']:.0f}°"
+                    f" {sv.get('doppler_hz', 0)/1e3:+.0f}kHz"
+                    for sv in vis_sats[:5]
+                )
+                txt_status.set_text(f"Ready  │  {len(vis_sats)} visible: {_vis_str}")
+                txt_status.set_color(C_TEAL)
+            else:
+                txt_status.set_text("Ready — press ● Record  (TLE tracker starting…)")
+                txt_status.set_color(C_MUTED)
+            ax_status.set_facecolor(BG3)
 
     ani = animation.FuncAnimation(fig, _update, interval=C.INTERVAL_MS,
                                    cache_frame_data=False)
