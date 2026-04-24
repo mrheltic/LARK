@@ -153,3 +153,103 @@ class TestPassPredict:
         _angular_distance = self._import()
         d = _angular_distance(0, 0, 180, 0)
         assert d == pytest.approx(180.0, abs=0.5)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# shared.geo_utils
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGeoUtils:
+    def test_angular_distance_canonical_import(self):
+        from shared.geo_utils import angular_distance_deg
+        assert angular_distance_deg(0, 90, 180, 90) == pytest.approx(0.0, abs=0.1)
+        assert angular_distance_deg(0, 0, 90, 0) == pytest.approx(90.0, abs=0.5)
+
+    def test_unit_vec_roundtrip(self):
+        from shared.geo_utils import az_el_to_unit_vec, unit_vec_to_az_el
+        import numpy as np
+        for az, el in [(0, 30), (90, 45), (270, 10), (180, 80)]:
+            v = az_el_to_unit_vec(az, el)
+            az2, el2 = unit_vec_to_az_el(v)
+            assert abs(az2 - az) < 0.1 or abs(abs(az2 - az) - 360) < 0.1
+            assert abs(el2 - el) < 0.1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# core.signal_quality — channel power balance
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestSignalQuality:
+    def test_balanced_array(self):
+        import numpy as np
+        from core.signal_quality import channel_power_balance
+        rng = np.random.default_rng(0)
+        X = rng.standard_normal((5, 1024)) + 1j * rng.standard_normal((5, 1024))
+        rpt = channel_power_balance(X)
+        assert rpt.is_balanced
+        assert not rpt.has_critical
+        assert rpt.imbalance_db < 6.0    # white noise ≈ equal power
+
+    def test_weak_channel_detected(self):
+        import numpy as np
+        from core.signal_quality import channel_power_balance
+        rng = np.random.default_rng(1)
+        X = rng.standard_normal((5, 1024)) + 1j * rng.standard_normal((5, 1024))
+        X[2] *= 0.1    # channel 2 at 1% power — should be critical
+        rpt = channel_power_balance(X)
+        assert not rpt.is_balanced
+        assert rpt.has_critical
+        assert rpt.weak_mask[2]
+
+    def test_channel_order_labels(self):
+        import numpy as np
+        from core.signal_quality import channel_power_balance
+        rng = np.random.default_rng(2)
+        X = rng.standard_normal((5, 512)) + 1j * rng.standard_normal((5, 512))
+        X[1] *= 0.05   # north arm critically weak
+        order = ("center", "north", "east", "south", "west")
+        rpt = channel_power_balance(X, channel_order=order)
+        assert "north" in rpt.critical_labels
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# core.doa_algorithms_3d — IAA-2D
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestIAA2D:
+    def _make_signal(self, az_deg: float, el_deg: float, snr_db: float = 15.0):
+        import numpy as np
+        cfg = __import__("core.doa_algorithms_3d", fromlist=["CrossArrayConfig",
+                         "doa_iaa_2d", "find_peak_2d"])
+        CrossArrayConfig = cfg.CrossArrayConfig
+        doa_iaa_2d = cfg.doa_iaa_2d
+        find_peak_2d = cfg.find_peak_2d
+        return CrossArrayConfig, doa_iaa_2d, find_peak_2d
+
+    def test_iaa_single_source_peak(self):
+        import numpy as np
+        from core.doa_algorithms_3d import CrossArrayConfig, doa_iaa_2d, find_peak_2d
+        cfg = CrossArrayConfig(d_lambda=0.5, n_az=72, n_el=18, el_min_deg=5.0,
+                               num_expected_signals=1)
+        target_az, target_el = 60.0, 40.0
+
+        az_vals = cfg.az_range_deg()
+        el_vals = cfg.el_range_deg()
+        i_az = int(np.argmin(np.abs(az_vals - target_az)))
+        i_el = int(np.argmin(np.abs(el_vals - target_el)))
+        a = cfg.get_steering_matrix()[:, i_el * cfg.n_az + i_az]
+
+        rng = np.random.default_rng(42)
+        N = 4096
+        sig = np.exp(1j * rng.uniform(0, 2 * np.pi, N))
+        noise = 0.05 * (rng.standard_normal((5, N)) + 1j * rng.standard_normal((5, N)))
+        X = a[:, None] * sig[None, :] + noise
+
+        spec = doa_iaa_2d(X, cfg)
+        az_hat, el_hat, papr = find_peak_2d(spec, cfg)
+
+        def circ_err(a, b): return abs((a - b + 180) % 360 - 180)
+        assert circ_err(az_hat, az_vals[i_az]) <= 10.0
+        assert abs(el_hat - el_vals[i_el]) <= 10.0
+        assert papr > 3.0  # clear peak
+

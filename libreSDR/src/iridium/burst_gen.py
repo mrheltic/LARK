@@ -35,12 +35,20 @@ GUARD_SYMBOLS = 20            # guard time between bursts (silence)
 # Known Unique Word (12 dibits → 24 bits). These dibits, applied after a
 # 64-symbol all-zero preamble (ending at absolute phase 0°), produce the
 # π/4-DQPSK symbol-index sequence "022220002002" = UW_DOWNLINK recognised
-# by iridium-parser / bitsparser.
+# by iridium-parser / bitsparser and validated by iridium_doa_burst.validate_burst_uw.
+#
+# Mapping (burst_gen transmitter → receiver dibit):
+#   bit pair (0,0) → phase +π/4      → dibit 0
+#   bit pair (0,1) → phase +3π/4     → dibit 1
+#   bit pair (1,0) → phase  −π/4     → dibit 3
+#   bit pair (1,1) → phase −3π/4     → dibit 2   ← used for '2' in UW_DL
+#
+# UW_DL = [0,2,2,2,2,0,0,0,2,0,0,2]  ↔  pairs (0,0)(1,1)(1,1)(1,1)(1,1)(0,0)(0,0)(0,0)(1,1)(0,0)(0,0)(1,1)
 UNIQUE_WORD_BITS = np.array([
-    0, 0,  0, 1,  0, 0,
-    1, 0,  0, 0,  0, 1,
-    0, 0,  1, 0,  1, 1,
-    0, 1,  0, 0,  0, 1,
+    0, 0,  1, 1,  1, 1,
+    1, 1,  1, 1,  0, 0,
+    0, 0,  0, 0,  1, 1,
+    0, 0,  0, 0,  1, 1,
 ], dtype=np.int8)
 
 

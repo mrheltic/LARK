@@ -376,10 +376,10 @@ def main() -> None:
             "el_min_deg":         5.0,
             "algo":               args.algo.upper(),
             "mode":               args.mode.upper(),
-            "n_signals":          0,   # 0 = auto MDL
+            "n_signals":          1,   # 1 source = one Iridium satellite (MDL broken with wrong FBA)
             "burst_threshold_db": args.threshold,
             "cov_alpha":          0.90,
-            "use_fba":            True,
+            "use_fba":            False,
             "phase_offsets":      [0.0] * 5,
         }
 

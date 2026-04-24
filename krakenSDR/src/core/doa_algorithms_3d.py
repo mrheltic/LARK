@@ -242,9 +242,10 @@ class CrossArrayConfig:
 # =============================================================================
 
 def doa_music_2d(
-    X:    np.ndarray,
-    cfg:  CrossArrayConfig,
-    R_in: np.ndarray | None = None,
+    X:           np.ndarray,
+    cfg:         CrossArrayConfig,
+    R_in:        np.ndarray | None = None,
+    n_snapshots: int | None = None,
 ) -> np.ndarray:
     """
     2D-MUSIC pseudospectrum for the cross array.
@@ -253,9 +254,13 @@ def doa_music_2d(
 
     Parameters
     ----------
-    X    : (5, N_samples) complex — IQ matrix (burst window or CW)
-    cfg  : CrossArrayConfig
-    R_in : optional (5, 5) covariance; if provided X is ignored
+    X           : (5, N_samples) complex — IQ matrix (burst window or CW)
+    cfg         : CrossArrayConfig
+    R_in        : optional (5, 5) covariance; if provided X is not used for R
+    n_snapshots : number of IQ samples used to estimate R, required for MDL
+                  auto-detection (cfg.num_expected_signals == 0).  If None,
+                  taken from X.shape[1] when X is available; falls back to
+                  the default Iridium burst length (10 690 @ 1.024 Msps).
 
     Returns
     -------
@@ -272,9 +277,14 @@ def doa_music_2d(
 
     # Auto-detect source count via MDL (Wax & Kailath 1985) when
     # cfg.num_expected_signals == 0 (the "auto" mode set from the dialog).
-    # N_burst = 10_690 samples at 1.024 Msps; fall back to 1 if MDL returns 0.
+    # Fall back to D=1 if MDL returns 0 (noise-only frame).
     if cfg.num_expected_signals == 0:
-        _N_snap = int(R.shape[0] * 2137)   # ≈ 10690 for M=5; a conservative estimate
+        if n_snapshots is not None:
+            _N_snap = n_snapshots
+        elif R_in is None:               # X was used to compute R
+            _N_snap = X.shape[1]
+        else:                            # only R_in provided, use Iridium default
+            _N_snap = 10_690             # 261 symbols × 1.024 Msps / 25 ksps
         n_sig = estimate_signal_count(R, _N_snap, method="mdl", max_signals=4)
         if n_sig == 0:
             n_sig = 1   # noise-only frame: treat as 1 source (conservative)
@@ -289,6 +299,77 @@ def doa_music_2d(
     denom    = np.real(np.sum(np.abs(Pa) ** 2, axis=0))  # (N_grid,)
     pspec    = 1.0 / (denom + 1e-12)
     pspec_db = 10.0 * np.log10(pspec / (np.max(pspec) + 1e-12) + 1e-12)
+    return np.clip(pspec_db, -40.0, 0.0).reshape(cfg.n_el, cfg.n_az)
+
+
+# =============================================================================
+# 2D-Bartlett (Conventional Beamformer, CBF)
+# =============================================================================
+
+def doa_bartlett_2d(
+    X:    np.ndarray,
+    cfg:  CrossArrayConfig,
+    R_in: np.ndarray | None = None,
+) -> np.ndarray:
+    """
+    2D Bartlett (conventional / delay-and-sum) beamformer for the cross array.
+
+    P(φ, θ) = a^H(φ, θ) · R · a(φ, θ)
+
+    The Bartlett beamformer is the spatial matched filter: it maximises the
+    output SNR when the interference is spatially white (white noise only).
+    It is the simplest and most computationally efficient 2D DoA estimator —
+    no matrix inversion, no eigendecomposition.
+
+    Properties
+    ----------
+    + Extremely fast: one matrix–vector product per grid point.
+    + Always produces a valid, non-negative spectrum.
+    + Numerically unconditionally stable (no inversion, no regularisation).
+    - Wider main lobe than Capon or MUSIC (~1/d_lambda in beamwidth).
+    - No interference null-steering: nearby sources and multipath smear the peak.
+    - Resolution limited by array aperture (Rayleigh criterion: ~51° at d=0.5λ).
+
+    Comparison with other estimators
+    ---------------------------------
+    Bartlett  : fastest, widest peak, most robust to weak/imbalanced channels.
+    Capon     : adaptive null-steering, narrower peak, needs matrix inversion.
+    MUSIC     : sharpest peak (super-resolution), needs correct D and high SNR.
+    IAA       : iterative, sparsity-promoting, best sidelobes, slowest.
+
+    Practical uses in LARK
+    ----------------------
+    * Quick sanity check: compare Bartlett peak with MUSIC — if they disagree
+      by more than ~20°, the covariance is likely corrupted (weak channel,
+      phase error, or burst truncation).
+    * Fallback estimator when one antenna channel is known to be degraded:
+      Bartlett degrades gracefully (widens peak) whereas MUSIC fails silently.
+    * Initial seed for iterative algorithms (IAA first-iteration alternative).
+
+    Parameters
+    ----------
+    X    : (5, N_samples) complex — IQ matrix (burst window or CW)
+    cfg  : CrossArrayConfig
+    R_in : optional (5, 5) covariance; if provided X is not used for R
+
+    Returns
+    -------
+    spec : (n_el, n_az) float ndarray  [dB, peak = 0, floor = −40 dB]
+
+    References
+    ----------
+    Bartlett M.S., "Smoothing Periodograms from Time-Series with Continuous
+    Spectra", Nature 161, pp. 686-687, 1948.
+    Van Trees H.L., Optimum Array Processing, Wiley 2002, §6.3.
+    """
+    R = _get_cov(X, R_in)
+    A = cfg.get_steering_matrix()              # (5, N_grid)
+
+    # P(k) = a^H(k) · R · a(k) = real part of the quadratic form (R is Hermitian)
+    # Vectorised: diag(A^H · R · A)  = sum over rows of (A* ⊙ (R·A))
+    pspec    = np.real(np.sum(A.conj() * (R @ A), axis=0))   # (N_grid,)
+    pspec    = np.maximum(pspec, 1e-30)
+    pspec_db = 10.0 * np.log10(pspec / (float(np.max(pspec)) + 1e-30) + 1e-30)
     return np.clip(pspec_db, -40.0, 0.0).reshape(cfg.n_el, cfg.n_az)
 
 
@@ -332,6 +413,102 @@ def doa_capon_2d(
     denom    = np.real(np.sum(A.conj() * (R_inv @ A), axis=0))  # (N_grid,)
     pspec    = np.maximum(1.0 / (denom + 1e-12), 1e-12)
     pspec_db = 10.0 * np.log10(pspec / (np.max(pspec) + 1e-12) + 1e-12)
+    return np.clip(pspec_db, -40.0, 0.0).reshape(cfg.n_el, cfg.n_az)
+
+
+# =============================================================================
+# 2D-IAA (Iterative Adaptive Approach)
+# =============================================================================
+
+def doa_iaa_2d(
+    X:      np.ndarray,
+    cfg:    CrossArrayConfig,
+    R_in:   np.ndarray | None = None,
+    n_iter: int = 15,
+) -> np.ndarray:
+    """
+    2D IAA (Iterative Adaptive Approach) pseudospectrum for the cross array.
+
+    IAA iteratively refines a sparse power map P(φ,θ) by alternating:
+      (1) Reconstructing the array covariance from the current power estimates:
+              Q = A · diag(P) · A^H + σ²·I
+      (2) Updating the power at each grid point via a spatially-adapted
+          MVDR filter:
+              w(k) = Q^{-1}·a(k) / (a^H(k)·Q^{-1}·a(k))
+              P(k) = w^H(k) · R_data · w(k)
+
+    Unlike Capon, IAA iteratively updates the interference covariance per
+    grid point, converging to a sparser (higher-resolution) solution that
+    better suppresses sidelobes from adjacent channels or multipath.
+    Unlike MUSIC, it requires no eigendecomposition and does not need the
+    number of sources D to be specified.
+
+    Particularly suited for:
+      • Low-rank scenarios (single satellite, burst snapshot)
+      • Unknown or variable number of simultaneous sources
+      • Correlated source environments (beyond the rank-1 assumption of MUSIC)
+
+    Computational cost: O(n_iter × K × M²) where K = n_el × n_az, M = 5.
+    At default grid (72 × 18 = 1296 cells), this is ~0.8 M flops — ~3× Capon.
+
+    Parameters
+    ----------
+    X      : (5, N_samples) complex — IQ matrix (burst window or CW)
+    cfg    : CrossArrayConfig
+    R_in   : optional (5, 5) covariance; if provided X is not used for R
+    n_iter : number of IAA iterations (default 15; typically converges in 10)
+
+    Returns
+    -------
+    spec   : (n_el, n_az) float ndarray  [dB, peak = 0, floor = −40 dB]
+
+    References
+    ----------
+    Yardibi T. et al., "Source Localization and Sensing: A Nonparametric
+    Iterative Adaptive Approach Based on Weighted Least Squares",
+    IEEE J. Sel. Topics Signal Process. 4(1), pp. 43-55, 2010.
+    """
+    R = _get_cov(X, R_in)
+    M = R.shape[0]
+    A = cfg.get_steering_matrix()   # (M, K)
+    K = A.shape[1]
+
+    # Noise floor: smallest eigenvalue of R (lower-bound on per-source power)
+    ev_min = float(np.maximum(1e-20, np.min(np.real(np.linalg.eigvalsh(R)))))
+
+    # ── Initialize: Capon with diagonal loading ───────────────────────────────
+    eps   = 1e-4 * float(np.real(np.trace(R))) / M
+    R_reg = R + eps * np.eye(M, dtype=complex)
+    try:
+        R_inv = np.linalg.inv(R_reg)
+    except np.linalg.LinAlgError:
+        R_inv = np.linalg.pinv(R_reg)
+    denom_init = np.real(np.sum(A.conj() * (R_inv @ A), axis=0))   # (K,)
+    P = np.maximum(1.0 / (denom_init + 1e-30), ev_min)             # (K,)
+
+    # ── IAA iterations ────────────────────────────────────────────────────────
+    for _ in range(n_iter):
+        # Step 1: Reconstruct covariance from current power map
+        #   Q = A @ diag(P) @ A^H  =  (A * sqrt(P)) @ (A * sqrt(P))^H
+        AP = A * np.sqrt(P)[np.newaxis, :]          # (M, K)
+        Q  = AP @ AP.conj().T + ev_min * np.eye(M, dtype=complex)
+
+        # Step 2: Invert Q (5×5, cheap)
+        try:
+            Q_inv = np.linalg.inv(Q)
+        except np.linalg.LinAlgError:
+            break
+
+        # Step 3: Spatially-adapted MVDR filter per grid point
+        W     = Q_inv @ A                                            # (M, K)
+        norms = np.maximum(np.real(np.sum(A.conj() * W, axis=0)), 1e-30)  # (K,)
+        W    /= norms[np.newaxis, :]                                 # normalize
+
+        # Step 4: Update power estimates  P[k] = w^H(k) · R · w(k)
+        P = np.maximum(np.real(np.sum(W.conj() * (R @ W), axis=0)), ev_min * 1e-3)
+
+    # ── Normalise to dB ───────────────────────────────────────────────────────
+    pspec_db = 10.0 * np.log10(P / (float(np.max(P)) + 1e-30) + 1e-30)
     return np.clip(pspec_db, -40.0, 0.0).reshape(cfg.n_el, cfg.n_az)
 
 
@@ -450,13 +627,13 @@ def eigenvalue_spread_db(R: np.ndarray) -> np.ndarray:
     represent the noise subspace.  A large gap between λ_0 and the rest
     indicates a strong, localised source and a reliable DoA estimate.
     """
-    ev = np.sort(np.abs(np.linalg.eigvalsh(R)))[::-1]
+    ev = np.sort(np.maximum(np.linalg.eigvalsh(R), 0.0))[::-1]
     return 10.0 * np.log10(ev / (ev[-1] + 1e-20) + 1e-20)
 
 
 def snr_from_covariance(R: np.ndarray) -> float:
     """SNR estimate [dB] from the max/min eigenvalue ratio of R."""
-    ev    = np.sort(np.abs(np.linalg.eigvalsh(R)))
+    ev    = np.sort(np.maximum(np.linalg.eigvalsh(R), 0.0))
     ratio = (ev[-1] - ev[0]) / (ev[0] + 1e-20)
     return float(10.0 * np.log10(max(ratio, 1e-10)))
 

@@ -378,6 +378,14 @@ def train(
         val_pred = model.forward(X_val)
         val_loss = angular_loss(val_pred, Y_val)
 
+        # NaN / Inf guard: abort immediately to avoid silently corrupt weights
+        if not np.isfinite(train_loss) or not np.isfinite(val_loss):
+            if cfg.verbose:
+                print(f"  *** NaN/Inf loss at epoch {epoch} "
+                      f"(train={train_loss}, val={val_loss}) — aborting. "
+                      "Try reducing lr or weight_decay.")
+            break
+
         history["train_loss"].append(float(train_loss))
         history["val_loss"].append(float(val_loss))
 

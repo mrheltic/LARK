@@ -26,48 +26,65 @@
 #    python3 apps/space/space_collector.py --profile iridium_1626
 #
 #  See krakenSDR/src/profiles.py for all available profiles and their values.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#  GEOMETRY NOTES — cross array arm length (D_LAMBDA)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#  Standard cross array:  D_LAMBDA = 0.5 λ  (conservative, grating-lobe free)
+#    azimuth 3 dB beamwidth ≈ 57° at el=30°  (MUSIC super-resolution)
+#
+#  Sparse cross:          D_LAMBDA = 1.0 λ  (recommended for satellite work)
+#    azimuth 3 dB beamwidth ≈ 29° at el=30°  — 2× better angular resolution
+#    Grating lobes: only below el=0° (horizon) — invisible to satellite DoA.
+#    Safe for all targets with el > 0°.
+#
+#  Set D_LAMBDA = 1.0 and rebuild the array arms to ~18.44 cm for the best
+#  achievable single-satellite grating-lobe-free resolution at 1626 MHz.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#  ALGORITHM NOTES
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#  Available 2D DoA algorithms (selectable at runtime via the config dialog):
+#
+#    2D-MUSIC  (default) — sub-space method, sharp peaks, needs good D estimate
+#    2D-Capon  (MVDR)    — data-adaptive, more robust when D is uncertain
+#    2D-IAA              — iterative, sparser solution, best sidelobe suppression
+#                          No D estimate needed. ~3× slower than Capon.
+#
 # =============================================================================
 from __future__ import annotations
 
 import os as _os
 import sys as _sys
 
-# ── Hardware base ─────────────────────────────────────────────────────────────
+# \u2500\u2500 Hardware base \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 #  Re-exports HEIMDALL_HOST, HEIMDALL_PORT, HEIMDALL_CTRL,
 #  N_ANTENNAS, SAMPLE_RATE_HZ, HW_NUM_SAMPLES
 from config_hw import *   # noqa: F401, F403
 
-# ── RF / Radio ────────────────────────────────────────────────────────────────
-FREQ_HZ        = 1_626_270_000  # carrier frequency [Hz] — Iridium simplex ring-alert channel
+# \u2500\u2500 RF / Radio \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+FREQ_HZ        = 1_626_270_000  # carrier frequency [Hz] \u2014 Iridium simplex ring-alert channel
 GAIN_DB        = 49.6             # IF gain [dB] applied to all channels
-#                                #  Same guidance as apps/iridium/config.py.
 
-# ── Cross array geometry ──────────────────────────────────────────────────────
-D_LAMBDA       = 0.5            # arm length [fraction of λ]
-#                                #  λ @ 1626 MHz ≈ 18.44 cm  →  D_LAMBDA=0.5 → arm ≈ 9.22 cm
-#                                #  Adjust to your physical build. Values above 0.5 λ
-#                                #  start introducing grating-lobe ambiguities.
-#                                #  Measure the physical arm length from center to element tip
-#                                #  and divide by (c / FREQ_HZ).
+# \u2500\u2500 Cross array geometry \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+D_LAMBDA       = 0.5            # arm length [fraction of \u03bb]
+#                                #  See GEOMETRY NOTES above.  Standard = 0.5, sparse = 1.0
 ANTENNA_INPUT_ORDER = ["center", "north", "east", "south", "west"]
 #                                #  Physical input order delivered by Heimdall/Kraken.
-#                                #  Keep this aligned with the real coax wiring used in the field.
+#                                #  Keep aligned with real coax wiring in the field.
 
-# ── Processing ────────────────────────────────────────────────────────────────
+# \u2500\u2500 Processing \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 COV_ALPHA      = 0.88           # EMA covariance weight for continuous (CW) mode
-#                                #  Lower than DoA default: Iridium bursts are short (~20 ms),
-#                                #  so each burst provides a near-independent snapshot.
 
-# ── Display / animation ───────────────────────────────────────────────────────
-INTERVAL_MS    = 80             # milliseconds between Matplotlib animation frames
-VERBOSE_FRAMES = 0              # print Heimdall diagnostics every N frames (0 = silent)
+# \u2500\u2500 Display / animation \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+INTERVAL_MS    = 80
+VERBOSE_FRAMES = 0
 
 # =============================================================================
 # Profile override (LARK_PROFILE env var or --profile CLI flag)
 # =============================================================================
-#  The LARK_PROFILE env var is applied at import time so module-level reads see
-#  correct values. The --profile CLI flag calls apply_profile(name, C) after
-#  argparse, overriding these module attributes directly.
 _lark_profile = _os.environ.get("LARK_PROFILE", "").strip()
 if _lark_profile:
     from profiles import apply_profile as _ap

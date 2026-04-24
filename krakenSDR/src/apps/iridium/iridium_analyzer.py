@@ -49,8 +49,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)   # app-local config.py takes priority
+# Always re-insert _HERE at 0: Python may have already added it further down
+# the list when the script launched, which would let krakenSDR/src/config.py
+# shadow the app-local apps/iridium/config.py.
+sys.path.insert(0, _HERE)
 
 import numpy as np
 import matplotlib as mpl

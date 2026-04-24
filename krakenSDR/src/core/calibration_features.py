@@ -253,8 +253,8 @@ def extract_features_from_recording(
         if uw_score < uw_score_min:
             continue
 
-        # Covariance + FBA
-        R = _fba(compute_single_shot_covariance(X_filt))
+        # Covariance (no FBA — cross array does not support fliplr J)
+        R = compute_single_shot_covariance(X_filt)
 
         # Eigenvalue spread gate
         ev = eig_spread(R)

@@ -49,4 +49,20 @@ from .iridium_doa_burst import (   # noqa: F401
 from .doa_algorithms_3d import (  # noqa: F401
     estimate_signal_count,
     SatellitePassAccumulator,
+    doa_music_2d,
+    doa_bartlett_2d,
+    doa_capon_2d,
+    doa_iaa_2d,
+    find_peak_2d,
+    CrossArrayConfig,
+    CROSS_ARRAY_CANONICAL_ORDER,
+)
+
+from .signal_quality import (   # noqa: F401
+    channel_power_balance,
+    check_recording_health,
+    ChannelPowerReport,
+    papr_db_from_spectrum,
+    WEAK_CHANNEL_THRESHOLD,
+    CRITICAL_CHANNEL_THRESHOLD,
 )

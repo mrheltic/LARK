@@ -67,6 +67,7 @@ from shared.iridium import (
     SIMPLEX_RING_CH_HZ, CHANNEL_SPACING_HZ, C_LIGHT,
     MAX_DOPPLER_HZ, ORBIT_ALTITUDE_M,
 )
+from shared.geo_utils import angular_distance_deg as _angular_distance_deg
 
 # ── KrakenSDR core ────────────────────────────────────────────────────────────
 from core.iridium_doa_burst import (
@@ -107,16 +108,9 @@ C_WHITE  = "#e8eaf6"
 # Helpers
 # =============================================================================
 
-def _angular_distance(az1: float, el1: float, az2: float, el2: float) -> float:
-    """Great-circle angular distance between two sky positions [degrees]."""
-    a1, e1 = np.deg2rad(az1), np.deg2rad(el1)
-    a2, e2 = np.deg2rad(az2), np.deg2rad(el2)
-    # Convert (az, el) to unit vectors (el=0 → horizon, el=90 → zenith)
-    cos_e1, cos_e2 = np.cos(e1), np.cos(e2)
-    x1, y1, z1 = cos_e1 * np.sin(a1), cos_e1 * np.cos(a1), np.sin(e1)
-    x2, y2, z2 = cos_e2 * np.sin(a2), cos_e2 * np.cos(a2), np.sin(e2)
-    dot = np.clip(x1*x2 + y1*y2 + z1*z2, -1.0, 1.0)
-    return float(np.rad2deg(np.arccos(dot)))
+# Backward-compatible alias: existing code and tests import _angular_distance
+# from this module; the canonical implementation now lives in shared.geo_utils.
+_angular_distance = _angular_distance_deg
 
 
 def _pick_file() -> str:

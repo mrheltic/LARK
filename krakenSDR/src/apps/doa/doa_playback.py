@@ -28,10 +28,10 @@ import collections
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)   # app-local config.py takes priority
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
+# Always re-insert _HERE at 0: guarantees app-local config.py priority.
+sys.path.insert(0, _HERE)
 
 import config as C
 from core.doa_algorithms import (
