@@ -10,9 +10,9 @@
 #  │    krakenSDR/src/apps/doa/config.py      — ISM band DoA (868 / 433 MHz) │
 #  │    krakenSDR/src/apps/iridium/config.py  — Iridium L-band receive       │
 #  │    krakenSDR/src/apps/space/config.py    — 3-D satellite DoA (cross arr)│
-#  │                                                                          │
-#  │  Each app's config.py re-exports hardware constants from config_hw plus  │
-#  │  its own frequency, gain, geometry, and algorithm defaults.              │
+#  │                                                                         │
+#  │  Each app's config.py re-exports hardware constants from config_hw plus │
+#  │  its own frequency, gain, geometry, and algorithm defaults.             │
 #  │  Scripts in apps/<group>/ put their own folder first on sys.path so     │
 #  │  "import config as C" resolves to the app-local config.py.              │
 #  └─────────────────────────────────────────────────────────────────────────┘

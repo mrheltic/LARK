@@ -126,7 +126,7 @@ def generate_preamble(length):
 
 def generate_burst(payload_bits=None, burst_type="data"):
     """
-    Generate a single Iridium-like burst.
+    Generate a single Iridium-like burst. 
 
     Structure:
       [Preamble | Unique Word | Header | Payload]
