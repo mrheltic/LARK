@@ -254,29 +254,36 @@ class RxThread(threading.Thread):
         self._rng   = np.random.default_rng(7)
 
     def _demo_samples(self) -> np.ndarray:
-        """Synthetic loopback: CW tone + AWGN (+ burst envelope if in burst mode)."""
+        """Synthetic loopback: CW tone + AWGN (+ burst envelope if in burst mode).
+
+        Noise floor is kept at a VISIBLE level (-50 dBFS idle, -40 dBFS TX on)
+        so the waterfall and spectrum always show activity even with TX off.
+        The tone appears as a sharp peak ~30 dB above the noise floor.
+        """
         S = self._state
         n  = RX_BUF_SIZE
         t  = np.arange(n) / TX_SAMPLE_RATE
         if S.tx_on:
-            noise_floor = -60.0  # dBFS
-            tone_pow    = 0.3
+            # Visible noise floor + strong CW/burst tone
+            noise_sigma = 10 ** (-40.0 / 20.0)   # -40 dBFS RMS noise
+            tone_amp    = 10 ** (-10.0 / 20.0)   # -10 dBFS tone (30 dB SNR)
         else:
-            noise_floor = -80.0
-            tone_pow    = 0.0
-        snr_lin  = 10 ** ((30 - noise_floor) * 0.1)
-        sigma    = 1.0 / np.sqrt(2.0 * snr_lin)
-        noise    = sigma * (self._rng.standard_normal(n)
-                            + 1j * self._rng.standard_normal(n)).astype(np.complex64)
+            # No tone; keep noise visible so waterfall isn't all-black
+            noise_sigma = 10 ** (-50.0 / 20.0)   # -50 dBFS RMS noise
+            tone_amp    = 0.0
+        noise = noise_sigma * (self._rng.standard_normal(n)
+                               + 1j * self._rng.standard_normal(n)).astype(np.complex64)
         if S.mode == "burst" and S.tx_on:
-            # Synthetic burst envelope: 1 ms on, 9 ms off within 10 ms window
-            env   = np.zeros(n, dtype=np.float32)
-            on_n  = int(TX_SAMPLE_RATE * 0.001)
+            # Synthetic burst envelope: 1 ms on, 9 ms off
+            env  = np.zeros(n, dtype=np.float32)
+            on_n = int(TX_SAMPLE_RATE * 0.001)
             env[:min(on_n, n)] = 1.0
-            tone = (env * tone_pow * np.exp(1j * 2 * np.pi * 5e3 * t)).astype(np.complex64)
+            tone = (env * tone_amp * np.exp(1j * 2 * np.pi * 50e3 * t)).astype(np.complex64)
         else:
-            tone = (tone_pow * np.exp(1j * 2 * np.pi * 1e3 * t)).astype(np.complex64)
-        return (2 ** 14) * (tone + noise)
+            # CW tone at +50 kHz offset so it's clearly visible off-centre
+            tone = (tone_amp * np.exp(1j * 2 * np.pi * 50e3 * t)).astype(np.complex64)
+        # Scale to DAC range (2^14 = half full-scale)
+        return ((2 ** 14) * (tone + noise)).astype(np.complex64)
 
     def run(self) -> None:
         S = self._state
@@ -512,33 +519,13 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
         color=C_TEXT, fontsize=10, fontweight="bold",
     )
 
-    # ── Mark data artists as animated (blit=True caches everything else) ─────
-    # Button axes, axis frames, ticks and labels are NOT in this list → never
-    # repainted by the animation timer → no flickering on the control strip.
-    # NOTE: title_txt is a figure-level Text; keeping it out of animated
-    # artists avoids blit clipping issues — it is updated via _invalidate_blit.
-    _animated_artists: list = [
-        spec_line, spec_poly, im_wfall, iq_dots,
-        rxtime_line, txtime_line,
-        *stat_texts,
-    ]
-    for _a in _animated_artists:
-        _a.set_animated(True)
-
-    # ── blit cache helper — must be called after any button appearance change ─
-    # Stores reference to the FuncAnimation object (assigned after creation).
-    _ani_ref: list = [None]
-
-    def _invalidate_blit() -> None:
-        """Clear the blit background cache so button changes are visible."""
-        if _ani_ref[0] is not None:
-            try:
-                _ani_ref[0]._blit_cache.clear()
-            except AttributeError:
-                pass
-        fig.canvas.draw_idle()
-
     # =========================================================================
+    # NOTE: blit=False is used intentionally. blit=True with TkAgg has known
+    # issues with Patch (spec_poly bbox) and AxesImage (im_wfall) — the blit
+    # background is captured before data arrives, leaving plots invisible.
+    # Performance is adequate because: Polygon.set_xy + in-place waterfall
+    # shift eliminate the main allocation hotspots; draw_idle() is coalesced
+    # by the event loop; and the 400 ms interval only fires 2.5 times/sec.
     # Button strip  (figure coords y=0.04..0.17, clear of the plot area)
     # Layout: [  TX START/STOP  ]  [  Mode: CW  ]  [ ◄ Freq ]  [ Freq ► ]  [ Gain ▼ ]  [ Gain ▲ ]
     # =========================================================================
@@ -608,12 +595,12 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
                     sdr.tx_destroy_buffer()
                 except Exception:
                     pass
-        _invalidate_blit()   # flush blit cache so label change is visible
+        fig.canvas.draw_idle()
 
     def _on_mode(event):
         S.mode = "burst" if S.mode == "cw" else "cw"
         btns["mode"].label.set_text(f"Mode:  {S.mode.upper()}")
-        _invalidate_blit()
+        fig.canvas.draw_idle()
 
     def _retune(freq_hz: int, tx_gain: float) -> None:
         S.freq_hz = freq_hz
@@ -651,7 +638,7 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
     def _update(_):
         with S.rx_lock:
             if not S.rx_ready:
-                return []   # blit=True: return empty list → skip redraw this tick
+                return
             rx = S.rx_buf.copy()
             S.rx_ready = False
 
@@ -720,15 +707,12 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
             t.set_text(v)
             t.set_color(c)
 
-        return _animated_artists   # blit=True: only these artists are recomposited
-
     ani = FuncAnimation(   # noqa: F841
         fig, _update,
-        interval=400,          # 400 ms = 2.5 fps — enough for monitoring
-        blit=True,             # cache axes background; only animated artists are redrawn
+        interval=400,          # 400 ms = 2.5 fps — sufficient for monitoring
+        blit=False,
         cache_frame_data=False,
     )
-    _ani_ref[0] = ani   # expose to _invalidate_blit() defined above
 
     try:
         plt.show()
