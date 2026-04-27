@@ -515,43 +515,73 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
     # ── Mark data artists as animated (blit=True caches everything else) ─────
     # Button axes, axis frames, ticks and labels are NOT in this list → never
     # repainted by the animation timer → no flickering on the control strip.
+    # NOTE: title_txt is a figure-level Text; keeping it out of animated
+    # artists avoids blit clipping issues — it is updated via _invalidate_blit.
     _animated_artists: list = [
         spec_line, spec_poly, im_wfall, iq_dots,
-        rxtime_line, txtime_line, title_txt,
+        rxtime_line, txtime_line,
         *stat_texts,
     ]
     for _a in _animated_artists:
         _a.set_animated(True)
 
+    # ── blit cache helper — must be called after any button appearance change ─
+    # Stores reference to the FuncAnimation object (assigned after creation).
+    _ani_ref: list = [None]
+
+    def _invalidate_blit() -> None:
+        """Clear the blit background cache so button changes are visible."""
+        if _ani_ref[0] is not None:
+            try:
+                _ani_ref[0]._blit_cache.clear()
+            except AttributeError:
+                pass
+        fig.canvas.draw_idle()
+
     # =========================================================================
     # Button strip  (figure coords y=0.04..0.17, clear of the plot area)
     # Layout: [  TX START/STOP  ]  [  Mode: CW  ]  [ ◄ Freq ]  [ Freq ► ]  [ Gain ▼ ]  [ Gain ▲ ]
     # =========================================================================
+    # ── Button layout (no overlaps, verified positions) ──────────────────────
+    # Figure x: 0.04 … 0.96 (0.92 available)
+    # TX:      0.04  w=0.22  → ends 0.26
+    # [gap 0.01]
+    # Mode:    0.27  w=0.13  → ends 0.40
+    # [gap 0.01]
+    # Freq-:   0.41  w=0.115 → ends 0.525
+    # [gap 0.01]
+    # Freq+:   0.535 w=0.115 → ends 0.65
+    # [gap 0.01]
+    # Gain-:   0.66  w=0.115 → ends 0.775
+    # [gap 0.01]
+    # Gain+:   0.785 w=0.115 → ends 0.90
+    # (right margin 0.10) ────────────────────────────────────────────────────
+
     # Group labels above the button row
-    fig.text(0.1925, 0.193, "TRANSMIT", ha="center", va="bottom",
+    fig.text(0.150, 0.193, "TRANSMIT",          ha="center", va="bottom",
              color=C_MUT, fontsize=7)
-    fig.text(0.375,  0.193, "SIGNAL MODE", ha="center", va="bottom",
+    fig.text(0.335, 0.193, "SIGNAL MODE",        ha="center", va="bottom",
              color=C_MUT, fontsize=7)
-    fig.text(0.585,  0.193, "FREQUENCY  (±100 kHz)", ha="center", va="bottom",
+    fig.text(0.530, 0.193, "FREQUENCY  ±100 kHz", ha="center", va="bottom",
              color=C_MUT, fontsize=7)
-    fig.text(0.810,  0.193, "TX GAIN  (±3 dB)", ha="center", va="bottom",
+    fig.text(0.780, 0.193, "TX GAIN  ±3 dB",    ha="center", va="bottom",
              color=C_MUT, fontsize=7)
-    # Vertical separators between groups
-    for sep_x in [0.305, 0.475, 0.705]:
-        fig.add_axes([sep_x, 0.05, 0.002, 0.11]).set_visible(False)
-        fig.text(sep_x + 0.002, 0.11, "│", ha="center", va="center",
-                 color=C_BDR, fontsize=18, alpha=0.5)
+    # Thin separator characters (pure text, no axes → no click interception)
+    fig.text(0.405, 0.110, "│", ha="center", va="center",
+             color=C_BDR, fontsize=18, alpha=0.5)
+    fig.text(0.655, 0.110, "│", ha="center", va="center",
+             color=C_BDR, fontsize=18, alpha=0.5)
 
     # Button definitions: (key, label, face_color, text_color, x, width)
     _BTN_Y = 0.05
     _BTN_H = 0.11
     _btn_defs = [
-        ("tx",       "▶  START TX",   "#1e3d1e", C_GRN,  0.04,  0.30),
-        ("mode",     "Mode:  CW",     BG3,       C_AMB,  0.32,  0.13),
-        ("freq_dn",  "◄  −100 kHz",  BG3,       C_TEXT, 0.48,  0.115),
-        ("freq_up",  "+100 kHz  ►",  BG3,       C_TEXT, 0.605, 0.115),
-        ("gain_dn",  "Gain  −3 dB",  BG3,       C_TEXT, 0.73,  0.115),
-        ("gain_up",  "Gain  +3 dB",  BG3,       C_TEXT, 0.845, 0.115),
+        ("tx",       "▶  START TX",   "#1e3d1e", C_GRN,  0.04,  0.22),
+        ("mode",     "Mode:  CW",     BG3,       C_AMB,  0.27,  0.13),
+        ("freq_dn",  "◄  −100 kHz",  BG3,       C_TEXT, 0.41,  0.115),
+        ("freq_up",  "+100 kHz  ►",  BG3,       C_TEXT, 0.535, 0.115),
+        ("gain_dn",  "Gain  −3 dB",  BG3,       C_TEXT, 0.66,  0.115),
+        ("gain_up",  "Gain  +3 dB",  BG3,       C_TEXT, 0.785, 0.115),
     ]
     btns: dict[str, Button] = {}
     for key, label, bg, fg, x0, w in _btn_defs:
@@ -578,12 +608,12 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
                     sdr.tx_destroy_buffer()
                 except Exception:
                     pass
-        fig.canvas.draw_idle()
+        _invalidate_blit()   # flush blit cache so label change is visible
 
     def _on_mode(event):
         S.mode = "burst" if S.mode == "cw" else "cw"
         btns["mode"].label.set_text(f"Mode:  {S.mode.upper()}")
-        fig.canvas.draw_idle()
+        _invalidate_blit()
 
     def _retune(freq_hz: int, tx_gain: float) -> None:
         S.freq_hz = freq_hz
@@ -690,21 +720,15 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
             t.set_text(v)
             t.set_color(c)
 
-        # ── Figure title ──
-        title_txt.set_text(
-            f"LibreSDR  AD9363  |  {S.mode.upper()}  |  "
-            f"{S.freq_hz/1e6:.4f} MHz  |  Gain {S.tx_gain:+.0f} dB  |  "
-            + ("DEMO" if demo else "LIVE")
-        )
-
-        return _animated_artists   # blit=True: only these axes regions are recomposited
+        return _animated_artists   # blit=True: only these artists are recomposited
 
     ani = FuncAnimation(   # noqa: F841
         fig, _update,
-        interval=400,          # 400 ms = 2.5 fps — plenty for monitoring; blit makes it snappy
+        interval=400,          # 400 ms = 2.5 fps — enough for monitoring
         blit=True,             # cache axes background; only animated artists are redrawn
         cache_frame_data=False,
     )
+    _ani_ref[0] = ani   # expose to _invalidate_blit() defined above
 
     try:
         plt.show()
