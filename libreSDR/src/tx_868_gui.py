@@ -72,7 +72,7 @@ from iridium.burst_gen import (
 )
 
 # ── Defaults (overridden by CLI args) ────────────────────────────────────────
-DEFAULT_URI       = "ip:192.168.2.1"
+DEFAULT_URI       = "ip:192.168.1.10"
 DEFAULT_FREQ_HZ   = 868_100_000   # 868.1 MHz ISM
 TX_SAMPLE_RATE    = 1_000_000     # 1 MSPS (reliable over Ethernet/USB)
 TX_RF_BW          = 200_000       # 200 kHz
@@ -424,6 +424,12 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
         closed=True, color=C_TEAL, alpha=0.13, zorder=2,
     )
     ax_spec.add_patch(spec_poly)
+    # Pre-allocate polygon vertex array — reused every frame (zero heap alloc in hot path)
+    _poly_verts = np.empty((2 * FFT_SIZE, 2), dtype=np.float64)
+    _poly_verts[:FFT_SIZE, 0] = freq_axis
+    _poly_verts[FFT_SIZE:, 0] = freq_axis[::-1]
+    _poly_verts[FFT_SIZE:, 1] = WATERFALL_VMIN   # bottom edge is constant
+    _poly_verts[:FFT_SIZE, 1] = WATERFALL_VMIN   # initialise top edge too
 
     # ── [0,1]  Waterfall ──────────────────────────────────────────────────────
     ax_wfall = fig.add_subplot(gs[0, 1])
@@ -505,6 +511,17 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
         ha="center", va="top",
         color=C_TEXT, fontsize=10, fontweight="bold",
     )
+
+    # ── Mark data artists as animated (blit=True caches everything else) ─────
+    # Button axes, axis frames, ticks and labels are NOT in this list → never
+    # repainted by the animation timer → no flickering on the control strip.
+    _animated_artists: list = [
+        spec_line, spec_poly, im_wfall, iq_dots,
+        rxtime_line, txtime_line, title_txt,
+        *stat_texts,
+    ]
+    for _a in _animated_artists:
+        _a.set_animated(True)
 
     # =========================================================================
     # Button strip  (figure coords y=0.04..0.17, clear of the plot area)
@@ -604,7 +621,7 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
     def _update(_):
         with S.rx_lock:
             if not S.rx_ready:
-                return
+                return []   # blit=True: return empty list → skip redraw this tick
             rx = S.rx_buf.copy()
             S.rx_ready = False
 
@@ -617,16 +634,16 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
         S.fft_db     = fft_db
         S.rx_power_db = pwr
         S.snr_db     = snr
-        # Scroll waterfall upward (row 0 = newest)
-        S.waterfall  = np.roll(S.waterfall, 1, axis=0)
-        S.waterfall[0, :] = fft_db
+        # Scroll waterfall in-place (no allocation — np.roll would create a new array)
+        S.waterfall[1:] = S.waterfall[:-1]
+        S.waterfall[0]  = fft_db
         if S.tx_on:
             S.frame_count += 1
 
-        # ── Spectrum line + fill polygon (no re-allocation) ──
+        # ── Spectrum line + fill polygon (zero alloc: mutate pre-allocated verts) ──
         spec_line.set_ydata(fft_db)
-        _fill_ys_new = np.r_[fft_db, np.full(FFT_SIZE, WATERFALL_VMIN)[::-1]]
-        spec_poly.set_xy(np.column_stack([_fill_xs, _fill_ys_new]))
+        _poly_verts[:FFT_SIZE, 1] = fft_db
+        spec_poly.set_xy(_poly_verts)
 
         # ── Waterfall ──
         im_wfall.set_data(S.waterfall)
@@ -680,10 +697,12 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
             + ("DEMO" if demo else "LIVE")
         )
 
+        return _animated_artists   # blit=True: only these axes regions are recomposited
+
     ani = FuncAnimation(   # noqa: F841
         fig, _update,
-        interval=350,          # 350 ms ≈ 3 fps — smooth without hogging CPU
-        blit=False,
+        interval=400,          # 400 ms = 2.5 fps — plenty for monitoring; blit makes it snappy
+        blit=True,             # cache axes background; only animated artists are redrawn
         cache_frame_data=False,
     )
 
