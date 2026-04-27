@@ -46,7 +46,11 @@ import queue
 import sys
 import threading
 import time
+import warnings
 from types import SimpleNamespace
+
+# Suppress spurious Axes3D import warning (system vs venv matplotlib conflict)
+warnings.filterwarnings("ignore", message="Unable to import Axes3D")
 
 import numpy as np
 import matplotlib
@@ -77,11 +81,12 @@ RX_GAIN_DB        = 30.0
 RX_GAIN_MODE      = "slow_attack"
 
 # Loopback RX buffer: grab this many samples per refresh
-RX_BUF_SIZE       = 4096
-WATERFALL_ROWS    = 80            # scrolling history lines
+RX_BUF_SIZE       = 2048
+WATERFALL_ROWS    = 60            # scrolling history lines
 FFT_SIZE          = 512
 WATERFALL_VMIN    = -80           # dB
 WATERFALL_VMAX    = -10
+_DISP_SAMPLES     = 512           # samples shown in time-domain plots (subset)
 
 BURST_PERIOD_S    = 0.10          # transmit one burst every N seconds (burst mode)
 FREQ_STEP_HZ      = 100_000       # ± step for frequency buttons
@@ -351,181 +356,216 @@ def _compute_power_snr(fft_db: np.ndarray) -> tuple[float, float]:
 # =============================================================================
 
 def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
+    """
+    Layout (figure coordinates, bottom=0 top=1):
+    ┌─────────────────────────────────────────────────────────┐  ← y=1.00
+    │  title bar                                               │  ← y=0.96
+    ├──────────────┬──────────────┬──────────────────────────┤  ← y=0.93
+    │ RX Spectrum  │  Waterfall   │   IQ Constellation        │  (top row)
+    │  [0,0]       │  [0,1]       │   [0,2]                   │
+    ├──────────────┼──────────────┼──────────────────────────┤  ← y=0.50
+    │ RX Amplitude │ TX Waveform  │   Status & Metrics        │  (bottom row)
+    │  [1,0]       │  [1,1]       │   [1,2]                   │
+    ├──────────────┴──────────────┴──────────────────────────┤  ← y=0.21
+    │  [TX START/STOP]  [CW|BURST]  [Freq−]  [Freq+]  [Gain−]  [Gain+]  │  ← buttons
+    └─────────────────────────────────────────────────────────┘  ← y=0.00
+
+    Performance notes:
+    - fill_between is NOT recreated each frame (uses Polygon.set_xy instead)
+    - Time-domain plots show _DISP_SAMPLES points, not the full RX buffer
+    - Waterfall is updated via imshow.set_data (no new Artist)
+    - Animation interval = 350 ms (~3 fps) — sufficient for visual feedback
+    """
+    from matplotlib.patches import Polygon as MplPolygon
+
     freq_axis = (np.fft.fftshift(np.fft.fftfreq(FFT_SIZE, 1 / TX_SAMPLE_RATE)) / 1e3)
 
-    fig = plt.figure(figsize=(18, 10), facecolor=BG)
-    fig.canvas.manager.set_window_title(  # type: ignore[union-attr]
-        f"LibreSDR 868 MHz TX/RX  —  {'DEMO' if demo else sdr}")
+    # ── Figure ────────────────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(16, 8.5), facecolor=BG)
+    try:
+        fig.canvas.manager.set_window_title(  # type: ignore[union-attr]
+            "LibreSDR 868 MHz  —  TX + RX loopback" + ("  [DEMO]" if demo else ""))
+    except Exception:
+        pass
 
+    # ── Plot grid (top 75%, from y=0.21 to y=0.93) ───────────────────────────
     gs = gridspec.GridSpec(
-        3, 3, figure=fig,
-        height_ratios=[1.0, 1.0, 0.08],
-        left=0.06, right=0.97,
-        top=0.93, bottom=0.05,
-        hspace=0.45, wspace=0.35,
+        2, 3, figure=fig,
+        height_ratios=[1.15, 1.0],
+        left=0.07, right=0.97,
+        top=0.93, bottom=0.22,
+        hspace=0.55, wspace=0.35,
     )
 
+    # helper: style an axes consistently
+    def _style(ax, title: str, xlabel: str, ylabel: str) -> None:
+        ax.set_facecolor(BG2)
+        ax.set_title(title, color=C_TEXT, fontsize=9, pad=4)
+        ax.set_xlabel(xlabel, color=C_MUT, fontsize=7)
+        ax.set_ylabel(ylabel, color=C_MUT, fontsize=7)
+        ax.tick_params(colors=C_MUT, labelsize=7)
+        for sp in ax.spines.values():
+            sp.set_edgecolor(C_BDR)
+        ax.grid(color=C_BDR, lw=0.4, alpha=0.4)
+
     # ── [0,0]  RX Spectrum ────────────────────────────────────────────────────
-    ax_spec = fig.add_subplot(gs[0, 0], facecolor=BG2)
-    ax_spec.set_facecolor(BG2)
-    ax_spec.set_title("RX Spectrum", color=C_TEXT, fontsize=9)
-    ax_spec.set_xlabel("Frequency offset [kHz]", color=C_MUT, fontsize=8)
-    ax_spec.set_ylabel("Power [dBFS]",            color=C_MUT, fontsize=8)
+    ax_spec = fig.add_subplot(gs[0, 0])
+    _style(ax_spec, "RX Spectrum", "Freq offset [kHz]", "Power [dBFS]")
     ax_spec.set_xlim(freq_axis[0], freq_axis[-1])
     ax_spec.set_ylim(WATERFALL_VMIN, 5)
-    ax_spec.tick_params(colors=C_MUT, labelsize=7)
-    for sp in ax_spec.spines.values():
-        sp.set_edgecolor(C_BDR)
-    ax_spec.grid(color=C_BDR, lw=0.4, alpha=0.5)
-    spec_line, = ax_spec.plot(freq_axis, S.fft_db, "-", color=C_TEAL, lw=1.0)
-    spec_fill  = ax_spec.fill_between(freq_axis, WATERFALL_VMIN, S.fft_db,
-                                       color=C_TEAL, alpha=0.12)
-    ax_spec.axhline(WATERFALL_VMIN + 5, color=C_BDR, lw=0.6, ls="--")
+    spec_line, = ax_spec.plot(freq_axis, np.full(FFT_SIZE, WATERFALL_VMIN),
+                               "-", color=C_TEAL, lw=1.1, zorder=3)
+    # Filled area under spectrum — updated cheaply by mutating Polygon vertices
+    _fill_xs = np.r_[freq_axis, freq_axis[::-1]]
+    _fill_ys = np.r_[np.full(FFT_SIZE, WATERFALL_VMIN),
+                     np.full(FFT_SIZE, WATERFALL_VMIN)]
+    spec_poly = MplPolygon(
+        np.column_stack([_fill_xs, _fill_ys]),
+        closed=True, color=C_TEAL, alpha=0.13, zorder=2,
+    )
+    ax_spec.add_patch(spec_poly)
 
     # ── [0,1]  Waterfall ──────────────────────────────────────────────────────
-    ax_wfall = fig.add_subplot(gs[0, 1], facecolor=BG2)
-    ax_wfall.set_facecolor(BG2)
-    ax_wfall.set_title("Waterfall (time ↓)", color=C_TEXT, fontsize=9)
-    ax_wfall.set_xlabel("Frequency offset [kHz]", color=C_MUT, fontsize=8)
-    ax_wfall.set_ylabel("Time (older ↓)",          color=C_MUT, fontsize=8)
-    ax_wfall.tick_params(colors=C_MUT, labelsize=7)
-    for sp in ax_wfall.spines.values():
-        sp.set_edgecolor(C_BDR)
+    ax_wfall = fig.add_subplot(gs[0, 1])
+    _style(ax_wfall, "Waterfall  (newest → top)", "Freq offset [kHz]", "← older")
+    ax_wfall.set_yticks([])
     im_wfall = ax_wfall.imshow(
         S.waterfall,
-        origin="upper",
-        aspect="auto",
+        origin="upper", aspect="auto",
         extent=[freq_axis[0], freq_axis[-1], WATERFALL_ROWS, 0],
         cmap="inferno",
         vmin=WATERFALL_VMIN, vmax=WATERFALL_VMAX,
-        interpolation="bilinear",
+        interpolation="nearest",
     )
 
     # ── [0,2]  IQ Constellation ───────────────────────────────────────────────
-    ax_iq = fig.add_subplot(gs[0, 2], facecolor=BG2)
-    ax_iq.set_facecolor(BG2)
-    ax_iq.set_title("IQ Constellation (RX)", color=C_TEXT, fontsize=9)
-    ax_iq.set_xlabel("I", color=C_MUT, fontsize=8)
-    ax_iq.set_ylabel("Q", color=C_MUT, fontsize=8)
-    _iq_lim = 1.1
-    ax_iq.set_xlim(-_iq_lim, _iq_lim)
-    ax_iq.set_ylim(-_iq_lim, _iq_lim)
+    ax_iq = fig.add_subplot(gs[0, 2])
+    _style(ax_iq, "IQ Constellation  (RX loopback)", "I", "Q")
+    _lim = 1.15
+    ax_iq.set_xlim(-_lim, _lim)
+    ax_iq.set_ylim(-_lim, _lim)
     ax_iq.set_aspect("equal")
-    ax_iq.tick_params(colors=C_MUT, labelsize=7)
-    for sp in ax_iq.spines.values():
-        sp.set_edgecolor(C_BDR)
-    ax_iq.grid(color=C_BDR, lw=0.4, alpha=0.5)
-    ax_iq.axhline(0, color=C_BDR, lw=0.6)
-    ax_iq.axvline(0, color=C_BDR, lw=0.6)
-    iq_dots, = ax_iq.plot([], [], ".", color=C_VIO, ms=1.5, alpha=0.4)
+    ax_iq.axhline(0, color=C_BDR, lw=0.7)
+    ax_iq.axvline(0, color=C_BDR, lw=0.7)
+    # Unit circle reference
+    _theta = np.linspace(0, 2 * np.pi, 128)
+    ax_iq.plot(np.cos(_theta), np.sin(_theta), "--", color=C_BDR, lw=0.6, alpha=0.5)
+    iq_dots, = ax_iq.plot([], [], ".", color=C_VIO, ms=1.8, alpha=0.35)
 
-    # ── [1,0]  RX Time domain ─────────────────────────────────────────────────
-    ax_rxtime = fig.add_subplot(gs[1, 0], facecolor=BG2)
-    ax_rxtime.set_facecolor(BG2)
-    ax_rxtime.set_title("RX amplitude (time)", color=C_TEXT, fontsize=9)
-    ax_rxtime.set_xlabel("Sample", color=C_MUT, fontsize=8)
-    ax_rxtime.set_ylabel("|IQ| (normalised)",  color=C_MUT, fontsize=8)
-    ax_rxtime.set_ylim(-0.05, 1.2)
-    ax_rxtime.tick_params(colors=C_MUT, labelsize=7)
-    for sp in ax_rxtime.spines.values():
-        sp.set_edgecolor(C_BDR)
-    ax_rxtime.grid(color=C_BDR, lw=0.4, alpha=0.5)
-    _n_disp    = RX_BUF_SIZE
-    rx_xs      = np.arange(_n_disp)
-    rxtime_line, = ax_rxtime.plot(rx_xs, np.zeros(_n_disp), "-",
-                                   color=C_BLUE, lw=0.8)
-    ax_rxtime.set_xlim(0, _n_disp)
+    # ── [1,0]  RX time domain ─────────────────────────────────────────────────
+    ax_rxtime = fig.add_subplot(gs[1, 0])
+    _style(ax_rxtime, "RX Amplitude  (time domain)", "Sample index", "Normalised |IQ|")
+    ax_rxtime.set_xlim(0, _DISP_SAMPLES)
+    ax_rxtime.set_ylim(-0.05, 1.15)
+    rxtime_line, = ax_rxtime.plot(
+        np.arange(_DISP_SAMPLES), np.zeros(_DISP_SAMPLES),
+        "-", color=C_BLUE, lw=0.9)
 
-    # ── [1,1]  TX waveform ────────────────────────────────────────────────────
-    ax_txtime = fig.add_subplot(gs[1, 1], facecolor=BG2)
-    ax_txtime.set_facecolor(BG2)
-    ax_txtime.set_title("TX waveform (last buffer)", color=C_TEXT, fontsize=9)
-    ax_txtime.set_xlabel("Sample", color=C_MUT, fontsize=8)
-    ax_txtime.set_ylabel("|IQ| (normalised)",       color=C_MUT, fontsize=8)
-    ax_txtime.set_ylim(-0.05, 1.2)
-    ax_txtime.tick_params(colors=C_MUT, labelsize=7)
-    for sp in ax_txtime.spines.values():
-        sp.set_edgecolor(C_BDR)
-    ax_txtime.grid(color=C_BDR, lw=0.4, alpha=0.5)
-    _tx_disp  = 512
-    txtime_xs = np.arange(_tx_disp)
-    txtime_line, = ax_txtime.plot(txtime_xs, np.zeros(_tx_disp), "-",
-                                   color=C_AMB, lw=0.8)
-    ax_txtime.set_xlim(0, _tx_disp)
+    # ── [1,1]  TX waveform preview ────────────────────────────────────────────
+    ax_txtime = fig.add_subplot(gs[1, 1])
+    _style(ax_txtime, "TX Waveform Preview  (last buffer)", "Sample index", "Normalised |IQ|")
+    ax_txtime.set_xlim(0, _DISP_SAMPLES)
+    ax_txtime.set_ylim(-0.05, 1.15)
+    txtime_line, = ax_txtime.plot(
+        np.arange(_DISP_SAMPLES), np.zeros(_DISP_SAMPLES),
+        "-", color=C_AMB, lw=0.9)
 
     # ── [1,2]  Status panel ───────────────────────────────────────────────────
-    ax_stat = fig.add_subplot(gs[1, 2], facecolor=BG2)
+    ax_stat = fig.add_subplot(gs[1, 2])
     ax_stat.set_facecolor(BG2)
-    ax_stat.set_title("Status", color=C_TEXT, fontsize=9)
+    ax_stat.set_title("Status", color=C_TEXT, fontsize=9, pad=4)
     ax_stat.axis("off")
-    _stat_items = [
-        ("Frequency",   "",  0.90, C_TEXT),
-        ("TX Gain",     "",  0.78, C_TEXT),
-        ("Mode",        "",  0.66, C_TEXT),
-        ("TX",          "",  0.54, C_GRN),
-        ("RX Power",    "",  0.42, C_TEAL),
-        ("SNR",         "",  0.30, C_TEAL),
-        ("Frames TX",   "",  0.18, C_MUT),
-        ("Sample rate", "",  0.06, C_MUT),
+    for sp in ax_stat.spines.values():
+        sp.set_edgecolor(C_BDR)
+    _stat_defs = [
+        # (y_axes_fraction, color)
+        (0.92, C_TEXT),   # Frequency
+        (0.78, C_TEXT),   # TX Gain
+        (0.64, C_AMB),    # Mode
+        (0.50, C_GRN),    # TX status
+        (0.36, C_TEAL),   # RX Power
+        (0.22, C_TEAL),   # SNR
+        (0.08, C_MUT),    # Frames / sample rate
     ]
-    stat_texts: list = []
-    for label, _, y, col in _stat_items:
-        t = ax_stat.text(0.08, y, f"{label}: —", transform=ax_stat.transAxes,
-                          color=col, fontsize=9, va="top",
-                          fontfamily="monospace")
+    stat_texts = []
+    for y, col in _stat_defs:
+        t = ax_stat.text(
+            0.06, y, "—",
+            transform=ax_stat.transAxes,
+            color=col, fontsize=8.5, va="top",
+            fontfamily="monospace",
+        )
         stat_texts.append(t)
 
-    # ── [2,*]  Control buttons ─────────────────────────────────────────────────
-    btn_axs = [fig.add_subplot(gs[2, i]) for i in range(3)]
-    # Put 6 buttons across row 2 by splitting each cell in 2
-    _btn_y, _btn_h = 0.015, 0.04
-    _btn_rows = [(0.06, 0.15), (0.21, 0.15), (0.37, 0.15),
-                 (0.53, 0.15), (0.69, 0.15), (0.85, 0.10)]
-    btns: dict[str, Button] = {}
-    _btn_defs = [
-        ("tx",       "TX OFF",   C_ROSE,  C_TEXT),
-        ("mode",     "CW",       C_BDR,   C_TEXT),
-        ("freq_up",  "Freq ▲",   BG3,     C_TEXT),
-        ("freq_dn",  "Freq ▼",   BG3,     C_TEXT),
-        ("gain_up",  "Gain ▲",   BG3,     C_TEXT),
-        ("gain_dn",  "Gain ▼",   BG3,     C_TEXT),
-    ]
-    for (key, label, bg, fg), (x0, w) in zip(_btn_defs, _btn_rows):
-        bax = fig.add_axes([x0, _btn_y, w, _btn_h])
-        bax.set_facecolor(BG3)
-        b = Button(bax, label, color=bg, hovercolor=BG2)
-        b.label.set_color(fg)
-        b.label.set_fontsize(8)
-        btns[key] = b
-
-    # ── Suptitle ──────────────────────────────────────────────────────────────
-    title_txt = fig.suptitle(
-        f"LibreSDR  AD9363  —  TX 868 MHz loopback  |  "
-        f"{'DEMO MODE' if demo else f'URI: ip:…'}",
-        color=C_TEXT, fontsize=9, y=0.975,
+    # ── Figure title (fixed text, not suptitle that may drift) ───────────────
+    title_txt = fig.text(
+        0.5, 0.966,
+        "LibreSDR  AD9363  |  868 MHz  TX + RX Loopback"
+        + ("  [DEMO MODE]" if demo else ""),
+        ha="center", va="top",
+        color=C_TEXT, fontsize=10, fontweight="bold",
     )
 
-    # ── Button callbacks ──────────────────────────────────────────────────────
-    _btn_clicked = [False]   # lock to avoid re-entrancy from FuncAnimation
+    # =========================================================================
+    # Button strip  (figure coords y=0.04..0.17, clear of the plot area)
+    # Layout: [  TX START/STOP  ]  [  Mode: CW  ]  [ ◄ Freq ]  [ Freq ► ]  [ Gain ▼ ]  [ Gain ▲ ]
+    # =========================================================================
+    # Group labels above the button row
+    fig.text(0.1925, 0.193, "TRANSMIT", ha="center", va="bottom",
+             color=C_MUT, fontsize=7)
+    fig.text(0.375,  0.193, "SIGNAL MODE", ha="center", va="bottom",
+             color=C_MUT, fontsize=7)
+    fig.text(0.585,  0.193, "FREQUENCY  (±100 kHz)", ha="center", va="bottom",
+             color=C_MUT, fontsize=7)
+    fig.text(0.810,  0.193, "TX GAIN  (±3 dB)", ha="center", va="bottom",
+             color=C_MUT, fontsize=7)
+    # Vertical separators between groups
+    for sep_x in [0.305, 0.475, 0.705]:
+        fig.add_axes([sep_x, 0.05, 0.002, 0.11]).set_visible(False)
+        fig.text(sep_x + 0.002, 0.11, "│", ha="center", va="center",
+                 color=C_BDR, fontsize=18, alpha=0.5)
 
+    # Button definitions: (key, label, face_color, text_color, x, width)
+    _BTN_Y = 0.05
+    _BTN_H = 0.11
+    _btn_defs = [
+        ("tx",       "▶  START TX",   "#1e3d1e", C_GRN,  0.04,  0.30),
+        ("mode",     "Mode:  CW",     BG3,       C_AMB,  0.32,  0.13),
+        ("freq_dn",  "◄  −100 kHz",  BG3,       C_TEXT, 0.48,  0.115),
+        ("freq_up",  "+100 kHz  ►",  BG3,       C_TEXT, 0.605, 0.115),
+        ("gain_dn",  "Gain  −3 dB",  BG3,       C_TEXT, 0.73,  0.115),
+        ("gain_up",  "Gain  +3 dB",  BG3,       C_TEXT, 0.845, 0.115),
+    ]
+    btns: dict[str, Button] = {}
+    for key, label, bg, fg, x0, w in _btn_defs:
+        bax = fig.add_axes([x0, _BTN_Y, w, _BTN_H])
+        b = Button(bax, label, color=bg, hovercolor=BG3)
+        b.label.set_color(fg)
+        b.label.set_fontsize(9)
+        b.label.set_fontweight("bold")
+        btns[key] = b
+
+    # ── Button callbacks ──────────────────────────────────────────────────────
     def _on_tx(event):
         S.tx_on = not S.tx_on
         if S.tx_on:
-            btns["tx"].label.set_text("TX ON")
-            btns["tx"].ax.set_facecolor("#2a4a2a")
+            btns["tx"].label.set_text("■  STOP TX")
+            btns["tx"].label.set_color(C_ROSE)
+            btns["tx"].ax.set_facecolor("#3d1e1e")
         else:
-            btns["tx"].label.set_text("TX OFF")
-            btns["tx"].ax.set_facecolor(C_ROSE)
-            try:
-                if not demo:
+            btns["tx"].label.set_text("▶  START TX")
+            btns["tx"].label.set_color(C_GRN)
+            btns["tx"].ax.set_facecolor("#1e3d1e")
+            if not demo:
+                try:
                     sdr.tx_destroy_buffer()
-            except Exception:
-                pass
+                except Exception:
+                    pass
         fig.canvas.draw_idle()
 
     def _on_mode(event):
         S.mode = "burst" if S.mode == "cw" else "cw"
-        btns["mode"].label.set_text(S.mode.upper())
+        btns["mode"].label.set_text(f"Mode:  {S.mode.upper()}")
         fig.canvas.draw_idle()
 
     def _retune(freq_hz: int, tx_gain: float) -> None:
@@ -539,107 +579,110 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
             except Exception as exc:
                 print(f"[RETUNE] {exc}")
 
-    def _on_freq_up(event):
-        _retune(S.freq_hz + FREQ_STEP_HZ, S.tx_gain)
-
     def _on_freq_dn(event):
         _retune(max(1_000_000, S.freq_hz - FREQ_STEP_HZ), S.tx_gain)
 
-    def _on_gain_up(event):
-        # Gain = attenuation in dB: lower value = more power
-        _retune(S.freq_hz, min(0.0, S.tx_gain + GAIN_STEP_DB))
+    def _on_freq_up(event):
+        _retune(S.freq_hz + FREQ_STEP_HZ, S.tx_gain)
 
     def _on_gain_dn(event):
+        # More attenuation = less TX power
         _retune(S.freq_hz, max(-89.75, S.tx_gain - GAIN_STEP_DB))
+
+    def _on_gain_up(event):
+        # Less attenuation = more TX power
+        _retune(S.freq_hz, min(0.0, S.tx_gain + GAIN_STEP_DB))
 
     btns["tx"].on_clicked(_on_tx)
     btns["mode"].on_clicked(_on_mode)
-    btns["freq_up"].on_clicked(_on_freq_up)
     btns["freq_dn"].on_clicked(_on_freq_dn)
-    btns["gain_up"].on_clicked(_on_gain_up)
+    btns["freq_up"].on_clicked(_on_freq_up)
     btns["gain_dn"].on_clicked(_on_gain_dn)
+    btns["gain_up"].on_clicked(_on_gain_up)
 
     # ── Animation update ──────────────────────────────────────────────────────
-    # Keep track of a resizable polyCollection for fill_between (re-create each frame)
-    _fill_state = [spec_fill]
-
     def _update(_):
         with S.rx_lock:
             if not S.rx_ready:
                 return
-            rx  = S.rx_buf.copy()
+            rx = S.rx_buf.copy()
             S.rx_ready = False
 
         with S.tx_buf_lock:
             tx = S.tx_buf.copy()
 
-        # FFT
-        fft_db  = _compute_fft(rx)
-        pwr, snr = _compute_power_snr(fft_db)
-
-        S.fft_db      = fft_db
+        # ── FFT + metrics ──
+        fft_db       = _compute_fft(rx)
+        pwr, snr     = _compute_power_snr(fft_db)
+        S.fft_db     = fft_db
         S.rx_power_db = pwr
-        S.snr_db      = snr
-        S.waterfall   = np.roll(S.waterfall, 1, axis=0)
+        S.snr_db     = snr
+        # Scroll waterfall upward (row 0 = newest)
+        S.waterfall  = np.roll(S.waterfall, 1, axis=0)
         S.waterfall[0, :] = fft_db
         if S.tx_on:
             S.frame_count += 1
 
-        # ── Spectrum ──
+        # ── Spectrum line + fill polygon (no re-allocation) ──
         spec_line.set_ydata(fft_db)
-        _fill_state[0].remove()
-        _fill_state[0] = ax_spec.fill_between(freq_axis, WATERFALL_VMIN, fft_db,
-                                               color=C_TEAL, alpha=0.12)
+        _fill_ys_new = np.r_[fft_db, np.full(FFT_SIZE, WATERFALL_VMIN)[::-1]]
+        spec_poly.set_xy(np.column_stack([_fill_xs, _fill_ys_new]))
 
         # ── Waterfall ──
         im_wfall.set_data(S.waterfall)
 
-        # ── IQ constellation ──
-        norm = float(np.max(np.abs(rx)) + 1e-12)
-        iq_n = rx / norm
-        sub  = iq_n[::max(1, len(iq_n) // 512)]
-        iq_dots.set_data(sub.real, sub.imag)
+        # ── IQ constellation (subsample to 256 pts for speed) ──
+        norm  = float(np.max(np.abs(rx)) + 1e-12)
+        iq_n  = rx / norm
+        step  = max(1, len(iq_n) // 256)
+        iq_dots.set_data(iq_n[::step].real, iq_n[::step].imag)
 
-        # ── RX time domain ──
-        rx_amp = np.abs(rx) / (norm + 1e-12)
-        n_rx   = min(len(rx_amp), _n_disp)
-        rxtime_line.set_ydata(np.pad(rx_amp[:n_rx], (0, _n_disp - n_rx)))
+        # ── RX time domain (first _DISP_SAMPLES) ──
+        rx_amp = np.abs(rx[:_DISP_SAMPLES]) / (norm + 1e-12)
+        n_rx   = len(rx_amp)
+        if n_rx < _DISP_SAMPLES:
+            rx_amp = np.pad(rx_amp, (0, _DISP_SAMPLES - n_rx))
+        rxtime_line.set_ydata(rx_amp)
 
-        # ── TX waveform ──
-        tx_amp = np.abs(tx) / (float(np.max(np.abs(tx)) + 1e-12))
-        n_tx   = min(len(tx_amp), _tx_disp)
-        txtime_line.set_ydata(np.pad(tx_amp[:n_tx], (0, _tx_disp - n_tx)))
-        txtime_xs[:] = np.arange(_tx_disp)
+        # ── TX waveform preview (first _DISP_SAMPLES) ──
+        tx_peak = float(np.max(np.abs(tx)) + 1e-12)
+        tx_amp  = np.abs(tx[:_DISP_SAMPLES]) / tx_peak
+        n_tx    = len(tx_amp)
+        if n_tx < _DISP_SAMPLES:
+            tx_amp = np.pad(tx_amp, (0, _DISP_SAMPLES - n_tx))
+        txtime_line.set_ydata(tx_amp)
 
-        # ── Status text ──
-        tx_str  = "ACTIVE" if S.tx_on else "OFF"
+        # ── Status panel text ──
         _vals = [
-            f"Frequency:   {S.freq_hz / 1e6:.3f} MHz",
-            f"TX Gain:     {S.tx_gain:+.1f} dB",
-            f"Mode:        {S.mode.upper()}",
-            f"TX:          {tx_str}",
-            f"RX Power:    {pwr:.1f} dBFS",
-            f"SNR est.:    {snr:.1f} dB",
-            f"Frames TX:   {S.frame_count}",
-            f"Sample rate: {TX_SAMPLE_RATE/1e6:.1f} MSPS",
+            f"Freq:  {S.freq_hz / 1e6:.4f} MHz",
+            f"Gain:  {S.tx_gain:+.1f} dB  (TX attenuation)",
+            f"Mode:  {S.mode.upper()}",
+            f"TX:    {'● ACTIVE' if S.tx_on else '○ OFF'}",
+            f"RX pwr: {pwr:.1f} dBFS",
+            f"SNR est: {snr:.1f} dB",
+            f"Frames: {S.frame_count}  |  {TX_SAMPLE_RATE/1e6:.1f} MSPS",
         ]
-        _colors = [C_TEXT, C_TEXT, C_TEXT,
-                   C_GRN if S.tx_on else C_ROSE,
-                   C_TEAL, C_TEAL, C_MUT, C_MUT]
+        _colors = [
+            C_TEXT, C_TEXT,
+            C_AMB,
+            C_GRN if S.tx_on else C_ROSE,
+            C_TEAL, C_TEAL,
+            C_MUT,
+        ]
         for t, v, c in zip(stat_texts, _vals, _colors):
             t.set_text(v)
             t.set_color(c)
 
-        # ── Title ──
+        # ── Figure title ──
         title_txt.set_text(
             f"LibreSDR  AD9363  |  {S.mode.upper()}  |  "
-            f"{S.freq_hz/1e6:.3f} MHz  |  TX Gain {S.tx_gain:+.0f} dB  |  "
+            f"{S.freq_hz/1e6:.4f} MHz  |  Gain {S.tx_gain:+.0f} dB  |  "
             + ("DEMO" if demo else "LIVE")
         )
 
     ani = FuncAnimation(   # noqa: F841
         fig, _update,
-        interval=200,
+        interval=350,          # 350 ms ≈ 3 fps — smooth without hogging CPU
         blit=False,
         cache_frame_data=False,
     )
