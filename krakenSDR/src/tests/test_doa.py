@@ -1345,6 +1345,151 @@ def test_pytest_rin_path():
 
 
 # =============================================================================
+# Pilot-tone preprocessing tests (doa_uca_2d)
+# =============================================================================
+
+from core.doa_uca_2d import (
+    extract_pilot_tone,
+    amplitude_normalize_channels,
+    CovarianceAccumulatorUca,
+    UcaConfig,
+    doa_music_uca_2d,
+    find_peak_uca_2d,
+)
+
+
+def test_pytest_extract_pilot_tone_power():
+    """Extract a pure tone: power outside the gate should be near zero."""
+    rng = np.random.default_rng(0)
+    fs = 1_024_000.0
+    N  = 131_072
+    tone_hz = 100_000.0
+    bw_hz   = 10_000.0
+    n_ant   = 5
+
+    t = np.arange(N, dtype=np.float64)
+    # Pure tone per channel (different phases)
+    delays = np.deg2rad(np.arange(n_ant) * 30.0)
+    X = np.exp(1j * (2 * np.pi * tone_hz / fs * t[None, :] + delays[:, None])).astype(
+        np.complex128
+    )
+
+    X_nb = extract_pilot_tone(X, fs, tone_hz, bw_hz)
+
+    # Input and output should have same shape
+    assert X_nb.shape == X.shape
+
+    # RMS ratio: output should preserve almost all signal power (>99%)
+    pwr_in  = np.mean(np.abs(X   ) ** 2)
+    pwr_out = np.mean(np.abs(X_nb) ** 2)
+    assert pwr_out / pwr_in > 0.99, (
+        f"Pilot tone extraction lost too much power: {pwr_out/pwr_in:.4f}"
+    )
+
+    # Inter-channel phase differences must be preserved
+    for k in range(1, n_ant):
+        phi_in  = float(np.angle(np.mean(X[k]    * np.conj(X[0]))))
+        phi_out = float(np.angle(np.mean(X_nb[k] * np.conj(X_nb[0]))))
+        err = abs(np.degrees(np.angle(np.exp(1j * (phi_out - phi_in)))))
+        assert err < 1.0, f"Channel {k} phase diff changed by {err:.2f}° after extraction"
+
+
+def test_pytest_extract_pilot_tone_snr_gain():
+    """Narrowband extraction should reject out-of-band noise by ~20 dB."""
+    rng = np.random.default_rng(1)
+    fs       = 1_024_000.0
+    N        = 131_072
+    tone_hz  = 100_000.0
+    bw_hz    = 10_000.0
+    n_ant    = 5
+    snr_in   = 0.0   # signal ≈ noise (0 dB)
+
+    t = np.arange(N, dtype=np.float64)
+    sig_amp = np.sqrt(10 ** (snr_in / 10.0))
+    tone = sig_amp * np.exp(2j * np.pi * tone_hz / fs * t)
+    noise = (rng.standard_normal((n_ant, N)) + 1j * rng.standard_normal((n_ant, N))) / np.sqrt(2)
+    X = tone[None, :] + noise
+
+    X_nb = extract_pilot_tone(X, fs, tone_hz, bw_hz)
+
+    # Reconstruct signal and noise contributions in the narrowband output
+    tone_nb = extract_pilot_tone(tone[None, :] * np.ones((n_ant, 1)), fs, tone_hz, bw_hz)
+    noise_nb = X_nb - tone_nb
+
+    sig_pwr   = float(np.mean(np.abs(tone_nb) ** 2))
+    noise_pwr = float(np.mean(np.abs(noise_nb) ** 2) + 1e-30)
+    snr_out_db = 10.0 * np.log10(sig_pwr / noise_pwr)
+
+    # Expected gain: 10*log10(fs / bw_hz) ≈ 20.1 dB; tolerance ±5 dB
+    expected_gain = 10.0 * np.log10(fs / bw_hz)
+    gain_actual   = snr_out_db - snr_in
+    assert abs(gain_actual - expected_gain) < 5.0, (
+        f"SNR gain {gain_actual:.1f} dB, expected ~{expected_gain:.1f} dB"
+    )
+
+
+def test_pytest_amplitude_normalize():
+    """Each channel should have unit RMS after normalisation."""
+    rng = np.random.default_rng(2)
+    n_ant, N = 5, 4096
+    gains = np.array([1.0, 0.5, 2.0, 0.75, 1.5])
+    X = (gains[:, None] * (
+        rng.standard_normal((n_ant, N)) + 1j * rng.standard_normal((n_ant, N))
+    ) / np.sqrt(2)).astype(np.complex128)
+
+    X_norm = amplitude_normalize_channels(X)
+
+    rms = np.sqrt(np.mean(np.abs(X_norm) ** 2, axis=1))
+    np.testing.assert_allclose(rms, np.ones(n_ant), atol=1e-6, err_msg="RMS not unit after normalisation")
+
+
+def test_pytest_pilot_doa_868():
+    """Full pipeline: pilot-tone extraction → amplitude normalisation → 2D MUSIC at 45°."""
+    rng = np.random.default_rng(3)
+    # KrakenSDR 5-element UCA at 868 MHz
+    cfg = UcaConfig(
+        n_ant=5, radius_lambda=0.4253,
+        n_az=360, n_el=37, el_min_deg=5.0,
+        num_expected_signals=1, ant0_offset_deg=0.0,
+        ant_ccw=True,
+    )
+    acc = CovarianceAccumulatorUca(alpha=0.97)
+
+    fs       = 1_024_000.0
+    N        = 131_072
+    tone_hz  = 100_000.0
+    bw_hz    = 10_000.0
+    snr_db   = 20.0
+    az_true  = 45.0
+    el_true  = 10.0
+    n_frames = 12   # warm-up the EMA accumulator
+
+    pos     = cfg.positions
+    az_r    = np.deg2rad(az_true)
+    el_r    = np.deg2rad(el_true)
+    tau     = 2 * np.pi * (pos[:, 0] * np.cos(el_r) * np.sin(az_r)
+                           + pos[:, 1] * np.cos(el_r) * np.cos(az_r))
+    t = np.arange(N, dtype=np.float64)
+    pilot   = np.exp(2j * np.pi * tone_hz / fs * t)
+    snr_lin = 10 ** (snr_db / 10.0)
+
+    R = None
+    for _ in range(n_frames):
+        noise = (rng.standard_normal((cfg.n_ant, N)) + 1j * rng.standard_normal((cfg.n_ant, N))) / np.sqrt(2)
+        X = (np.exp(1j * tau)[:, None] * pilot[None, :] * np.sqrt(snr_lin) + noise)
+        X_nb   = extract_pilot_tone(X, fs, tone_hz, bw_hz)
+        X_norm = amplitude_normalize_channels(X_nb)
+        R = acc.update(X_norm)
+
+    spec2d         = doa_music_uca_2d(X_norm, cfg, R_in=R)
+    az_est, _, papr = find_peak_uca_2d(spec2d, cfg)
+
+    err = abs(((az_est - az_true + 180) % 360) - 180)
+    assert err < 10.0, f"Full-pipeline DoA error {err:.1f}° > 10° at az={az_true}°"
+    assert papr > 3.0, f"PAPR {papr:.1f} dB too low → no clear peak"
+
+
+# =============================================================================
 # CLI entry point
 # =============================================================================
 

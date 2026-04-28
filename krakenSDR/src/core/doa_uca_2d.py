@@ -1,45 +1,49 @@
 """
-doa_uca_2d — 2D (azimuth + elevation) DoA per Uniform Circular Array
-======================================================================
+doa_uca_2d — 2D (azimuth + elevation) DoA for Uniform Circular Arrays
+=======================================================================
 
-Algoritmi di stima della Direzione di Arrivo in 2D (azimuth + elevazione)
-per un array circolare uniforme (UCA) a N antenne.
+Direction-of-Arrival estimation in 2D (azimuth + elevation) for an N-element
+Uniform Circular Array (UCA).
 
-Geometria UCA (piano Est-Nord, coordinate in λ):
+UCA geometry (East-North plane, coordinates in wavelengths):
 
-              ant0 (Nord)
+              ant0 (North)
              /
     ant4 ···●··· ant1
             |
           ant3   ant2
 
-    Antenna k al angolo  φ_k = 2π·k/N  dal Nord in senso orario.
-    Coordinate East-North:
+    Antenna k at angle  φ_k = 2π·k/N  clockwise from North.
+    East-North coordinates:
         p_k_E = r · sin(φ_k)
         p_k_N = r · cos(φ_k)
 
-Convenzione angolare (uguale a doa_algorithms_3d per coerenza):
-    azimuth  φ : gradi dal Nord, senso orario (0°=N, 90°=E, 180°=S, 270°=W)
-    elevation θ : gradi sopra l'orizzonte     (0°=orizzonte, 90°=zenith)
+Angular convention (same as doa_algorithms_3d for consistency):
+    azimuth  φ : degrees from North, clockwise  (0°=N, 90°=E, 180°=S, 270°=W)
+    elevation θ : degrees above horizon          (0°=horizon, 90°=zenith)
 
-Ritardo di fase sull'antenna k per una sorgente a (φ, θ):
+Phase delay on antenna k for a source at (φ, θ):
     τ_k = 2π · ( p_k_E · cos(θ) · sin(φ) + p_k_N · cos(θ) · cos(φ) )
 
 Steering vector:
     a(φ,θ) = [exp(j·τ_0), …, exp(j·τ_{N-1})]^T ∈ ℂ^N
 
-Algoritmi implementati
+Implemented algorithms
 ----------------------
-- 2D-MUSIC   : P = 1 / ‖E_n^H · a‖²   (super-risoluzione angolare)
-- 2D-Capon   : P = 1 / (a^H · R^{-1} · a)  (MVDR)
-- 2D-Bartlett: P = a^H · R · a         (beamformer convenzionale, più robusto)
+- 2D-MUSIC   : P = 1 / ‖E_n^H · a‖²          (super-resolution, subspace)
+- 2D-Capon   : P = 1 / (a^H · R^{-1} · a)    (MVDR, adaptive)
+- 2D-Bartlett: P = a^H · R · a                (CBF, most robust fallback)
 
-Tutte le funzioni restituiscono uno spettro (n_el, n_az) in dB
-(picco = 0 dB, floor = −40 dB), compatibile con `find_peak_2d` di
-`doa_algorithms_3d.py`.
+All functions return a spectrum shaped (n_el, n_az) in dB
+(peak = 0 dB, floor = −40 dB), compatible with find_peak_uca_2d().
 
-Riferimenti
------------
+Signal pre-processing helpers
+------------------------------
+- extract_pilot_tone()          : narrow-band FFT gate around known CW offset
+- amplitude_normalize_channels(): per-channel RMS normalisation
+
+References
+----------
 * Schmidt R.O., IEEE Trans. Antennas Propagat. 34(3), 1986        — MUSIC
 * Capon J., Proc. IEEE 57(8), 1969                                — MVDR
 * Van Trees H.L., Optimum Array Processing, Wiley 2002, §9.2      — UCA steering
@@ -229,7 +233,90 @@ def find_peak_uca_2d(
 
 
 # =============================================================================
-# Interno: calcolo covarianza
+# Pilot tone extraction — narrow-band pre-filter
+# =============================================================================
+
+def extract_pilot_tone(
+    X:           np.ndarray,
+    sample_rate: float,
+    tone_hz:     float,
+    bw_hz:       float = 10_000.0,
+) -> np.ndarray:
+    """
+    Extract a CW pilot tone from multi-channel IQ data via FFT gating.
+
+    For a LibreSDR beacon transmitted at ``LO_freq + tone_hz``, this filters
+    out-of-band interference by:
+
+        1. FFT every channel snapshot (N-point).
+        2. Zero all bins outside  [tone_hz − bw_hz/2 … tone_hz + bw_hz/2].
+        3. IFFT → narrowband IQ, preserving inter-antenna phase.
+
+    Effective SNR gain = 10 · log10(sample_rate / bw_hz)  [dB].
+    At 1.024 MSPS with bw_hz=10 kHz → +20 dB noise rejection.
+
+    The inter-antenna phase relationship is preserved:
+
+        ∠ X_k[f] − ∠ X_0[f] = ∠ a_k(az, el) − ∠ a_0(az, el)
+
+    so all DoA algorithms (MUSIC / Capon / Bartlett) benefit directly.
+
+    Choosing tone_hz = 100_000 Hz with Heimdall at 1.024 MSPS / CPI 131072:
+        bin = 100 000 × 131 072 / 1 024 000 = 12 800  (integer → zero leakage).
+
+    Parameters
+    ----------
+    X           : (n_ant, N) complex IQ sampled at ``sample_rate`` Hz
+    sample_rate : ADC sample rate [Hz]  (Heimdall default: 1_024_000)
+    tone_hz     : pilot tone offset from Heimdall LO [Hz]  (may be negative)
+    bw_hz       : extraction window width [Hz]  (default 10 kHz)
+
+    Returns
+    -------
+    X_nb : (n_ant, N) complex, same dtype as X, narrowband around tone_hz
+    """
+    N     = X.shape[1]
+    freqs = np.fft.fftfreq(N, d=1.0 / sample_rate)          # (N,) Hz
+    mask  = np.abs(freqs - tone_hz) <= bw_hz * 0.5
+
+    X_fft          = np.fft.fft(X, axis=1)
+    X_gated        = np.zeros_like(X_fft)
+    X_gated[:, mask] = X_fft[:, mask]
+    return np.fft.ifft(X_gated, axis=1).astype(X.dtype)
+
+
+# =============================================================================
+# Per-channel amplitude normalisation
+# =============================================================================
+
+def amplitude_normalize_channels(X: np.ndarray) -> np.ndarray:
+    """
+    Normalise each antenna channel to unit RMS power.
+
+    Cancels hardware gain imbalances between KrakenSDR channels
+    (up to ~5 dB variation measured on indoor recordings).
+    Apply BEFORE computing the sample covariance for DoA.
+
+    .. warning::
+        Do NOT use the normalised samples for absolute power measurements
+        or SNR calibration — use raw X for those.
+
+    Reference: KrakenSDR signal_processor.py — channel normalisation step.
+
+    Parameters
+    ----------
+    X : (n_ant, N) complex IQ
+
+    Returns
+    -------
+    X_n : (n_ant, N) complex, same dtype, each row has unit RMS
+    """
+    rms = np.sqrt(np.mean(np.abs(X) ** 2, axis=1, keepdims=True))
+    return X / (rms + 1e-20)
+
+
+# =============================================================================
+# Covariance helper (internal)
 # =============================================================================
 
 def _get_cov(X: np.ndarray, R_in: np.ndarray | None) -> np.ndarray:
@@ -478,32 +565,55 @@ def snr_uca_db(R: np.ndarray) -> float:
 
 class CovarianceAccumulatorUca:
     """
-    Accumulatore EMA della covarianza per UCA.
+    Exponential moving-average (EMA) covariance accumulator for UCA.
 
-    R_new = α · R_old + (1 − α) · R_frame
+    R_new = alpha * R_old + (1 - alpha) * R_frame
 
-    α = 0 → solo frame corrente;  α → 1 → memoria lunga.
-    Usato in modalità CW continua; per burst usa la covarianza single-shot.
+    alpha = 0 → single-frame only;  alpha close to 1 → long memory.
+
+    For a stationary CW source the high-alpha EMA acts as temporal
+    decorrelation for indoor multipath: reflections slowly change phase
+    due to thermal/mechanical vibration, while the direct path stays
+    stable.  alpha=0.97 gives ~33 frames of memory (~6 s at 5 fps).
+
+    For moving sources lower alpha to 0.50–0.70 to track fast changes.
     """
     def __init__(self, alpha: float = 0.90):
         self.alpha = float(alpha)
         self._R: np.ndarray | None = None
+        self.n_updates: int = 0
 
     def update(self, X: np.ndarray) -> np.ndarray:
-        """Aggiorna con il frame IQ (n_ant × N) e restituisce la covarianza EMA."""
+        """
+        Update with an IQ frame (n_ant × N) and return the EMA covariance.
+
+        Parameters
+        ----------
+        X : (n_ant, N) complex IQ — should be pre-normalised if desired.
+        """
         R_frame = (X @ X.conj().T) / X.shape[1]
         if self._R is None:
             self._R = R_frame.copy()
         else:
             self._R = self.alpha * self._R + (1.0 - self.alpha) * R_frame
+        self.n_updates += 1
         return self._R
 
     def reset(self) -> None:
+        """Clear accumulated covariance (e.g. after frequency retune)."""
         self._R = None
+        self.n_updates = 0
 
     @property
     def R(self) -> np.ndarray | None:
         return self._R
+
+    @property
+    def is_warm(self) -> bool:
+        """True once enough frames have been integrated to trust the EMA."""
+        # Time constant tau = 1/(1-alpha) frames; warm after 2*tau
+        tau = 1.0 / max(1.0 - self.alpha, 1e-6)
+        return self.n_updates >= max(int(2.0 * tau), 2)
 
 
 # =============================================================================

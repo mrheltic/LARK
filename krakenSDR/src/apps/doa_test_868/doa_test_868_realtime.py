@@ -1,17 +1,28 @@
 #!/usr/bin/env python3
 """
-doa_test_868_realtime.py — DoA CW @ 868 MHz su UCA KrakenSDR 5 antenne
-=======================================================================
-Riceve IQ da Heimdall DAQ e stima l'azimuth del beacon CW con MUSIC 2D.
-Il display mostra:
-  - Bussola polare: spettro MUSIC collassato sull'azimuth + freccia stima
-  - Pannello qualità: autovalori, SNR, PAPR, azimuth stimato
+doa_test_868_realtime.py — Real-time 2D DoA at 868 MHz on KrakenSDR 5-element UCA
+==================================================================================
+Receives IQ from Heimdall DAQ and estimates the azimuth of a CW beacon using
+2D-MUSIC.  Display shows:
+  - Polar compass: MUSIC spectrum collapsed to azimuth + direction arrow
+  - 2D heatmap: azimuth × elevation spectrum with crosshair at peak
+  - Quality panel: eigenvalues, SNR, PAPR, estimated azimuth + elevation
+  - Rolling history: azimuth, elevation, inter-channel phase differences
 
-Utilizzo:
+Pilot-tone mode
+---------------
+With PILOT_TONE_ENABLED=True in config.py, a narrow-band FFT gate is applied
+around PILOT_TONE_OFFSET_HZ before computing the covariance.  This rejects
+broadband noise, gaining ~20 dB of effective SNR and greatly improving PAPR.
+The LibreSDR must transmit at  LO_freq + PILOT_TONE_OFFSET_HZ (default 100 kHz)
+via  python3 tx_868_libresdr.py --pilot-offset 100000.
+
+Usage
+-----
     python3 doa_test_868_realtime.py              # hardware (Heimdall)
-    python3 doa_test_868_realtime.py --demo        # senza hardware
+    python3 doa_test_868_realtime.py --demo       # synthetic signal at 45° (no HW)
     python3 doa_test_868_realtime.py --algo capon
-    python3 doa_test_868_realtime.py --offset 45  # calibrazione ant0
+    python3 doa_test_868_realtime.py --offset 45  # antenna-0 calibration offset
 """
 
 from __future__ import annotations
@@ -45,6 +56,7 @@ from core.doa_uca_2d import (
     UcaConfig, CovarianceAccumulatorUca,
     doa_music_uca_2d, doa_capon_uca_2d, doa_bartlett_uca_2d,
     find_peak_uca_2d, eigenvalue_spread_uca_db, snr_uca_db,
+    extract_pilot_tone, amplitude_normalize_channels,
 )
 
 # ── Palette ───────────────────────────────────────────────────────────────────
@@ -53,23 +65,22 @@ C_BDR = "#3b4263"; C_MUT = "#8891b0"; C_TEXT = "#d8dae8"
 C_BLUE = "#5ea4e0"; C_TEAL = "#4ecdc4"; C_AMBER = "#f4a431"
 C_VIO  = "#a78bfa"; C_ROSE = "#f16b6f"; C_LIME  = "#6dd97d"
 
-_PAPR_MIN_DB  = 5.0   # sotto questa soglia (con eig basso): direzione inaffidabile
-_PAPR_FLAT_DB = 3.0   # sotto questa soglia MUSIC è piatto → auto-fallback Bartlett
-_SPEC_EMA     = 0.10  # smoothing temporale dello spettro (più basso = display stabile)
+_PAPR_MIN_DB  = 4.0   # below this threshold with low eigenvalue: direction unreliable
+_PAPR_FLAT_DB = 3.0   # below this threshold MUSIC is flat → auto-fallback to Bartlett
+_SPEC_EMA     = 0.10  # display spectrum temporal smoothing (lower = more stable)
 
 
 def _circ_median(angles_deg: np.ndarray) -> float:
     """
-    Mediana circolare degli azimuth [0..360°].
-    Ruota al centro della distribuzione, calcola la mediana scalare, deruota.
-    Più robusta degli outlier rispetto alla media circolare.
+    Circular median of azimuth values [0..360°].
+
+    Rotates to the distribution centre, computes the scalar median, then
+    un-rotates.  More robust to outliers than the circular mean.
     """
     if len(angles_deg) == 0:
         return 0.0
-    a = np.deg2rad(angles_deg)
-    # Centro: angolo della media circolare
+    a  = np.deg2rad(angles_deg)
     mu = float(np.angle(np.mean(np.exp(1j * a))))
-    # Residui in [-π, π] rispetto al centro
     residui = np.angle(np.exp(1j * (a - mu)))
     return float(np.degrees(mu + np.median(residui)) % 360.0)
 
@@ -95,12 +106,12 @@ def _check_heimdall(host: str, port: int, timeout: float = 2.0) -> bool:
 
 def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
     return SimpleNamespace(
-        az_spec    = np.full(n_az, -40.0),           # spettro 1D azimuth [dB]
-        spec2d     = np.full((n_el, n_az), -40.0),   # spettro 2D (n_el, n_az) [dB]
-        az_deg     = 0.0,                            # stima istantanea
-        az_median  = 0.0,                            # mediana circolare ultimi N frame
-        el_deg     = 0.0,                            # elevazione stimata [°]
-        phase_diffs= np.zeros(4),                    # angle(R[1:5,0]) in gradi
+        az_spec    = np.full(n_az, -40.0),           # 1D azimuth spectrum [dB]
+        spec2d     = np.full((n_el, n_az), -40.0),   # 2D spectrum (n_el, n_az) [dB]
+        az_deg     = 0.0,                            # instantaneous azimuth estimate [°]
+        az_median  = 0.0,                            # circular median of last N valid frames [°]
+        el_deg     = 0.0,                            # estimated elevation [°]
+        phase_diffs= np.zeros(4),                    # angle(R[1:5,0]) [°]
         papr_db    = 0.0,
         snr_db     = 0.0,
         eig_db     = np.zeros(5),
@@ -109,20 +120,20 @@ def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
         snr_hist   = collections.deque(maxlen=C.HISTORY_LEN),
         phase_hist = [collections.deque(maxlen=C.HISTORY_LEN) for _ in range(4)],
         frame_n    = 0,
-        no_signal  = True,    # True = nessun segnale (EIG < soglia)
-        no_doa     = True,    # True = segnale presente ma direzione inaffidabile (PAPR basso)
+        no_signal  = True,    # True = no signal detected (EIG below threshold)
+        no_doa     = True,    # True = signal present but direction unreliable (PAPR low)
         lock       = threading.Lock(),
         running    = True,
-        # ── Recording buffers (accumulati per tutta la sessione) ──────────────
-        rec_t       = [],   # timestamp UNIX float64
-        rec_az      = [],   # azimuth stimato [°]
-        rec_el      = [],   # elevazione stimata [°]
+        # ── Recording buffers (accumulated for the full session) ──────────────
+        rec_t       = [],   # UNIX timestamp float64
+        rec_az      = [],   # estimated azimuth [°]
+        rec_el      = [],   # estimated elevation [°]
         rec_papr    = [],   # PAPR [dB]
         rec_snr     = [],   # SNR [dB]
         rec_eig     = [],   # list of (5,) float: eigenvalue spreads [dB]
         rec_phase   = [],   # list of (4,) float: ΔΦ CH1..4 vs CH0 [°]
-        rec_R       = [],   # list of (5,5) complex128: covariance EMA
-        rec_has_sig = [],   # bool: frame con segnale valido
+        rec_R       = [],   # list of (5,5) complex128: EMA covariance
+        rec_has_sig = [],   # bool: True = valid signal + reliable direction
     )
 
 
@@ -134,9 +145,18 @@ def _acq_loop(src, cfg: UcaConfig, algo: str,
               acc: CovarianceAccumulatorUca, S: SimpleNamespace,
               demo: bool = False) -> None:
     rng      = np.random.default_rng(42)
-    demo_az  = np.deg2rad(90.0)
-    demo_el  = np.deg2rad(5.0)
+    # Demo source at 45° azimuth (East-NorthEast), 10° elevation — matches
+    # typical indoor LibreSDR bench test at 45° from array North.
+    demo_az  = np.deg2rad(45.0)
+    demo_el  = np.deg2rad(10.0)
     pos      = cfg.positions
+
+    # Pilot-tone extraction parameters (from config)
+    _pilot_enabled = getattr(C, "PILOT_TONE_ENABLED",   False)
+    _pilot_hz      = float(getattr(C, "PILOT_TONE_OFFSET_HZ", 100_000))
+    _pilot_bw      = float(getattr(C, "PILOT_TONE_BW_HZ",     10_000))
+    _amp_norm      = getattr(C, "AMPLITUDE_NORMALIZE",  True)
+    _sample_rate   = float(getattr(C, "SAMPLE_RATE_HZ", 1_024_000))
 
     while S.running:
         # ── IQ frame ─────────────────────────────────────────────────────────
@@ -144,10 +164,23 @@ def _acq_loop(src, cfg: UcaConfig, algo: str,
             N = 65536
             tau = 2 * np.pi * (pos[:, 0] * np.cos(demo_el) * np.sin(demo_az)
                                 + pos[:, 1] * np.cos(demo_el) * np.cos(demo_az))
-            s = np.exp(1j * (2 * np.pi * 0.05 * np.arange(N) + rng.uniform(0, 2*np.pi)))
-            X = (np.exp(1j * tau)[:, None] * s[None, :] * np.sqrt(10**(15/10))
-                 + (rng.standard_normal((cfg.n_ant, N))
-                    + 1j * rng.standard_normal((cfg.n_ant, N))) / np.sqrt(2))
+            # Demo: pure pilot tone at demo_az + per-channel gain imbalance +
+            # random phase offsets to simulate realistic hardware conditions.
+            phase_offsets = np.deg2rad([0.0, 5.0, -8.0, 12.0, -3.0])
+            gain_offsets  = np.array([1.0, 0.92, 1.08, 0.95, 1.03])
+            # Pilot tone is at PILOT_TONE_OFFSET_HZ in the demo spectrum
+            t = np.arange(N, dtype=np.float64)
+            pilot_phasor = np.exp(2j * np.pi * _pilot_hz / _sample_rate * t)
+            snr_linear = 10 ** (15.0 / 10.0)   # 15 dB SNR on the pilot
+            s = pilot_phasor * np.sqrt(snr_linear)
+            X = (
+                np.outer(
+                    gain_offsets * np.exp(1j * (tau + phase_offsets)),
+                    s
+                )
+                + (rng.standard_normal((cfg.n_ant, N))
+                   + 1j * rng.standard_normal((cfg.n_ant, N))) / np.sqrt(2)
+            )
             X = X.astype(np.complex128)
             time.sleep(0.05)
         else:
@@ -164,51 +197,58 @@ def _acq_loop(src, cfg: UcaConfig, algo: str,
             continue
 
         try:
-            R = acc.update(X)
-            # Ad alta elevazione (cos(el)→0 → |Δτ|<<2π) passa a Bartlett:
-            #   1. se el_est del frame precedente supera HIGH_EL_THRESHOLD_DEG
-            #   2. oppure se lo spettro risulta piatto (PAPR < _PAPR_FLAT_DB)
-            _el_now = S.el_deg   # stima dell'iterazione precedente (thread-safe: lettura float atomica)
+            # ── Pilot tone extraction (narrow-band SNR boost) ─────────────────
+            if _pilot_enabled and _pilot_hz != 0.0:
+                X_proc = extract_pilot_tone(X, _sample_rate, _pilot_hz, _pilot_bw)
+            else:
+                X_proc = X
+
+            # ── Per-channel amplitude normalisation ───────────────────────────
+            if _amp_norm:
+                X_proc = amplitude_normalize_channels(X_proc)
+
+            # ── EMA covariance ────────────────────────────────────────────────
+            R = acc.update(X_proc)
+
+            # High-elevation fallback: at cos(el)→0 inter-channel phase spread
+            # shrinks → MUSIC spectrum becomes flat → switch to Bartlett.
+            _el_now    = S.el_deg
+            _use_algo  = algo
             if _el_now >= C.HIGH_EL_THRESHOLD_DEG and algo in ("music", "capon"):
                 _use_algo = C.HIGH_EL_ALGO.lower()
-            else:
-                _use_algo = algo
+
             if _use_algo == "capon":
-                spec2d = doa_capon_uca_2d(X, cfg, R_in=R,
+                spec2d = doa_capon_uca_2d(X_proc, cfg, R_in=R,
                                           decorr=getattr(C, "CAPNT_DECORR", "none"))
             elif _use_algo == "bartlett":
-                spec2d = doa_bartlett_uca_2d(X, cfg, R_in=R)
+                spec2d = doa_bartlett_uca_2d(X_proc, cfg, R_in=R)
             else:
-                spec2d = doa_music_uca_2d(X, cfg, R_in=R,
+                spec2d = doa_music_uca_2d(X_proc, cfg, R_in=R,
                                           decorr=getattr(C, "MUSIC_DECORR", "none"))
 
-            # Collassa la scansione elevazione → spettro 1D azimuth (max su el)
-            az_spec = np.max(spec2d, axis=0)       # (n_az,)
+            # Collapse elevation scan → 1-D azimuth spectrum (max over elevation)
+            az_spec = np.max(spec2d, axis=0)
 
             az, el_est, papr = find_peak_uca_2d(spec2d, cfg)
 
-            # Auto-fallback Bartlett se spettro piatto:
-            # elevazione alta → cos(θ)→0 → steering vector quasi costante in az
-            # → MUSIC/Capon producono spettro omogeneo → PAPR crolla.
-            # Bartlett (beamformer) degrada con lobo largo ma mantiene un picco.
+            # Auto-fallback to Bartlett when spectrum is flat (high-el or low PAPR)
             if papr < _PAPR_FLAT_DB and _use_algo != "bartlett":
-                spec2d_b = doa_bartlett_uca_2d(X, cfg, R_in=R)
+                spec2d_b = doa_bartlett_uca_2d(X_proc, cfg, R_in=R)
                 az_b, el_b, papr_b = find_peak_uca_2d(spec2d_b, cfg)
                 if papr_b > papr:
                     spec2d, az, el_est, papr = spec2d_b, az_b, el_b, papr_b
                     az_spec = np.max(spec2d, axis=0)
 
-            eig = eigenvalue_spread_uca_db(R)
-            snr = snr_uca_db(R)
-            phase_diffs = np.degrees(np.angle(R[1:, 0]))   # (4,) ΔΦ CH1..4 vs CH0 [°]
+            eig         = eigenvalue_spread_uca_db(R)
+            snr         = snr_uca_db(R)
+            phase_diffs = np.degrees(np.angle(R[1:, 0]))   # (4,) ΔΦ CH1..4 vs CH0
         except Exception as exc:
             print(f"[DoA] frame #{S.frame_n+1}: {exc}")
             continue
 
-        # Rilevazione segnale: usa l'autovalore (robusto all'elevazione),
-        # non il PAPR che crolla quando cos(el)→0 rende lo spettro piatto.
+        # Signal detection: eigenvalue spread is robust to elevation angle
+        # (unlike PAPR, which drops at high el where the spectrum flattens).
         has_signal = float(eig[0]) >= C.EIG_SPREAD_MIN_DB
-        # Affidabilità direzione: richiede anche un picco marcato nello spettro.
         has_doa    = has_signal and papr >= _PAPR_MIN_DB
 
         with S.lock:
@@ -226,13 +266,13 @@ def _acq_loop(src, cfg: UcaConfig, algo: str,
             S.snr_hist.append(snr)
             for _i, _p in enumerate(phase_diffs):
                 S.phase_hist[_i].append(float(_p))
-            if has_doa:   # solo quando la direzione è affidabile (eig + PAPR OK)
+            if has_doa:
                 S.az_hist.append(az)
                 if len(S.az_hist) >= 3:
                     S.az_median = _circ_median(np.array(S.az_hist))
                 else:
                     S.az_median = az
-            # ── Recording (ogni frame, valido o meno) ─────────────────────────
+            # ── Recording (every frame, valid or not) ─────────────────────────
             S.rec_t.append(time.time())
             S.rec_az.append(float(az))
             S.rec_el.append(float(el_est))
@@ -241,7 +281,7 @@ def _acq_loop(src, cfg: UcaConfig, algo: str,
             S.rec_eig.append(eig.copy())
             S.rec_phase.append(phase_diffs.copy())
             S.rec_R.append(np.array(R, dtype=np.complex128).copy())
-            S.rec_has_sig.append(bool(has_doa))   # True = segnale + direzione affidabile
+            S.rec_has_sig.append(bool(has_doa))
             S.frame_n += 1
 
 
@@ -557,20 +597,20 @@ def _save_recording(S: SimpleNamespace, freq_hz: int, algo: str) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(
-        description="DoA CW 868 MHz — KrakenSDR UCA 5 antenne",
+        description="CW DoA at 868 MHz — KrakenSDR 5-element UCA",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--freq",   type=float, default=C.FREQ_HZ / 1e6, help="Freq RF [MHz]")
+    p.add_argument("--freq",   type=float, default=C.FREQ_HZ / 1e6, help="RF centre frequency [MHz]")
     p.add_argument("--gain",   type=float, default=C.GAIN_DB,        help="IF gain [dB]")
-    p.add_argument("--radius", type=float, default=C.RADIUS_LAMBDA,  help="Raggio UCA in λ")
+    p.add_argument("--radius", type=float, default=C.RADIUS_LAMBDA,  help="UCA radius in wavelengths")
     p.add_argument("--offset", type=float, default=C.ANT0_OFFSET_DEG,
-                   help="Offset ant0 dal Nord [°]")
+                   help="Antenna-0 offset from North [deg]")
     p.add_argument("--algo",   choices=["music", "capon", "bartlett"],
-                   default=C.DOA_ALGORITHM.lower(), help="Algoritmo DoA")
-    p.add_argument("--nsig",   type=int,   default=C.NUM_SIGNALS,    help="Sorgenti attese")
-    p.add_argument("--alpha",  type=float, default=C.COV_ALPHA,      help="EMA covarianza")
+                   default=C.DOA_ALGORITHM.lower(), help="DoA algorithm")
+    p.add_argument("--nsig",   type=int,   default=C.NUM_SIGNALS,    help="Expected signal sources")
+    p.add_argument("--alpha",  type=float, default=C.COV_ALPHA,      help="EMA covariance factor")
     p.add_argument("--demo",   action="store_true",
-                   help="Segnale CW sintetico a az=90° (nessun hardware)")
+                   help="Synthetic CW at az=45° (no hardware required)")
     args = p.parse_args()
 
     freq_hz = int(args.freq * 1e6)
@@ -584,18 +624,25 @@ def main() -> None:
     acc = CovarianceAccumulatorUca(alpha=args.alpha)
     S   = _make_state(cfg.n_az, cfg.n_el)
 
+    pilot_str = (
+        f"pilot-tone +{C.PILOT_TONE_OFFSET_HZ/1e3:.0f} kHz  (bw {C.PILOT_TONE_BW_HZ/1e3:.0f} kHz)"
+        if getattr(C, "PILOT_TONE_ENABLED", False) and getattr(C, "PILOT_TONE_OFFSET_HZ", 0) != 0
+        else "broadband (no pilot tone)"
+    )
     print(f"  DoA CW — {args.algo.upper()}  @  {freq_hz/1e6:.3f} MHz")
     print(f"  UCA: {cfg.n_ant} ant  r={args.radius:.3f}λ  offset={args.offset:.1f}°")
     print(f"  Heimdall: {C.HEIMDALL_HOST}:{C.HEIMDALL_PORT}")
+    print(f"  Mode: {pilot_str}")
+    print(f"  Amplitude normalise: {getattr(C, 'AMPLITUDE_NORMALIZE', True)}")
 
     if not args.demo and not _check_heimdall(C.HEIMDALL_HOST, C.HEIMDALL_PORT):
-        print(f"\n[ERRORE] Heimdall non raggiungibile su {C.HEIMDALL_HOST}:{C.HEIMDALL_PORT}")
-        print("  Avvia Heimdall prima, oppure usa --demo per testare senza hardware.")
+        print(f"\n[ERROR] Heimdall not reachable at {C.HEIMDALL_HOST}:{C.HEIMDALL_PORT}")
+        print("  Start Heimdall first, or use --demo to test without hardware.")
         sys.exit(1)
 
     if args.demo:
         src = None
-        print("  DEMO: CW sintetico a 90° Est")
+        print("  DEMO: synthetic CW source at 45° azimuth")
     else:
         src = KrakenIQSource(
             host=C.HEIMDALL_HOST, port=C.HEIMDALL_PORT,
@@ -603,7 +650,7 @@ def main() -> None:
             freq_hz=freq_hz, gain_db=args.gain,
         )
         src.start()
-        print("  Heimdall connesso.")
+        print("  Heimdall connected.")
 
     threading.Thread(
         target=_acq_loop,
@@ -618,7 +665,7 @@ def main() -> None:
     if src is not None:
         src.stop()
     _save_recording(S, freq_hz=freq_hz, algo=args.algo)
-    print("Stop.")
+    print("Session ended.")
 
 
 if __name__ == "__main__":

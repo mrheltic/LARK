@@ -1,33 +1,43 @@
 # =============================================================================
-#  apps/doa_test_868 — Test DoA 2D (azimuth + elevazione) a 868 MHz
+#  apps/doa_test_868 — 2D DoA test at 868 MHz (azimuth + elevation)
 #
-#  Script di test per validare gli algoritmi DoA 2D-MUSIC / 2D-Capon /
-#  2D-Bartlett sull'UCA a 5 antenne del KrakenSDR in banda ISM 868 MHz.
+#  Validates 2D-MUSIC / 2D-Capon / 2D-Bartlett on the KrakenSDR 5-element UCA
+#  in the ISM 868 MHz band.
 #
-#  Setup fisico consigliato
-#  ------------------------
-#  TX (beacon):  LibreSDR (AD9363)  →  tx_868_libresdr.py  (tono CW o burst)
-#                oppure Arduino/LoRa modulo a 868 MHz
-#  RX (array):   KrakenSDR 5-ch     →  Heimdall DAQ attivo su TCP:5000
-#  Posizione TX: nota (angolo e distanza misurati), elevazione stimata
+#  Recommended hardware setup
+#  --------------------------
+#  TX (beacon) : LibreSDR AD9363  →  tx_868_libresdr.py  (CW tone or burst)
+#                or any 868 MHz LoRa / Arduino beacon
+#  RX (array)  : KrakenSDR 5-ch  →  Heimdall DAQ active on TCP:5000
+#  TX position : known azimuth and distance; elevation estimated from geometry
 #
-#  Flusso dati
-#  -----------
-#  Heimdall DAQ → TCP:5000 ──► KrakenIQSource ──► EMA covariance
-#    ──► 2D-MUSIC (UCA) ──► sky-plot + mappa calore + storia (azimuth/elevazione)
+#  Data flow
+#  ---------
+#  Heimdall DAQ → TCP:5000 ──► KrakenIQSource ──► pilot-tone extractor
+#    ──► amplitude normalisation ──► EMA covariance ──► 2D-MUSIC (UCA)
+#    ──► polar compass + heat-map + az/el history
 #
-#  Configurazione rapida
-#  ---------------------
-#  Adatta FREQ_HZ alla frequenza del tuo beacon TX.
-#  Imposta RADIUS_LAMBDA in base al raggio fisico dell'UCA:
-#    r [m] / λ [m]  dove λ = 300e6 / FREQ_HZ
-#  Esegui il calibration offset (ANT0_OFFSET_DEG) allineando il risultato
-#  con una sorgente di riferimento a direzione nota.
+#  Quick configuration
+#  -------------------
+#  1. Set FREQ_HZ to match the LibreSDR TX frequency.
+#  2. Set RADIUS_LAMBDA from the physical UCA radius:
+#       r [m] / λ [m]   where  λ = 300e6 / FREQ_HZ
+#  3. Calibrate ANT0_OFFSET_DEG with the TX at a known angle (see below).
+#  4. If using the pilot-tone feature, set PILOT_TONE_OFFSET_HZ to the same
+#     value as --pilot-offset passed to tx_868_libresdr.py (default 100 000 Hz).
 #
-#  Per la calibrazione iniziale:
-#    - Posiziona il TX a 0° Nord rispetto al centro dell'array
-#    - Esegui lo script, verifica che il picco MUSIC cada vicino a 0° azimuth
-#    - Regola ANT0_OFFSET_DEG in gradi finché non è allineato
+#  Field calibration of ANT0_OFFSET_DEG
+#  -------------------------------------
+#  - Place TX due North of the array centre.
+#  - Run the script; read the median azimuth estimate.
+#  - Set ANT0_OFFSET_DEG = −(measured_az) to shift the estimate to 0°.
+#
+#  Data-driven tuning notes  (from recordings doa_data_20260427_*.npz)
+#  ------------------------------------------------------------------
+#  Best session (184244): az_mean=45.4°, snr=31 dB, papr=5.8 dB, 32% valid.
+#  High az_std (79°) points to indoor multipath as the dominant error source.
+#  Raising IF gain to 40 dB and enabling pilot-tone extraction (+20 dB SNR
+#  selectivity) is expected to raise the valid-frame ratio above 80%.
 # =============================================================================
 from __future__ import annotations
 
@@ -40,106 +50,131 @@ if _SRC not in _sys.path:
     _sys.path.insert(0, _SRC)
 from config_hw import *   # noqa: F401, F403
 
-# ── Geometria array ───────────────────────────────────────────────────────────
-N_ANTENNAS     = 5        # numero di antenne KrakenSDR popolate
-GEOMETRY       = "UCA"    # Uniform Circular Array — non modificare per questo test
+# ── Array geometry ────────────────────────────────────────────────────────────
+N_ANTENNAS     = 5        # number of populated KrakenSDR channels
+GEOMETRY       = "UCA"    # Uniform Circular Array — do not change for this test
 
 RADIUS_LAMBDA  = 0.4253
-# Raggio fisico dell'UCA in frazioni di λ.
+# Physical UCA radius as a fraction of wavelength.
 #
-#  Formula: R = d / (2·sin(π/N))  dove d = distanza inter-elemento e N = numero antenne.
-#  Con spacing d = λ/2 e N = 5:
-#    R = (λ/2) / (2·sin(36°)) = 0.5 / (2 · 0.5878) ≈ 0.4253λ  ← VALORE CORRETTO
+#  Formula: R = d / (2·sin(π/N))  where d = inter-element spacing, N = antennas.
+#  With λ/2 spacing and N=5:
+#    R = (λ/2) / (2·sin(36°)) = 0.5 / (2 · 0.5878) ≈ 0.4253λ  ← correct for KrakenSDR
 #
-#  Caso 1 — spacing λ/2 tra elementi adiacenti (default KrakenSDR 868 MHz):
+#  Case 1 — λ/2 element spacing (KrakenSDR 868 MHz default):
 #    RADIUS_LAMBDA = 0.4253
 #
-#  Caso 2 — raggio fisico noto (es. 12.5 cm a 868 MHz, λ=34.56 cm):
-#    RADIUS_LAMBDA = 0.125 / (300e6 / 868e6) = 0.362
+#  Case 2 — known physical radius (e.g. 12.5 cm at 868 MHz, λ=34.56 cm):
+#    RADIUS_LAMBDA = 0.125 / (300e6 / 868e6) ≈ 0.362
 
 ANT_CCW = True
-# True  — antenne fisicamente disposte in senso anti-orario (CCW) guardando dall'alto
-# False — senso orario (CW)
-# Con antenne CCW e matrice CW: az_stimato = 360° − az_reale per az ≠ 0/180°.
+# True  — antennas physically arranged counter-clockwise (CCW) viewed from above.
+# False — clockwise (CW).
+# With CCW antennas and CW steering: az_est = 360° − az_real for az ≠ 0°/180°.
 
 ANT0_OFFSET_DEG = 0.0
-# Offset angolare dell'antenna 0 rispetto al Nord fisico [gradi].
-# Usato per allineare il risultato DoA con la bussola.
-# Calibra sul campo con TX a direzione nota (es. 0° = Nord → ant0 deve puntare Nord).
+# Rotation of antenna 0 relative to geographic North [degrees].
+# Used to align the DoA estimate with the compass.
+# Measure on the field with TX at a known angle (e.g. 0° = North → ant0 points North).
 
-# ── RF / Frequenza ────────────────────────────────────────────────────────────
-FREQ_HZ   = 865_197_800   # [Hz] — Arduino beacon rilevato automaticamente a 865.1978 MHz
-GAIN_DB   = 20            # Guadagno IF [dB] — aumenta se il segnale è debole
+# ── RF / Frequency ────────────────────────────────────────────────────────────
+FREQ_HZ   = 865_197_800   # [Hz] — matched to LibreSDR TX; Arduino beacon at 865.1978 MHz
+GAIN_DB   = 40            # KrakenSDR IF gain [dB].
+#                          #  From field recordings SNR~31 dB at GAIN=20 but only 32% valid
+#                          #  frames.  Raising to 40 dB ensures all frames clear squelch.
+#                          #  Lower back to 20–30 dB if ADC saturates (check eig values).
 
-# ── Algoritmo DoA 2D ──────────────────────────────────────────────────────────
+# ── 2D DoA algorithm ─────────────────────────────────────────────────────────
 DOA_ALGORITHM  = "MUSIC"
-# "MUSIC"    — super-risoluzione con circulant smoothing attivo (MUSIC_DECORR='both').
-#               Ora stabile indoor: il circulant averaging decorrela il multipath
-#               coerente (N sub-array virtuali per rotazione UCA).
-#               Con multipath perfettamente coerente e MUSIC+circulant: err_az~0°.
-#               PREFERITO per test indoor CW (Arduino beacon).
-# "CAPON"    — MVDR: buono per SNR basso, ma con multipath coerente forte
-#               può puntare alla direzione media delle riflessioni invece che
-#               alla sorgente. Utile come fallback se MUSIC instabile.
-# "BARTLETT" — beamformer convenzionale: più robusto, risoluzione bassa
+# "MUSIC"    — subspace super-resolution (recommended for CW beacon).
+#               Temporal EMA (COV_ALPHA=0.97) acts as indoor multipath decorrelation.
+# "CAPON"    — MVDR: good at low SNR but may lock onto multipath mean direction.
+# "BARTLETT" — conventional beamformer: robust fallback, lower resolution.
 
-NUM_SIGNALS    = 1        # sorgenti attese (D per il sottospazio noise di MUSIC)
-#                          # 0 = auto-detect via MDL (più lento, utile in ambienti caotici)
+NUM_SIGNALS    = 1        # expected simultaneous sources
+#                          # 0 = auto-detect via MDL (slower, useful in complex RF env.)
 
-# ── Griglia di scansione 2D ───────────────────────────────────────────────────
-N_AZ       = 180          # punti di scansione azimuth (180 → step 2°)
-N_EL       = 36           # punti di scansione elevazione (36 → step 2.5° da 0° a 90°)
-#                          # era 18 → 5° — troppo grossolano per variazioni indoor (es.
-#                          # sorgente alzata di 0.5m a 2m di distanza = Δel≈14° ~ 5.6 step)
-EL_MIN_DEG = 0.0          # elevazione minima [°] — 0.0 per beacon a terra (ISM 868 MHz)
+# ── 2D scan grid ─────────────────────────────────────────────────────────────
+N_AZ       = 180          # azimuth scan points (180 → 2° step)
+N_EL       = 36           # elevation scan points (36 → 2.5° step from 0° to 90°)
+EL_MIN_DEG = 0.0          # minimum elevation [°] — 0° for ground-level ISM beacons
 
-# ── Accumulazione covarianza (EMA) ─────────────────────────────────────────────
-COV_ALPHA  = 0.97         # α = EMA weight  (τ = 1/(1-α) frame)
-#                          # 0.97 → ~33 frame di memoria = decorrelazione temporale
-#                          # del multipath indoor (il segnale CW rimane stazionario,
-#                          # le riflessioni cambiano fase nel tempo per vibrazioni/calore).
-#                          # Questa è la strategia di decorrelazione corretta per UCA.
+# ── Covariance EMA accumulation ──────────────────────────────────────────────
+COV_ALPHA  = 0.97         # EMA weight  (time constant τ = 1/(1-α) frames)
+#                          # 0.97 → ~33 frames of memory.
+#                          # CW source stays stable; reflections slowly drift in phase →
+#                          # temporal averaging is the correct multipath decorrelation for UCA.
+#                          # Lower to 0.50–0.70 for moving sources.
 
 # ── Squelch ───────────────────────────────────────────────────────────────────
 SQUELCH_ENABLED      = True
-SQUELCH_THRESHOLD_DB = -55.0
-# Livello minimo di potenza media [dB] sotto cui il frame viene scartato.
-# Abbassa se il segnale è debole, alza per filtrare il rumore ambientale.
+SQUELCH_THRESHOLD_DB = -60.0
+# Minimum mean IQ power [dBW] below which the frame is discarded.
+# From field data: valid frames at GAIN=20 had power ≈ −50…−40 dBW.
+# −60 dBW is a conservative floor; raise to −50 if noise bursts cause ghost estimates.
 
-EIG_SPREAD_MIN_DB = 4.0
-# Spread minimo del primo autovalore rispetto al piano del rumore [dB].
-# NOTA: dopo circulant smoothing il primo autovalore si riduce leggermente
-# (la struttura circolante distribuisce potenza su più lags). Soglia ridotta
-# da 6 a 4 dB per non scartare frame validi post-decorrelazione.
-# Abbassa a 2 dB se il segnale è debolissimo.
+EIG_SPREAD_MIN_DB = 3.0
+# Minimum eigenvalue spread (λ_max / λ_noise in dB) to declare signal present.
+# Lowered from 4.0 to 3.0: recordings show genuine signal at 3–4 dB spread
+# with indoor multipath averaging out the dominant eigenvalue slightly.
+# Reduce to 2.0 only if the beacon is very weak; raise above 5.0 in clean outdoor tests.
+
+# ── Pilot tone extraction ─────────────────────────────────────────────────────
+SAMPLE_RATE_HZ        = 1_024_000
+# Heimdall DAQ sample rate [Hz] — must match daq_chain_config_868.ini sample_rate.
+# Used to compute FFT bin indices for pilot-tone extraction.
+
+PILOT_TONE_ENABLED    = True
+# Enable narrow-band extraction of the LibreSDR CW pilot tone.
+# When enabled, each IQ frame is bandpass-filtered around PILOT_TONE_OFFSET_HZ
+# before the covariance is computed.  This rejects broadband noise and interference,
+# yielding ~20 dB SNR improvement (10·log10(sample_rate / PILOT_TONE_BW_HZ)).
+# Requires LibreSDR to be transmitting at  LO_freq + PILOT_TONE_OFFSET_HZ.
+# Set PILOT_TONE_ENABLED = False when using a non-LibreSDR beacon (e.g. Arduino).
+
+PILOT_TONE_OFFSET_HZ  = 100_000
+# Pilot tone offset from the Heimdall LO centre frequency [Hz].
+# 100 kHz is chosen for exact FFT bin alignment at 1.024 MSPS / CPI 131072:
+#   bin = 100 000 × 131 072 / 1 024 000 = 12 800  (integer → zero spectral leakage)
+# Must match --pilot-offset passed to tx_868_libresdr.py.
+
+PILOT_TONE_BW_HZ      = 10_000
+# Extraction bandwidth [Hz].  Wider = higher tolerance for TX frequency drift;
+# narrower = more noise rejection.  10 kHz is a good compromise for a stable
+# TCXO-based LibreSDR.  Reduce to 5 kHz if LibreSDR frequency is very stable.
+
+# ── Per-channel amplitude normalisation ──────────────────────────────────────
+AMPLITUDE_NORMALIZE = True
+# Normalise each KrakenSDR channel to unit RMS power before covariance.
+# Cancels between-channel gain imbalance (up to ~5 dB measured on hardware).
+# Does not affect phase relationships (DoA accuracy is preserved).
+# Disable for hardware calibration sessions.
 
 # ── Display ───────────────────────────────────────────────────────────────────
-UPDATE_INTERVAL_MS = 200   # intervallo di aggiornamento del plot [ms]
-HISTORY_LEN        = 60    # campioni di storia per i grafici azimuth/elevazione
+UPDATE_INTERVAL_MS = 200   # animation refresh interval [ms]  (200 ms ≈ 5 fps)
+HISTORY_LEN        = 60    # rolling history length [frames]
 
-# ── Algoritmo adattivo ad alta elevazione ────────────────────────────────────
+# ── High-elevation adaptive algorithm ────────────────────────────────────────
 HIGH_EL_THRESHOLD_DEG = 50.0
-# Sopra questa elevazione [gradi] MUSIC perde risoluzione perché cos(el)→0
-# riduce le differenze di fase inter-canale → steering vector quasi indipendenti
-# dall'azimuth → spettro MUSIC piatto.
-# Abbassato da 70° a 50° (dall'analisi sui dati reali: degradazione inizia ~55°).
-# Sopra soglia: passa automaticamente a HIGH_EL_ALGO.
-# NOTA: anche sotto soglia lo script fa auto-fallback se PAPR < _PAPR_FLAT_DB.
+# Above this elevation [degrees] MUSIC loses azimuth resolution because
+# cos(el) → 0 reduces inter-channel phase spread → nearly flat MUSIC spectrum.
+# Transition to HIGH_EL_ALGO automatically above this threshold.
+# Also used as a fallback when PAPR drops below _PAPR_FLAT_DB.
 
 HIGH_EL_ALGO = "BARTLETT"
-# Algoritmo usato quando el_est ≥ HIGH_EL_THRESHOLD_DEG.
-# BARTLETT: beamformer convenzionale, più robusto agli errori di fase HW.
-# CAPON:    compromesso intermedio.
+# Algorithm used when el_est ≥ HIGH_EL_THRESHOLD_DEG.
+# BARTLETT: conventional beamformer — degrades gracefully, works at all elevations.
+# CAPON:    intermediate; better resolution than Bartlett, less stable than MUSIC.
 
-# ── Decorrelazione covarianza (anti-multipath) ────────────────────────────────
+# ── Covariance decorrelation (anti-multipath) ─────────────────────────────────
 MUSIC_DECORR = "none"
-# Decorrelazione pre-processing per MUSIC su UCA.
-# IMPORTANTE: 'circulant' e 'fb' NON funzionano per UCA con MUSIC:
-#   il circulant smoothing forza R ad essere ciclicamente simmetrica →
-#   autovettori = vettori DFT → spettro MUSIC con simmetria N-fold
-#   (stella a 5 punte) e PAPR~0 dB. Usare solo 'none' con UCA.
-# La decorrelazione corretta per CW indoor è l'EMA temporale (COV_ALPHA=0.97).
-# Lasciare 'none' tranne per esperimenti offline con dataset sintetici.
+# Pre-processing decorrelation for 2D-MUSIC on UCA.
+# IMPORTANT: 'circulant' and 'fb' BREAK 2D-MUSIC on UCA:
+#   circulant smoothing forces R to be cyclically symmetric →
+#   eigenvectors = DFT vectors → N-fold star pattern in MUSIC spectrum → PAPR~0 dB.
+# For UCA the correct multipath decorrelation is temporal EMA (COV_ALPHA=0.97).
+# Leave 'none' unless running offline synthetic experiments.
 CAPNT_DECORR = "none"
-# Per Capon la situazione è identica: circulant forza N-fold symmetry
-# anche nell'inversa R^{-1} → Capon si degrada a Bartlett su R circolante.
+# Same restriction applies to Capon: circulant forces N-fold symmetry
+# in R^{-1} → Capon degrades to Bartlett on a circulant covariance.
+
