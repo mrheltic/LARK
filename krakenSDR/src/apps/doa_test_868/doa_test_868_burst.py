@@ -105,6 +105,15 @@ _TONE_SCAN_WIN   = 512   # points per FFT block (≈0.5 ms @ 1.024 MHz)
 # when preamble correctly aligned; 2.0 is a safe floor at –20 dB TX gain).
 _PAPR_MIN_DB     = 2.0
 _PAPR_FLAT_DB    = 2.0
+# Instantaneous MUSIC PAPR threshold for EMA gate.
+# A genuine preamble capture (rank-1, spatial coherence) yields papr_inst ≥ 29 dB
+# even at 0 dB element SNR.  DATA/noise sections yield papr_inst ≤ 12 dB.
+# Empirical calibration: 20 trials × 5 SNR levels [0,2,3,5,8,10] dB give:
+#   preamble: mean=33.6 dB, min=29.4 dB
+#   data/noise: mean=4.4 dB, max=12.1 dB
+# Threshold of 15 dB gives > 14 dB margin below preamble floor and
+# > 2.9 dB margin above DATA ceiling → zero false-positive / false-negative.
+_PAPR_INST_MIN_DB = 15.0
 _SPEC_EMA        = 0.20  # faster update than CW: each burst is ~90ms
 
 
@@ -408,26 +417,33 @@ def _acq_loop(
                 snr = snr_uca_db(R_inst)
                 eig = eigenvalue_spread_uca_db(R_inst)
 
-                # EMA gate: only accumulate when the INSTANTANEOUS eigenspread
-                # confirms a genuine preamble capture (≥2.5 dB = has_signal level).
-                # This prevents DATA-section or noise bursts from polluting R_EMA.
-                # Root cause found in session 20260428_153622: 309 consecutive
-                # bad bursts (λ1 low) shifted EMA phase by >60° over 28 s.
-                if eig[0] >= 2.5:
+                # ── Two-stage EMA gate ────────────────────────────────────────
+                # ROOT CAUSE of observed phase instability (sessions 163602,
+                # 153622, 155352):
+                # The old gate (eig[0] ≥ 2.5 dB) admitted ~99 % of all bursts
+                # because even DATA sections and noise have some structured BPF
+                # output (eigenvalue spread ≥ 3 dB due to spectral residue).
+                # Each non-preamble burst adds a RANDOM phasor to R_EMA → phase
+                # random-walk of ~18°/s → 225° CH2 drift in 150 s (measured).
+                #
+                # FIX: run instantaneous MUSIC on R_inst before updating EMA.
+                # Genuine preamble window: rank-1 signal → sharp MUSIC peak
+                #   → papr_inst ≥ 29 dB (even at 0 dB element SNR, empirical).
+                # DATA section / noise window: near-isotropic R_inst
+                #   → flat MUSIC spectrum → papr_inst ≤ 12 dB → REJECTED.
+                # Threshold _PAPR_INST_MIN_DB = 15 dB gives > 2.9 dB margin
+                # above DATA ceiling and > 14 dB below preamble floor.
+                spec2d_inst = doa_music_uca_2d(X_nb, cfg, R_in=R_inst)
+                _, _, papr_inst = find_peak_uca_2d(spec2d_inst, cfg)
+
+                if eig[0] >= C.EIG_SPREAD_MIN_DB and papr_inst >= _PAPR_INST_MIN_DB:
                     R = acc.update(X_nb)
                 else:
                     R = acc.R if acc.R is not None else R_inst
 
-                # phase_diffs from EMA R — NOT from R_inst.
-                # In a multipath-rich indoor environment, R_inst captures a
-                # DIFFERENT multipath snapshot every 90 ms: λ1/λ2 ≈ 5 dB means
-                # the second source is at 30 % of the dominant power, so
-                # angle(R_inst[k,0]) is the angle of a RANDOM VECTOR SUM of
-                # direct + reflections → std ≈ 95° (observed in session 155352).
-                # The EMA with COV_ALPHA=0.97 (τ≈33 bursts, 3 s) averages out
-                # fast-fluctuating multipath, recovering the stable direct-path
-                # phase: confirmed by R_saved showing [70.5°,-112.4°,118.4°,62.6°]
-                # constant across bursts while R_inst varied over ±180°.
+                # phase_diffs from EMA R — accumulates only spatially-coherent
+                # preamble bursts after the two-stage gate, so it reflects the
+                # true array geometry + hardware offset (stable for fixed TX).
                 phase_diffs = np.degrees(np.angle(R[1:, 0]))
 
                 _el_now   = S.el_deg

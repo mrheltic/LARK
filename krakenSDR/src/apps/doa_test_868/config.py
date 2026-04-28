@@ -102,10 +102,12 @@ N_EL       = 36           # elevation scan points (36 → 2.5° step from 0° to
 EL_MIN_DEG = 0.0          # minimum elevation [°] — 0° for ground-level ISM beacons
 
 # ── Covariance EMA accumulation ──────────────────────────────────────────────
-COV_ALPHA  = 0.97         # EMA weight  (time constant τ = 1/(1-α) frames)
-#                          # 0.97 → ~33 frames of memory.
-#                          # CW source stays stable; reflections slowly drift in phase →
-#                          # temporal averaging is the correct multipath decorrelation for UCA.
+COV_ALPHA  = 0.90         # EMA weight  (time constant τ = 1/(1-α) frames)
+#                          # 0.90 → ~10 valid-burst frames of memory ≈ 1-2 s at 11 Hz
+#                          # burst rate (reduced from 0.97 because the two-stage EMA
+#                          # gate now admits only genuine preamble captures; with the
+#                          # old contaminated EMA the long τ was needed but now shorter
+#                          # τ converges faster and tracks slow hardware drift).
 #                          # Lower to 0.50–0.70 for moving sources.
 
 # ── Squelch ───────────────────────────────────────────────────────────────────
