@@ -52,39 +52,6 @@
                 }
             }
         },
-        {
-            "label": "Heimdall: Start — synthetic (no hardware)",
-            "detail": "Auto-detects firmware path, installs sudoers if needed, then runs daq_synthetic_start.sh as root.",
-            "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} bash ${workspaceFolder}/krakenSDR/src/scripts/start_heimdall.sh --synthetic",
-            "options": { "cwd": "${workspaceFolder}" },
-            "isBackground": true,
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            },
-            "problemMatcher": {
-                "pattern": { "regexp": "^(.*)$", "message": 1 },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": "Starting Heimdall DAQ",
-                    "endsPattern": "Heimdall ready after"
-                }
-            }
-        },
-        {
-            "label": "Heimdall: Stop",
-            "detail": "Kills all Heimdall sub-processes via daq_stop.sh (auto-detects firmware path).",
-            "type": "shell",
-            "command": "FW=$(bash -c 'for d in \"${workspaceFolder}/krakenSDR/heimdall\" \"${workspaceFolder}/external/heimdall_daq_fw/Firmware\" \"${workspaceFolder}/external/heimdall_daq_fw/Firmware_new\"; do [ -f \"$d/daq_stop.sh\" ] && echo $d && break; done'); cd \"$FW\" && sudo bash \"$FW/daq_stop.sh\"",
-            "options": { "cwd": "${workspaceFolder}" },
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            },
-            "problemMatcher": []
-        },
 
         // ═══════════════════════════════════════════════════════════════════
         // KRAKENSDR — Iridium reception
@@ -317,19 +284,6 @@
             "problemMatcher": "$python"
         },
         {
-            "label": "KrakenSDR: 868 MHz UCA — DoA 2D DEMO (no hardware)",
-            "detail": "Injects a synthetic coherent CW source at az=45° el=10° with realistic gain/phase offsets. Tests the full visualisation pipeline without KrakenSDR or Heimdall. Records to doa_data_demo/ on exit.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_realtime.py --demo --out-dir ${workspaceFolder}/recordings/doa_data_demo",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": "$python"
-        },
-        {
             "label": "KrakenSDR: 868 MHz UCA — DoA 2D real-time + record (MUSIC)",
             "detail": "2D-MUSIC on the 5-element UCA at 868 MHz with continuous .npz recording to recordings/doa_868/. Auto-saves checkpoint every 300 frames. Requires Heimdall + LibreSDR pilot-tone beacon.",
             "type": "shell",
@@ -369,6 +323,32 @@
                     "endsPattern": "TX active|Transmitting"
                 }
             }
+        },
+        {
+            "label": "KrakenSDR: 868 MHz UCA — DoA BURST (IRA preamble gate)",
+            "detail": "Burst-gated 2D-MUSIC: detects IRA π/4-DQPSK bursts from LibreSDR tx_868_gui.py, extracts preamble tone at +3125 Hz (Rs/8), runs per-burst DoA. Requires Heimdall + LibreSDR in BURST mode.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_burst.py",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": "$python"
+        },
+        {
+            "label": "KrakenSDR: 868 MHz UCA — DoA BURST demo (no hardware)",
+            "detail": "Synthetic IRA burst at az=45° — tests burst DoA pipeline without hardware.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_burst.py --demo",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": "$python"
         },
         {
             "label": "LibreSDR: TX 868 MHz — CW cyclic (DoA beacon)",
