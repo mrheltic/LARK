@@ -317,10 +317,23 @@
             "problemMatcher": "$python"
         },
         {
-            "label": "KrakenSDR: 868 MHz UCA — DoA 2D DEMO (senza hardware)",
-            "detail": "Modalità demo: inietta un segnale CW sintetico coerente a az=90° el=5° per testare la pipeline di visualizzazione senza KrakenSDR o Heimdall.",
+            "label": "KrakenSDR: 868 MHz UCA — DoA 2D DEMO (no hardware)",
+            "detail": "Injects a synthetic coherent CW source at az=45° el=10° with realistic gain/phase offsets. Tests the full visualisation pipeline without KrakenSDR or Heimdall. Records to doa_data_demo/ on exit.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_realtime.py --demo",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_realtime.py --demo --out-dir ${workspaceFolder}/recordings/doa_data_demo",
+            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": "$python"
+        },
+        {
+            "label": "KrakenSDR: 868 MHz UCA — DoA 2D real-time + record (MUSIC)",
+            "detail": "2D-MUSIC on the 5-element UCA at 868 MHz with continuous .npz recording to recordings/doa_868/. Auto-saves checkpoint every 300 frames. Requires Heimdall + LibreSDR pilot-tone beacon.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_realtime.py --out-dir ${workspaceFolder}/recordings/doa_868",
             "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
             "group": "test",
             "presentation": {
@@ -335,6 +348,28 @@
         // WARNING: ETSI EN 300 220 — 868.0-868.6 MHz ERP ≤ 25 mW, DC ≤ 1 %.
         //          Always use TX→RX coaxial cable + attenuator in the lab.
         // ═══════════════════════════════════════════════════════════════════
+        {
+            "label": "LibreSDR: TX 868 MHz — pilot-tone beacon (+100 kHz, -15 dB)",
+            "detail": "Transmits a CW pilot tone at LO+100 kHz (868.1+0.1 MHz) at -15 dB via AD9363. Matches KrakenSDR PILOT_TONE_OFFSET_HZ=100000. Stop with Ctrl+C.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx_868_libresdr.py --pilot-offset 100000 --gain -15",
+            "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
+            "group": "test",
+            "isBackground": true,
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": false
+            },
+            "problemMatcher": {
+                "pattern": { "regexp": "^(.*)$", "message": 1 },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "LibreSDR",
+                    "endsPattern": "TX active|Transmitting"
+                }
+            }
+        },
         {
             "label": "LibreSDR: TX 868 MHz — CW cyclic (DoA beacon)",
             "detail": "Transmits a continuous pure carrier tone at 868.1 MHz via AD9363 DMA loop. Use as reference beacon for UCA DoA testing. Stop with Ctrl+C.",
@@ -353,7 +388,7 @@
                 "background": {
                     "activeOnStart": true,
                     "beginsPattern": "LibreSDR TX",
-                    "endsPattern": "Trasmissione ciclica avviata"
+                    "endsPattern": "TX active|Transmitting"
                 }
             }
         },

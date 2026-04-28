@@ -124,6 +124,7 @@ def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
         no_doa     = True,    # True = signal present but direction unreliable (PAPR low)
         lock       = threading.Lock(),
         running    = True,
+        rec_enabled= True,    # False when --no-rec is passed
         # ── Recording buffers (accumulated for the full session) ──────────────
         rec_t       = [],   # UNIX timestamp float64
         rec_az      = [],   # estimated azimuth [°]
@@ -273,20 +274,21 @@ def _acq_loop(src, cfg: UcaConfig, algo: str,
                 else:
                     S.az_median = az
             # ── Recording (every frame, valid or not) ─────────────────────────
-            S.rec_t.append(time.time())
-            S.rec_az.append(float(az))
-            S.rec_el.append(float(el_est))
-            S.rec_papr.append(float(papr))
-            S.rec_snr.append(float(snr))
-            S.rec_eig.append(eig.copy())
-            S.rec_phase.append(phase_diffs.copy())
-            S.rec_R.append(np.array(R, dtype=np.complex128).copy())
-            S.rec_has_sig.append(bool(has_doa))
+            if S.rec_enabled:
+                S.rec_t.append(time.time())
+                S.rec_az.append(float(az))
+                S.rec_el.append(float(el_est))
+                S.rec_papr.append(float(papr))
+                S.rec_snr.append(float(snr))
+                S.rec_eig.append(eig.copy())
+                S.rec_phase.append(phase_diffs.copy())
+                S.rec_R.append(np.array(R, dtype=np.complex128).copy())
+                S.rec_has_sig.append(bool(has_doa))
             S.frame_n += 1
 
 
 # =============================================================================
-# UI: 6 pannelli — bussola, heatmap 2D, autovalori, storia az/el, fasi
+# UI: 6 panels — polar compass, 2D heatmap, eigenvalues, az/el history, phases
 # =============================================================================
 
 def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
@@ -342,8 +344,8 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
     ax_2d = fig.add_subplot(gs[0, 1], facecolor=BG2)
     ax_2d.set_facecolor(BG2)
     ax_2d.set_xlabel("Azimuth [°]", color=C_MUT, fontsize=8)
-    ax_2d.set_ylabel("Elevazione [°]", color=C_MUT, fontsize=8)
-    ax_2d.set_title("Spettro 2D  az × el", color=C_TEXT, fontsize=9)
+    ax_2d.set_ylabel("Elevation [°]", color=C_MUT, fontsize=8)
+    ax_2d.set_title("2D spectrum  az × el", color=C_TEXT, fontsize=9)
     ax_2d.tick_params(colors=C_MUT, labelsize=7)
     for sp in ax_2d.spines.values():
         sp.set_edgecolor(C_BDR)
@@ -360,10 +362,10 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
     xh_h, = ax_2d.plot([0, 360],   [el_min, el_min], "--", color=C_LIME, lw=0.9, alpha=0.7)
     peak_dot, = ax_2d.plot([0], [el_min], "o", color=C_LIME, ms=6, zorder=6)
 
-    # ── [0,2]  Autovalori + readout ───────────────────────────────────────────
+    # ── [0,2]  Eigenvalues + readout ──────────────────────────────────────────
     ax_q = fig.add_subplot(gs[0, 2], facecolor=BG2)
     ax_q.set_facecolor(BG2)
-    ax_q.set_title("Autovalori + qualità", color=C_TEXT, fontsize=9)
+    ax_q.set_title("Eigenvalues + quality", color=C_TEXT, fontsize=9)
     ax_q.set_xlabel("Canale", color=C_MUT, fontsize=8)
     ax_q.set_ylabel("Spread [dB]", color=C_MUT, fontsize=8)
     ax_q.set_xlim(-0.5, 4.5)
@@ -393,8 +395,8 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
     # ── [1,0]  Storia azimuth rolling ─────────────────────────────────────────
     ax_az = fig.add_subplot(gs[1, 0], facecolor=BG2)
     ax_az.set_facecolor(BG2)
-    ax_az.set_title("Storia  azimuth", color=C_TEXT, fontsize=9)
-    ax_az.set_xlabel("Frame recenti →", color=C_MUT, fontsize=8)
+    ax_az.set_title("Azimuth history", color=C_TEXT, fontsize=9)
+    ax_az.set_xlabel("Recent frames →", color=C_MUT, fontsize=8)
     ax_az.set_ylabel("Az [°]", color=C_MUT, fontsize=8)
     ax_az.set_xlim(0, H)
     ax_az.set_ylim(0, 360)
@@ -406,11 +408,11 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
     az_line,     = ax_az.plot([], [], "-",  color=C_LIME,       lw=1.4)
     az_med_line, = ax_az.plot([], [], "--", color=C_LIME,       lw=0.8, alpha=0.45)
 
-    # ── [1,1]  Storia elevazione rolling ─────────────────────────────────────
+    # ── [1,1]  Elevation history ──────────────────────────────────────────────
     ax_el = fig.add_subplot(gs[1, 1], facecolor=BG2)
     ax_el.set_facecolor(BG2)
-    ax_el.set_title("Storia  elevazione", color=C_TEXT, fontsize=9)
-    ax_el.set_xlabel("Frame recenti →", color=C_MUT, fontsize=8)
+    ax_el.set_title("Elevation history", color=C_TEXT, fontsize=9)
+    ax_el.set_xlabel("Recent frames →", color=C_MUT, fontsize=8)
     ax_el.set_ylabel("El [°]", color=C_MUT, fontsize=8)
     ax_el.set_xlim(0, H)
     ax_el.set_ylim(el_min, el_max)
@@ -423,8 +425,8 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
     # ── [1,2]  Differenze di fase inter-canale ────────────────────────────────
     ax_ph = fig.add_subplot(gs[1, 2], facecolor=BG2)
     ax_ph.set_facecolor(BG2)
-    ax_ph.set_title("ΔΦ  CH1..4 – CH0  (da matrice di covarianza)", color=C_TEXT, fontsize=9)
-    ax_ph.set_xlabel("Frame recenti →", color=C_MUT, fontsize=8)
+    ax_ph.set_title("ΔΦ  CH1..4 – CH0  (from covariance matrix)", color=C_TEXT, fontsize=9)
+    ax_ph.set_xlabel("Recent frames →", color=C_MUT, fontsize=8)
     ax_ph.set_ylabel("ΔΦ [°]", color=C_MUT, fontsize=8)
     ax_ph.set_xlim(0, H)
     ax_ph.set_ylim(-185, 185)
@@ -563,16 +565,32 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
 # Salvataggio recording
 # =============================================================================
 
-def _save_recording(S: SimpleNamespace, freq_hz: int, algo: str) -> None:
-    """Salva su .npz il buffer dati accumulato durante la sessione."""
+def _save_recording(
+    S: SimpleNamespace,
+    freq_hz: int,
+    algo: str,
+    out_dir: str | None = None,
+    label: str = "doa_data",
+) -> str | None:
+    """
+    Save the accumulated session buffer to a compressed .npz file.
+
+    Parameters
+    ----------
+    out_dir : directory to write into (default: same directory as this script).
+    label   : filename prefix, e.g.  "doa_data" → doa_data_20260428_153201.npz
+              Use "doa_checkpoint" for periodic auto-saves.
+    """
     import datetime
     n = len(S.rec_t)
     if n == 0:
-        print("[REC] Nessun frame acquisito — file non salvato.")
-        return
+        print("[REC] No frames recorded — file not saved.")
+        return None
+    if out_dir is None:
+        out_dir = os.path.dirname(os.path.abspath(__file__))
+    os.makedirs(out_dir, exist_ok=True)
     ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        f"doa_data_{ts}.npz")
+    path = os.path.join(out_dir, f"{label}_{ts}.npz")
     np.savez_compressed(
         path,
         timestamps  = np.array(S.rec_t,       dtype=np.float64),   # (N,)
@@ -581,14 +599,41 @@ def _save_recording(S: SimpleNamespace, freq_hz: int, algo: str) -> None:
         papr_db     = np.array(S.rec_papr,     dtype=np.float32),   # (N,)
         snr_db      = np.array(S.rec_snr,      dtype=np.float32),   # (N,)
         eig_db      = np.array(S.rec_eig,      dtype=np.float32),   # (N, 5)
-        phase_diffs = np.array(S.rec_phase,    dtype=np.float32),   # (N, 4) gradi
+        phase_diffs = np.array(S.rec_phase,    dtype=np.float32),   # (N, 4) [deg]
         R_real      = np.real(np.array(S.rec_R, dtype=np.complex128)),  # (N, 5, 5)
         R_imag      = np.imag(np.array(S.rec_R, dtype=np.complex128)),  # (N, 5, 5)
         has_signal  = np.array(S.rec_has_sig,  dtype=bool),          # (N,)
         freq_hz     = np.int64(freq_hz),
         algo        = np.bytes_(algo.encode()),
     )
-    print(f"[REC] {n} frame salvati → {path}")
+    n_sig = int(np.sum(S.rec_has_sig))
+    print(f"[REC] {n} frames ({n_sig} valid, {n_sig*100//max(n,1)}%) → {path}")
+    return path
+
+
+# =============================================================================
+# Periodic auto-save
+# =============================================================================
+
+def _autosave_loop(
+    S: SimpleNamespace, freq_hz: int, algo: str,
+    out_dir: str | None, rec_every: int,
+) -> None:
+    """
+    Background thread: write a checkpoint .npz every *rec_every* new frames.
+
+    The checkpoint overwrites the previous file (same basename with a fresh
+    timestamp) so disk space stays bounded.  Full session file is always
+    written at clean exit by main().
+    """
+    last_n = 0
+    while S.running:
+        time.sleep(5)   # poll every 5 s
+        with S.lock:
+            n = len(S.rec_t)
+        if n >= last_n + rec_every and S.running:
+            _save_recording(S, freq_hz, algo, out_dir=out_dir, label="doa_checkpoint")
+            last_n = n
 
 
 # =============================================================================
@@ -611,6 +656,13 @@ def main() -> None:
     p.add_argument("--alpha",  type=float, default=C.COV_ALPHA,      help="EMA covariance factor")
     p.add_argument("--demo",   action="store_true",
                    help="Synthetic CW at az=45° (no hardware required)")
+    p.add_argument("--out-dir",  default=None, metavar="DIR",
+                   help="Directory to write .npz recordings "
+                        "(default: same directory as this script)")
+    p.add_argument("--no-rec",   action="store_true",
+                   help="Disable recording (no .npz written)")
+    p.add_argument("--rec-every", type=int, default=300, metavar="N",
+                   help="Auto-save checkpoint every N frames; 0 = only at exit")
     args = p.parse_args()
 
     freq_hz = int(args.freq * 1e6)
@@ -623,6 +675,8 @@ def main() -> None:
     )
     acc = CovarianceAccumulatorUca(alpha=args.alpha)
     S   = _make_state(cfg.n_az, cfg.n_el)
+    S.rec_enabled = not args.no_rec
+    out_dir = getattr(args, "out_dir", None)
 
     pilot_str = (
         f"pilot-tone +{C.PILOT_TONE_OFFSET_HZ/1e3:.0f} kHz  (bw {C.PILOT_TONE_BW_HZ/1e3:.0f} kHz)"
@@ -634,6 +688,11 @@ def main() -> None:
     print(f"  Heimdall: {C.HEIMDALL_HOST}:{C.HEIMDALL_PORT}")
     print(f"  Mode: {pilot_str}")
     print(f"  Amplitude normalise: {getattr(C, 'AMPLITUDE_NORMALIZE', True)}")
+    if S.rec_enabled:
+        rec_dir_str = out_dir or os.path.dirname(os.path.abspath(__file__))
+        print(f"  Recording: every {args.rec_every} frames → {rec_dir_str}")
+    else:
+        print("  Recording: DISABLED (--no-rec)")
 
     if not args.demo and not _check_heimdall(C.HEIMDALL_HOST, C.HEIMDALL_PORT):
         print(f"\n[ERROR] Heimdall not reachable at {C.HEIMDALL_HOST}:{C.HEIMDALL_PORT}")
@@ -659,12 +718,21 @@ def main() -> None:
         daemon=True,
     ).start()
 
+    # Auto-save background thread
+    if S.rec_enabled and args.rec_every > 0:
+        threading.Thread(
+            target=_autosave_loop,
+            args=(S, freq_hz, args.algo, out_dir, args.rec_every),
+            daemon=True,
+        ).start()
+
     _build_and_run_ui(S, cfg, algo=args.algo, freq_hz=freq_hz)
 
     S.running = False
     if src is not None:
         src.stop()
-    _save_recording(S, freq_hz=freq_hz, algo=args.algo)
+    if S.rec_enabled:
+        _save_recording(S, freq_hz=freq_hz, algo=args.algo, out_dir=out_dir)
     print("Session ended.")
 
 
