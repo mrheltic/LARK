@@ -98,8 +98,12 @@ _WINDOW_SAMPLES  = min(_BURST_SAMPLES + 512, _SF_SAMPLES - 256)
 
 # Energy detector: integrate over this many samples
 _ENERGY_WIN      = 256
+# Tone-scan window for preamble-onset localisation
+_TONE_SCAN_WIN   = 512   # points per FFT block (≈0.5 ms @ 1.024 MHz)
 # PAPR and display smoothing
-_PAPR_MIN_DB     = 3.0
+# Lowered from 3.0 → 2.0 (data-driven: burst session 20260428 shows PAPR≈4.4 dB
+# when preamble correctly aligned; 2.0 is a safe floor at –20 dB TX gain).
+_PAPR_MIN_DB     = 2.0
 _PAPR_FLAT_DB    = 2.0
 _SPEC_EMA        = 0.20  # faster update than CW: each burst is ~90ms
 
@@ -198,6 +202,55 @@ def _detect_bursts(iq: np.ndarray, threshold_factor: float = 6.0) -> list[int]:
             detections.append(int(blk * _ENERGY_WIN))
             last_blk = blk
     return detections
+
+
+# =============================================================================
+# Preamble-tone onset localisation
+# =============================================================================
+
+def _find_tone_onset(
+    iq:      np.ndarray,     # channel-0 samples, 1D complex
+    b_start: int,            # energy-detector burst onset (sample index)
+    n_total: int,            # total samples available in iq
+    tone_hz: float = float(_PREAMBLE_TONE_HZ),
+    fs:      float = _FS,
+    win:     int   = _TONE_SCAN_WIN,
+) -> int:
+    """
+    Scan a neighbourhood around the energy-detector onset and return the
+    sample position with the highest FFT power at ``tone_hz``.
+
+    Why: the IRA slot is  Guard(silence) → Preamble(tone@3125 Hz) → Data(wideband).
+    The wideband energy detector can fire at ANY point in the active slot.  If
+    it fires on the DATA portion the fixed extraction ``X[:, :_PRE_SAMPLES]``
+    captures wideband signal → near-flat MUSIC spectrum → low PAPR → rejected.
+
+    This function searches [b_start − _BURST_SAMPLES, b_start + _PRE_SAMPLES]
+    (≈ one full IRA slot backwards + one preamble forwards) so the preamble is
+    found regardless of when the detector fired.  The 3125 Hz tone power in a
+    512-sample FFT block is ~17 dB above wideband data floor, making the
+    distinction reliable even at SNR ≈ 0 dB.
+    """
+    freqs    = np.fft.rfftfreq(win, d=1.0 / fs)
+    bin_idx  = int(np.argmin(np.abs(freqs - tone_hz)))
+    step     = win // 2                              # 50 % overlap
+    scan_sta = max(0, b_start - _BURST_SAMPLES)      # look back up to one full burst
+    scan_end = min(b_start + _PRE_SAMPLES, n_total - win)
+
+    if scan_end <= scan_sta:
+        return b_start   # not enough context — fall back to raw onset
+
+    best_pwr = -1.0
+    best_pos =  b_start
+    for pos in range(scan_sta, scan_end, step):
+        F   = np.fft.rfft(iq[pos: pos + win])
+        pwr = float(abs(F[bin_idx]) ** 2)
+        if pwr > best_pwr:
+            best_pwr = pwr
+            best_pos = pos
+
+    # Shift slightly back so the full preamble run-up is included.
+    return max(scan_sta, best_pos - win // 4)
 
 
 # =============================================================================
@@ -320,11 +373,17 @@ def _acq_loop(
             if b_end - b_start < _PRE_SAMPLES:
                 continue   # too close to end of buffer
 
-            # Extract multi-channel burst window
-            X_burst = X_stream[:, b_start: b_end]
+            # Locate the actual IRA preamble tone within the burst window.
+            # The energy detector may fire on the DATA portion (wideband → low
+            # PAPR); scanning for the 3125 Hz peak corrects the alignment.
+            tone_start = _find_tone_onset(
+                X_stream[0], b_start, n_total
+            )
+            tone_end = min(tone_start + _PRE_SAMPLES, n_total)
+            if tone_end - tone_start < _PRE_SAMPLES // 2:
+                continue   # not enough preamble to process
 
-            # Use only preamble portion for DoA (cleanest CW-like signal)
-            X_pre = X_burst[:, : _PRE_SAMPLES]
+            X_pre = X_stream[:, tone_start: tone_end]
 
             pwr_db = float(10 * np.log10(np.mean(np.abs(X_pre) ** 2) + 1e-20))
 

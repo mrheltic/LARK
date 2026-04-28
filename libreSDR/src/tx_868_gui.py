@@ -94,7 +94,10 @@ DEFAULT_URI       = "ip:192.168.1.10"
 DEFAULT_FREQ_HZ   = 868_100_000   # 868.1 MHz ISM
 TX_SAMPLE_RATE    = 1_000_000     # 1 MSPS (reliable over Ethernet/USB)
 TX_RF_BW          = 200_000       # 200 kHz
-DEFAULT_TX_GAIN   = -40.0         # dB attenuation (start at -40; -89.75 = min power)
+DEFAULT_TX_GAIN   = -20.0         # dB attenuation (start at -20; -89.75 = min power)
+# NOTE (data-driven, 2026-04-28): at -40 dB RX SNR ≈ 1.5 dB → only 1% of bursts
+# valid.  At -20 dB (+20 dB), expected SNR ≈ 21 dB → ~100% valid.
+# Reduce back toward -40 if ADC saturates (check KrakenSDR eigenvalue spread > 20 dB).
 RX_GAIN_DB        = 30.0
 RX_GAIN_MODE      = "slow_attack"
 

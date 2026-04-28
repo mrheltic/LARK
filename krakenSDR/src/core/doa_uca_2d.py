@@ -433,11 +433,17 @@ def doa_music_uca_2d(
     R = _decor_cov(_get_cov(X, R_in), decorr)
     M = R.shape[0]
 
-    eigenvalues, eigenvectors = np.linalg.eigh(R)   # autovalori crescenti
+    # Adaptive diagonal loading: applied BEFORE eigendecomposition so MDL and
+    # the noise-subspace selection both benefit from the regularised matrix.
+    # Loading = 5 % of the average diagonal (trace/M); at normal SNR this is
+    # negligible, but at very low SNR it floors near-zero eigenvalues and
+    # stabilises the noise-subspace estimate.
+    # Note: delta*I loading shifts all eigenvalues by +delta but leaves
+    # eigenvectors unchanged, so the signal/noise subspace geometry is preserved.
+    diag_load = 0.05 * max(float(np.real(np.trace(R))) / M, 1e-20)
+    R = R + diag_load * np.eye(M, dtype=complex)
 
-    # Diagonal loading leggero: evita singolarità senza distorcere il sottospazio
-    eps = 1e-6 * max(float(abs(eigenvalues[-1])), 1e-20)
-    R   = R + eps * np.eye(M, dtype=complex)
+    eigenvalues, eigenvectors = np.linalg.eigh(R)   # autovalori crescenti
 
     # Auto-detect sorgenti via MDL (Wax & Kailath 1985) se num_expected_signals == 0
     if cfg.num_expected_signals == 0:

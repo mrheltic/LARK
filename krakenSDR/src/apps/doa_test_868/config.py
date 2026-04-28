@@ -78,7 +78,9 @@ ANT0_OFFSET_DEG = 0.0
 # Measure on the field with TX at a known angle (e.g. 0° = North → ant0 points North).
 
 # ── RF / Frequency ────────────────────────────────────────────────────────────
-FREQ_HZ   = 865_197_800   # [Hz] — matched to LibreSDR TX; Arduino beacon at 865.1978 MHz
+FREQ_HZ   = 868_100_000   # [Hz] — LibreSDR tx_868_gui.py default (868.1 MHz ISM)
+#                          #  BURST mode: π/4-DQPSK IRA preamble tone at +Rs/8 = +3125 Hz
+#                          #  CW pilot mode:  set PILOT_TONE_OFFSET_HZ = 100_000
 GAIN_DB   = 40            # KrakenSDR IF gain [dB].
 #                          #  From field recordings SNR~31 dB at GAIN=20 but only 32% valid
 #                          #  frames.  Raising to 40 dB ensures all frames clear squelch.
@@ -113,11 +115,12 @@ SQUELCH_THRESHOLD_DB = -60.0
 # From field data: valid frames at GAIN=20 had power ≈ −50…−40 dBW.
 # −60 dBW is a conservative floor; raise to −50 if noise bursts cause ghost estimates.
 
-EIG_SPREAD_MIN_DB = 3.0
+EIG_SPREAD_MIN_DB = 2.5
 # Minimum eigenvalue spread (λ_max / λ_noise in dB) to declare signal present.
-# Lowered from 4.0 to 3.0: recordings show genuine signal at 3–4 dB spread
-# with indoor multipath averaging out the dominant eigenvalue slightly.
-# Reduce to 2.0 only if the beacon is very weak; raise above 5.0 in clean outdoor tests.
+# Lowered from 3.0 → 2.5 (data-driven, burst session 20260428, N=3101):
+#   all 3101 detected bursts had λ1 ≥ 2.5 dB even at TX gain = −40 dB (SNR≈0 dB).
+#   Valid bursts (PAPR≥4 dB) showed λ1 ≈7 dB.  The 2.5 dB floor rejects only
+#   pure-noise frames while accepting weak-signal preamble captures.
 
 # ── Pilot tone extraction ─────────────────────────────────────────────────────
 SAMPLE_RATE_HZ        = 1_024_000
@@ -138,10 +141,11 @@ PILOT_TONE_OFFSET_HZ  = 100_000
 #   bin = 100 000 × 131 072 / 1 024 000 = 12 800  (integer → zero spectral leakage)
 # Must match --pilot-offset passed to tx_868_libresdr.py.
 
-PILOT_TONE_BW_HZ      = 10_000
+PILOT_TONE_BW_HZ      = 15_000
 # Extraction bandwidth [Hz].  Wider = higher tolerance for TX frequency drift;
-# narrower = more noise rejection.  10 kHz is a good compromise for a stable
-# TCXO-based LibreSDR.  Reduce to 5 kHz if LibreSDR frequency is very stable.
+# narrower = more noise rejection.  Raised from 10 kHz → 15 kHz (2026-04-28):
+# at 868.1 MHz the AD9363 TCXO drift can reach ±3–4 kHz; 15 kHz ensures the
+# tone stays within the extraction window.  SNR penalty vs 10 kHz: <1 dB.
 
 # ── Per-channel amplitude normalisation ──────────────────────────────────────
 AMPLITUDE_NORMALIZE = True
