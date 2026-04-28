@@ -231,8 +231,13 @@ def _find_tone_onset(
     512-sample FFT block is ~17 dB above wideband data floor, making the
     distinction reliable even at SNR ≈ 0 dB.
     """
-    freqs    = np.fft.rfftfreq(win, d=1.0 / fs)
-    bin_idx  = int(np.argmin(np.abs(freqs - tone_hz)))
+    # Matched-filter template: optimally detects a pure sinusoid at tone_hz
+    # regardless of FFT bin alignment.  At 1.024 MHz, 3125 Hz falls between
+    # bins 1 (2000 Hz) and 2 (4000 Hz) for win=512 → the closest bin holds
+    # only ~56% of the tone energy.  The matched filter captures 100%.
+    t_arr    = np.arange(win, dtype=np.float64)
+    template = np.exp(2j * np.pi * tone_hz / fs * t_arr)
+
     step     = win // 2                              # 50 % overlap
     scan_sta = max(0, b_start - _BURST_SAMPLES)      # look back up to one full burst
     scan_end = min(b_start + _PRE_SAMPLES, n_total - win)
@@ -243,8 +248,8 @@ def _find_tone_onset(
     best_pwr = -1.0
     best_pos =  b_start
     for pos in range(scan_sta, scan_end, step):
-        F   = np.fft.rfft(iq[pos: pos + win])
-        pwr = float(abs(F[bin_idx]) ** 2)
+        seg = iq[pos: pos + win]
+        pwr = float(abs(np.dot(np.conj(seg), template)) ** 2)
         if pwr > best_pwr:
             best_pwr = pwr
             best_pos = pos
@@ -394,9 +399,28 @@ def _acq_loop(
             if _amp_norm:
                 X_nb = amplitude_normalize_channels(X_nb)
 
-            # ── Instantaneous covariance (fresh per burst, no EMA) ────────────
+            # ── Covariance: instantaneous (per burst) + selective EMA update ──
             try:
-                R = acc.update(X_nb)
+                # Instantaneous R from the current preamble window.
+                # Phase diffs, SNR, and eigenvalue spread MUST come from R_inst
+                # to avoid the EMA-contamination problem: in session 20260428
+                # (burst_data_153622), 309 consecutive garbage bursts (idx 37–345)
+                # shifted EMA phase by >60° and disabled valid-burst detection
+                # for 28 s.  R_inst is burst-by-burst stable regardless of
+                # what happened in previous slots.
+                R_inst = (X_nb @ X_nb.conj().T) / X_nb.shape[1]
+
+                phase_diffs = np.degrees(np.angle(R_inst[1:, 0]))
+                snr         = snr_uca_db(R_inst)
+                eig         = eigenvalue_spread_uca_db(R_inst)
+
+                # EMA pre-gate: only update when instantaneous eigenspread ≥ 1.5 dB.
+                # Prevents misaligned (wideband DATA) bursts from polluting the
+                # MUSIC noise subspace used for DoA.
+                if eig[0] >= 1.5:
+                    R = acc.update(X_nb)
+                else:
+                    R = acc.R if acc.R is not None else R_inst
 
                 _el_now   = S.el_deg
                 _use_algo = algo
@@ -421,10 +445,6 @@ def _acq_loop(
                     if papr_b > papr:
                         spec2d, az, el_est, papr = spec2d_b, az_b, el_b, papr_b
                         az_spec = np.max(spec2d, axis=0)
-
-                eig         = eigenvalue_spread_uca_db(R)
-                snr         = snr_uca_db(R)
-                phase_diffs = np.degrees(np.angle(R[1:, 0]))
             except Exception as exc:
                 print(f"[DoA] burst #{S.burst_n+1}: {exc}")
                 continue
