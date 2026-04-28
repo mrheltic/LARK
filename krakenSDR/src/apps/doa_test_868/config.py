@@ -110,6 +110,31 @@ COV_ALPHA  = 0.90         # EMA weight  (time constant τ = 1/(1-α) frames)
 #                          # τ converges faster and tracks slow hardware drift).
 #                          # Lower to 0.50–0.70 for moving sources.
 
+AZ_SMOOTH_ALPHA = 0.50
+# Circular EMA smoothing on the per-burst az angle estimate.
+# τ = 1 / (1 − α) valid-preamble bursts.  At 0.50 → τ ≈ 2 bursts ≈ 0.76 s at
+# the 2.6 Hz preamble-detection rate observed in field recordings.
+# Tracks TX movements with ~1.5 s lag; higher values mean slower but smoother display.
+# Set to 0.0 to disable (raw per-burst output).
+
+# ── Hardware phase calibration ────────────────────────────────────────────────
+CHANNEL_PHASE_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
+# Per-channel phase offset correction [degrees], relative to channel 0 (reference).
+# Compensates for cable-length differences and ADC input imbalances.
+# WITHOUT calibration: instantaneous MUSIC PAPR drops from 33 dB to ~14-17 dB
+# for ±10-15° hardware errors, reducing preamble detection rate.
+#
+# Auto-calibration procedure:
+#   1. Place TX at a KNOWN azimuth (e.g. 20.0°) with good line-of-sight.
+#   2. Run:  python3 doa_test_868_burst.py --calibrate 20.0
+#   3. The script prints the computed CHANNEL_PHASE_OFFSETS_DEG values.
+#   4. Copy them here and restart.
+#
+# Manual calibration (when TX azimuth is unknown):
+#   1. Run with demo mode to confirm the array geometry is correct.
+#   2. Compare displayed phase_diffs against expected geometry phases.
+#   3. Iterate until az_median matches ground truth.
+
 # ── Squelch ───────────────────────────────────────────────────────────────────
 SQUELCH_ENABLED      = True
 SQUELCH_THRESHOLD_DB = -60.0

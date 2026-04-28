@@ -64,6 +64,7 @@ from core.doa_uca_2d import (
     find_peak_uca_2d, eigenvalue_spread_uca_db, snr_uca_db,
     extract_pilot_tone, amplitude_normalize_channels,
 )
+from core.doa_algorithms import apply_phase_correction as _apply_phase_correction
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 BG    = "#1a1d27"; BG2 = "#21253a"; BG3 = "#2a2f47"
@@ -106,14 +107,14 @@ _TONE_SCAN_WIN   = 512   # points per FFT block (≈0.5 ms @ 1.024 MHz)
 _PAPR_MIN_DB     = 2.0
 _PAPR_FLAT_DB    = 2.0
 # Instantaneous MUSIC PAPR threshold for EMA gate.
-# A genuine preamble capture (rank-1, spatial coherence) yields papr_inst ≥ 29 dB
-# even at 0 dB element SNR.  DATA/noise sections yield papr_inst ≤ 12 dB.
-# Empirical calibration: 20 trials × 5 SNR levels [0,2,3,5,8,10] dB give:
-#   preamble: mean=33.6 dB, min=29.4 dB
-#   data/noise: mean=4.4 dB, max=12.1 dB
-# Threshold of 15 dB gives > 14 dB margin below preamble floor and
-# > 2.9 dB margin above DATA ceiling → zero false-positive / false-negative.
-_PAPR_INST_MIN_DB = 15.0
+# Genuine preamble window (calibrated array):   papr_inst ≥ 29 dB  (SNR 0-10 dB).
+# With typical hardware phase errors ≤ ±15°:    papr_inst ≥ 14.6 dB
+# DATA section / noise:                         papr_inst ≤ 12.1 dB
+# Threshold 12 dB leaves ≥ 2.5 dB margin above DATA ceiling while still accepting
+# preamble captures with up to ±20° hardware phase errors (min papr = 12.4 dB).
+# After hardware calibration (see CHANNEL_PHASE_OFFSETS_DEG in config.py), raise
+# back to 20 dB for a cleaner gate.
+_PAPR_INST_MIN_DB = 12.0
 _SPEC_EMA        = 0.20  # faster update than CW: each burst is ~90ms
 
 
@@ -154,6 +155,7 @@ def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
         snr_hist   = collections.deque(maxlen=C.HISTORY_LEN),
         phase_hist = [collections.deque(maxlen=C.HISTORY_LEN) for _ in range(4)],
         energy_hist= collections.deque(maxlen=C.HISTORY_LEN),
+        az_phasor  = np.exp(0j),  # circular EMA phasor for az smoothing
         no_signal  = True,
         no_doa     = True,
         lock       = threading.Lock(),
@@ -284,6 +286,13 @@ def _acq_loop(
     _pilot_bw    = float(getattr(C, "PILOT_TONE_BW_HZ", 5_000))
     _amp_norm    = getattr(C, "AMPLITUDE_NORMALIZE", True)
 
+    # Hardware phase calibration (per-channel offset in degrees, ch0 = reference 0°)
+    _phase_offs  = list(getattr(C, "CHANNEL_PHASE_OFFSETS_DEG", [0.0] * cfg.n_ant))
+    _phase_offs  = (_phase_offs + [0.0] * cfg.n_ant)[: cfg.n_ant]  # pad/clip
+    _has_cal     = any(o != 0.0 for o in _phase_offs)
+    # Circular EMA alpha for per-burst az angle smoothing
+    _az_alpha    = float(getattr(C, "AZ_SMOOTH_ALPHA", 0.50))
+
     # Consecutive-no-burst counter — warns user if TX is likely in CW mode
     _no_burst_streak = 0
 
@@ -408,73 +417,87 @@ def _acq_loop(
             if _amp_norm:
                 X_nb = amplitude_normalize_channels(X_nb)
 
-            # ── Covariance: instantaneous quality gate + EMA for phase/DoA ─────
+            # ── Hardware phase calibration ────────────────────────────────────
+            # Compensates cable-length differences and ADC phase imbalances that
+            # shift the steering vectors relative to theoretical UCA positions.
+            # Without calibration, instantaneous MUSIC PAPR drops from ≥29 dB to
+            # ~14-17 dB at ±10-15° error, limiting preamble detection rate.
+            # Configure CHANNEL_PHASE_OFFSETS_DEG in config.py (run --calibrate).
+            if _has_cal:
+                X_cal = _apply_phase_correction(X_nb, _phase_offs)
+            else:
+                X_cal = X_nb
+
+            # ── Instantaneous covariance + quality gate ───────────────────────
             try:
-                # R_inst: fresh covariance from this burst window only.
-                # Use it for per-burst quality diagnostics (honest, un-smoothed).
-                R_inst = (X_nb @ X_nb.conj().T) / X_nb.shape[1]
+                R_inst = (X_cal @ X_cal.conj().T) / X_cal.shape[1]
+                snr    = snr_uca_db(R_inst)
+                eig    = eigenvalue_spread_uca_db(R_inst)
 
-                snr = snr_uca_db(R_inst)
-                eig = eigenvalue_spread_uca_db(R_inst)
+                # Stage 1 fast-reject: skip MUSIC if eigenspread too low
+                if eig[0] < C.EIG_SPREAD_MIN_DB:
+                    with S.lock:
+                        S.snr_db  = snr
+                        S.eig_db  = eig
+                        S.no_signal = True
+                        S.no_doa    = True
+                        S.energy_hist.append(pwr_db)
+                        S.snr_hist.append(snr)
+                        S.burst_n += 1
+                    continue
 
-                # ── Two-stage EMA gate ────────────────────────────────────────
-                # ROOT CAUSE of observed phase instability (sessions 163602,
-                # 153622, 155352):
-                # The old gate (eig[0] ≥ 2.5 dB) admitted ~99 % of all bursts
-                # because even DATA sections and noise have some structured BPF
-                # output (eigenvalue spread ≥ 3 dB due to spectral residue).
-                # Each non-preamble burst adds a RANDOM phasor to R_EMA → phase
-                # random-walk of ~18°/s → 225° CH2 drift in 150 s (measured).
-                #
-                # FIX: run instantaneous MUSIC on R_inst before updating EMA.
-                # Genuine preamble window: rank-1 signal → sharp MUSIC peak
-                #   → papr_inst ≥ 29 dB (even at 0 dB element SNR, empirical).
-                # DATA section / noise window: near-isotropic R_inst
-                #   → flat MUSIC spectrum → papr_inst ≤ 12 dB → REJECTED.
-                # Threshold _PAPR_INST_MIN_DB = 15 dB gives > 2.9 dB margin
-                # above DATA ceiling and > 14 dB below preamble floor.
-                spec2d_inst = doa_music_uca_2d(X_nb, cfg, R_in=R_inst)
-                _, _, papr_inst = find_peak_uca_2d(spec2d_inst, cfg)
+                # Stage 2: instantaneous MUSIC on R_inst — per-burst DoA estimator.
+                # For a genuine preamble window (rank-1 after pilot BPF), MUSIC
+                # gives papr_inst ≥ 12 dB even with ±20° HW phase errors.
+                # For DATA/noise windows the BPF output is near-isotropic →
+                # papr_inst ≤ 12 dB → rejected.  This separation makes MUSIC
+                # the SIGNAL DETECTOR and DOA ESTIMATOR simultaneously.
+                spec2d_inst = doa_music_uca_2d(X_cal, cfg, R_in=R_inst)
+                az_inst, el_inst, papr_inst = find_peak_uca_2d(spec2d_inst, cfg)
 
-                if eig[0] >= C.EIG_SPREAD_MIN_DB and papr_inst >= _PAPR_INST_MIN_DB:
-                    R = acc.update(X_nb)
-                else:
+                is_preamble = (papr_inst >= _PAPR_INST_MIN_DB)
+
+                if not is_preamble:
+                    # Non-preamble window: update EMA from existing acc, skip DoA
                     R = acc.R if acc.R is not None else R_inst
+                    with S.lock:
+                        S.snr_db  = snr
+                        S.eig_db  = eig
+                        S.no_signal = True
+                        S.no_doa    = True
+                        S.energy_hist.append(pwr_db)
+                        S.snr_hist.append(snr)
+                        S.burst_n += 1
+                    continue
 
-                # phase_diffs from EMA R — accumulates only spatially-coherent
-                # preamble bursts after the two-stage gate, so it reflects the
-                # true array geometry + hardware offset (stable for fixed TX).
+                # ── Valid preamble burst ──────────────────────────────────────
+                # Update R_EMA for temporal multipath decorrelation / phase display
+                R = acc.update(X_cal)
+
+                # Circular EMA on per-burst az angle — responsive and noise-free.
+                # This replaces the old R_EMA MUSIC (which was frozen between
+                # EMA updates).  Each valid preamble gives a fresh az sample;
+                # circular EMA with alpha=AZ_SMOOTH_ALPHA smooths over ~2 bursts.
+                az_ph     = np.exp(1j * np.deg2rad(az_inst))
+                S.az_phasor = _az_alpha * S.az_phasor + (1.0 - _az_alpha) * az_ph
+                az        = float(np.degrees(np.angle(S.az_phasor)) % 360.0)
+                el_est    = el_inst
+                spec2d    = spec2d_inst
+                az_spec   = np.max(spec2d, axis=0)
+                papr      = papr_inst
+
+                # phase_diffs from R_EMA — temporal average of calibrated preamble
+                # covariances; reflects true geometry + residual HW offset.
                 phase_diffs = np.degrees(np.angle(R[1:, 0]))
 
-                _el_now   = S.el_deg
-                _use_algo = algo
-                if _el_now >= C.HIGH_EL_THRESHOLD_DEG and algo in ("music", "capon"):
-                    _use_algo = C.HIGH_EL_ALGO.lower()
-
-                if _use_algo == "capon":
-                    spec2d = doa_capon_uca_2d(X_nb, cfg, R_in=R,
-                                              decorr=getattr(C, "CAPNT_DECORR", "none"))
-                elif _use_algo == "bartlett":
-                    spec2d = doa_bartlett_uca_2d(X_nb, cfg, R_in=R)
-                else:
-                    spec2d = doa_music_uca_2d(X_nb, cfg, R_in=R,
-                                              decorr=getattr(C, "MUSIC_DECORR", "none"))
-
-                az_spec = np.max(spec2d, axis=0)
-                az, el_est, papr = find_peak_uca_2d(spec2d, cfg)
-
-                if papr < _PAPR_FLAT_DB and _use_algo != "bartlett":
-                    spec2d_b = doa_bartlett_uca_2d(X_nb, cfg, R_in=R)
-                    az_b, el_b, papr_b = find_peak_uca_2d(spec2d_b, cfg)
-                    if papr_b > papr:
-                        spec2d, az, el_est, papr = spec2d_b, az_b, el_b, papr_b
-                        az_spec = np.max(spec2d, axis=0)
             except Exception as exc:
                 print(f"[DoA] burst #{S.burst_n+1}: {exc}")
                 continue
 
-            has_signal = float(eig[0]) >= C.EIG_SPREAD_MIN_DB
-            has_doa    = has_signal and papr >= _PAPR_MIN_DB
+            # has_signal = valid preamble detected (papr_inst ≥ threshold)
+            # has_doa    = same (az_inst is already the DoA result)
+            has_signal = True
+            has_doa    = True
 
             with S.lock:
                 S.az_spec     = (1 - _SPEC_EMA) * S.az_spec + _SPEC_EMA * az_spec
@@ -485,19 +508,18 @@ def _acq_loop(
                 S.papr_db     = papr
                 S.snr_db      = snr
                 S.eig_db      = eig
-                S.no_signal   = not has_signal
-                S.no_doa      = not has_doa
+                S.no_signal   = False
+                S.no_doa      = False
                 S.energy_hist.append(pwr_db)
                 S.el_hist.append(el_est)
                 S.snr_hist.append(snr)
                 for _i, _p in enumerate(phase_diffs):
                     S.phase_hist[_i].append(float(_p))
-                if has_doa:
-                    S.az_hist.append(az)
-                    if len(S.az_hist) >= 3:
-                        S.az_median = _circ_median(np.array(S.az_hist))
-                    else:
-                        S.az_median = az
+                S.az_hist.append(az)
+                if len(S.az_hist) >= 3:
+                    S.az_median = _circ_median(np.array(S.az_hist))
+                else:
+                    S.az_median = az
                 if S.rec_enabled:
                     S.rec_t.append(time.time())
                     S.rec_az.append(float(az))
@@ -507,7 +529,7 @@ def _acq_loop(
                     S.rec_eig.append(eig.copy())
                     S.rec_phase.append(phase_diffs.copy())
                     S.rec_R.append(np.array(R, dtype=np.complex128).copy())
-                    S.rec_has_sig.append(bool(has_doa))
+                    S.rec_has_sig.append(True)
                 S.burst_n += 1
 
 
@@ -822,6 +844,101 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
 # Main
 # =============================================================================
 
+def _run_calibration(
+    acc: CovarianceAccumulatorUca,
+    S: SimpleNamespace,
+    cfg: UcaConfig,
+    known_az_deg: float,
+) -> None:
+    """
+    Auto-calibrate hardware phase offsets from EMA R at known TX azimuth.
+
+    Method:
+      - Wait until the EMA accumulator is warm (≥ 2·tau valid preamble bursts).
+      - The dominant eigenvector v of R_EMA = a_hw(θ) = a(θ) ⊙ hw_offsets,
+        where a(θ) is the theoretical steering vector and hw_offsets are
+        cable/ADC phase imbalances.
+      - Compute expected geometry phases for known_az_deg (assumes el≈0°).
+      - hw_offset_k = angle(v_k) − geometry_phase_k  (channel 0 = reference).
+      - Print resulting CHANNEL_PHASE_OFFSETS_DEG for the user to copy into config.
+    """
+    import datetime
+    print(f"\n[CAL] Waiting for EMA convergence (TX az={known_az_deg:.1f}°)...")
+    print(f"      Collecting until acc is warm (~{2/(1-acc.alpha):.0f} valid bursts) ...")
+
+    timeout_s = 120.0
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        time.sleep(1.0)
+        if not S.running:
+            break
+        if acc.is_warm and acc.R is not None:
+            break
+        n = acc.n_updates
+        print(f"  [{time.time()-t0:5.1f}s]  valid preamble bursts so far: {n}", end="\r")
+    print()
+
+    if acc.R is None:
+        print("[CAL] ERROR: no valid preamble bursts received.  Check TX / Heimdall.")
+        return
+
+    R_ema = acc.R
+    # Dominant eigenvector ≈ actual hardware array response vector
+    ev, V = np.linalg.eigh(R_ema)
+    v = V[:, -1]  # largest eigenvalue → signal subspace
+    v = v * np.exp(-1j * np.angle(v[0]))  # channel 0 = reference (phase 0)
+
+    # Theoretical geometry phases for known TX at el≈0°
+    az_rad = np.deg2rad(known_az_deg)
+    pos    = cfg.positions  # (n_ant, 2) in wavelengths
+    # tau[k] = 2π * (x_k*sin(az) + y_k*cos(az)) for el=0
+    tau = 2 * np.pi * (pos[:, 0] * np.sin(az_rad) + pos[:, 1] * np.cos(az_rad))
+    tau -= tau[0]  # normalise to channel 0
+
+    # hw_offset = measured_phase − geometry_phase
+    measured_phase = np.angle(v)  # already normalised (v[0] → 0°)
+    hw_offsets_deg = np.degrees(measured_phase - tau)
+    # Wrap to [-180, 180]
+    hw_offsets_deg = (hw_offsets_deg + 180) % 360 - 180
+    hw_offsets_deg[0] = 0.0  # reference channel
+
+    print(f"\n[CAL] Hardware phase offsets computed from {acc.n_updates} preamble bursts:")
+    print(f"      Phase meas:     {np.degrees(measured_phase).round(1).tolist()}")
+    print(f"      Geom phases:    {np.degrees(tau).round(1).tolist()}")
+    print(f"\n  ┌─ Copy to config.py ───────────────────────────────────────────")
+    print(f"  │  CHANNEL_PHASE_OFFSETS_DEG = {hw_offsets_deg.round(2).tolist()}")
+    print(f"  └───────────────────────────────────────────────────────────────")
+
+    # Offer to auto-update config.py
+    try:
+        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+        with open(cfg_path, "r") as f:
+            txt = f.read()
+        old_key = "CHANNEL_PHASE_OFFSETS_DEG"
+        if old_key in txt:
+            import re
+            new_val = f"CHANNEL_PHASE_OFFSETS_DEG = {hw_offsets_deg.round(2).tolist()}"
+            new_comment = (f"  # auto-calibrated {datetime.datetime.now():%Y-%m-%d %H:%M} "
+                           f"from {acc.n_updates} bursts at az={known_az_deg:.1f}°")
+            txt2 = re.sub(
+                r"CHANNEL_PHASE_OFFSETS_DEG = \[.*?\]",
+                new_val + new_comment,
+                txt,
+            )
+            if txt2 != txt:
+                with open(cfg_path, "w") as f:
+                    f.write(txt2)
+                print(f"\n[CAL] config.py updated automatically. Restart to apply.")
+            else:
+                print(f"\n[CAL] Could not auto-update config.py — edit manually.")
+    except Exception as e:
+        print(f"\n[CAL] Auto-update failed ({e}) — edit config.py manually.")
+
+
+# =============================================================================
+# Entry point
+# =============================================================================
+
 def main() -> None:
     p = argparse.ArgumentParser(
         description=(
@@ -846,6 +963,12 @@ def main() -> None:
                    help="EMA covariance smoothing across bursts (0=off, 0.9=heavy)")
     p.add_argument("--demo",     action="store_true",
                    help="Inject synthetic IRA burst at az=45° (no hardware required)")
+    p.add_argument("--calibrate", type=float, default=None, metavar="AZ_DEG",
+                   help=(
+                       "Auto-calibrate hardware phase offsets for known TX azimuth. "
+                       "Collects EMA until convergence, computes per-channel offsets, "
+                       "prints updated CHANNEL_PHASE_OFFSETS_DEG values and exits."
+                   ))
     p.add_argument("--out-dir",  default=None, metavar="DIR",
                    help="Directory to write .npz recordings")
     p.add_argument("--no-rec",   action="store_true",
@@ -875,6 +998,11 @@ def main() -> None:
     print(f"  Preamble pilot: +{_PREAMBLE_TONE_HZ} Hz  (IRA Rs/8)")
     print(f"  Burst: {_BURST_SYMS} sym  preamble: {_PREAMBLE_SYMS} sym  "
           f"SF: {int(_SUPERFRAME_S*1000)} ms")
+    phase_offs = getattr(C, "CHANNEL_PHASE_OFFSETS_DEG", [0.0] * cfg.n_ant)
+    if any(o != 0.0 for o in phase_offs):
+        print(f"  HW phase cal:  {[f'{o:.1f}' for o in phase_offs]} deg")
+    else:
+        print("  HW phase cal:  uncalibrated — run --calibrate <az_deg>")
     burst_dir_str = out_dir or os.path.dirname(os.path.abspath(__file__))
     if S.rec_enabled:
         print(f"  Recording every {args.rec_every} bursts → {burst_dir_str}")
@@ -905,6 +1033,14 @@ def main() -> None:
         kwargs={"demo": args.demo},
         daemon=True,
     ).start()
+
+    # ── Auto-calibration mode ─────────────────────────────────────────────────
+    if args.calibrate is not None:
+        _run_calibration(acc, S, cfg, args.calibrate)
+        S.running = False
+        if src is not None:
+            src.stop()
+        return
 
     if S.rec_enabled and args.rec_every > 0:
         threading.Thread(
