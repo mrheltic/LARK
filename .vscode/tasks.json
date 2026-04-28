@@ -1,16 +1,18 @@
 {
     "version": "2.0.0",
     "tasks": [
-        // ═══════════════════════════════════════════════════════════════════
-        // SETUP
-        // ═══════════════════════════════════════════════════════════════════
         {
             "label": "Setup: Full install",
             "type": "shell",
             "command": "bash setup.sh",
-            "options": { "cwd": "${workspaceFolder}" },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "group": "build",
-            "presentation": { "reveal": "always", "panel": "new" },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            },
             "problemMatcher": []
         },
         {
@@ -18,25 +20,25 @@
             "detail": "Installs NOPASSWD sudoers rules so Heimdall DAQ scripts run as root without a password prompt. Requires sudo password once.",
             "type": "shell",
             "command": "bash setup.sh --sudoers",
-            "options": { "cwd": "${workspaceFolder}" },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "group": "build",
-            "presentation": { "reveal": "always", "panel": "new", "focus": true },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "focus": true
+            },
             "problemMatcher": []
         },
-
-        // ═══════════════════════════════════════════════════════════════════
-        // HEIMDALL DAQ
-        // TCP ports: 5000 (IQ data) + 5001 (hw ctrl) — out_data_iface_type=eth
-        // start_heimdall.sh auto-detects the firmware dir
-        // (external/heimdall_daq_fw/Firmware) and installs the sudoers
-        // rule on first run so sudo bash daq_start_sm.sh never asks for a password.
-        // ═══════════════════════════════════════════════════════════════════
         {
             "label": "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
             "detail": "Auto-detects firmware path, copies Iridium config, installs sudoers if needed, then runs daq_start_sm.sh as root.",
             "type": "shell",
             "command": "LARK_ROOT=${workspaceFolder} bash ${workspaceFolder}/krakenSDR/src/scripts/start_heimdall.sh",
-            "options": { "cwd": "${workspaceFolder}" },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "isBackground": true,
             "presentation": {
                 "reveal": "always",
@@ -44,7 +46,10 @@
                 "focus": true
             },
             "problemMatcher": {
-                "pattern": { "regexp": "^(.*)$", "message": 1 },
+                "pattern": {
+                    "regexp": "^(.*)$",
+                    "message": 1
+                },
                 "background": {
                     "activeOnStart": true,
                     "beginsPattern": "Starting Heimdall DAQ",
@@ -52,16 +57,14 @@
                 }
             }
         },
-
-        // ═══════════════════════════════════════════════════════════════════
-        // KRAKENSDR — Iridium reception
-        // ═══════════════════════════════════════════════════════════════════
         {
             "label": "KrakenSDR: Iridium — burst detect (single channel)",
             "detail": "Iridium burst detector on a single antenna. Validates the HW chain before DoA.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/iridium/iridium_detector.py",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -74,7 +77,9 @@
             "detail": "Demodulates Iridium bursts and pipes RAW: lines to iridium-toolkit/iridium-parser.py for full protocol decode.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/iridium/iridium_live.py --freq 1626270000 | python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -87,7 +92,9 @@
             "detail": "DoA on Iridium bursts with MUSIC + Doppler tracking. Requires Heimdall active.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/doa/doa_runner.py",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "dependsOn": "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
             "presentation": {
@@ -101,24 +108,27 @@
             "detail": "Unit tests for DoA algorithms (MUSIC, ESPRIT, Capon, ML). No hardware needed.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 -m pytest tests/ -v --tb=short",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
-            "group": { "kind": "test", "isDefault": true },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
             "presentation": {
                 "reveal": "always",
                 "panel": "shared"
             },
             "problemMatcher": "$python"
         },
-
-        // ═══════════════════════════════════════════════════════════════════
-        // LIBRESDR — Iridium transmission
-        // ═══════════════════════════════════════════════════════════════════
         {
             "label": "LibreSDR: Check AD9363 connection",
             "detail": "IIO diagnostics: shows channels, frequencies and current gain of the AD9363.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 check_device.py",
-            "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/libreSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -131,7 +141,9 @@
             "detail": "Generates 4 IRA DQPSK bursts and transmits them once at 1626.270 MHz via AD9363.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 iridium_tx_libresdr.py",
-            "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/libreSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -144,7 +156,9 @@
             "detail": "Transmits IRA DQPSK bursts in a continuous cyclic DMA loop via AD9363.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 iridium_tx_libresdr.py --cyclic",
-            "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/libreSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -152,16 +166,14 @@
             },
             "problemMatcher": "$python"
         },
-
-        // ═══════════════════════════════════════════════════════════════════
-        // IRIDIUM TOOLKIT
-        // ═══════════════════════════════════════════════════════════════════
         {
             "label": "iridium-toolkit: Parse .bits file",
             "detail": "Parses a RAW: lines file with iridium-parser.py from external/iridium-toolkit/.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p ${input:bitsFile}",
-            "options": { "cwd": "${workspaceFolder}" },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -169,16 +181,14 @@
             },
             "problemMatcher": "$python"
         },
-
-        // ═══════════════════════════════════════════════════════════════════
-        // KRAKENSDR — 3D Space DoA (cross array 2D-MUSIC / 2D-Capon)
-        // ═══════════════════════════════════════════════════════════════════
         {
             "label": "KrakenSDR: Space DoA — Collect bursts",
             "detail": "Opens config dialog, connects to Heimdall, gates Iridium bursts from all 5 antennas, saves .npz/.json for offline 3D DoA. Requires Heimdall already running.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/space/space_collector.py",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -191,7 +201,9 @@
             "detail": "Real-time 3D DoA with sky plot + 8-panel display. Opens config dialog; supports BURST (Iridium gated) or CW mode. Requires Heimdall already running.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/space/space_doa_realtime.py",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -204,7 +216,9 @@
             "detail": "Opens a .npz capture from space_collector or the realtime recorder and replays the full 2D DoA pipeline offline.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/space/space_doa_playback.py",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -217,7 +231,9 @@
             "detail": "Loads a .npz recording, runs DoA pipeline, downloads Iridium TLE catalogue, and compares observed vs predicted satellite positions.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/space/iridium_pass_predict.py",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -230,7 +246,9 @@
             "detail": "Shows currently visible Iridium NEXT satellites with Az/El/Doppler (auto-detects GPS position).",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/space/iridium_pass_predict.py --predict-now",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -243,7 +261,9 @@
             "detail": "Predicts all Iridium NEXT passes above 10° for the next 2 hours.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/space/iridium_pass_predict.py --predict-window 2",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -251,18 +271,14 @@
             },
             "problemMatcher": "$python"
         },
-
-        // ═══════════════════════════════════════════════════════════════════
-        // 868 MHz UCA DoA TEST — 2D-MUSIC / Capon / Bartlett on 5-ant UCA
-        // TX beacon: LibreSDR tx_868_libresdr.py (CW cyclic, see task below)
-        // RX:        KrakenSDR 5-ch UCA + Heimdall DAQ on TCP:5000
-        // ═══════════════════════════════════════════════════════════════════
         {
             "label": "KrakenSDR: 868 MHz UCA — DoA 2D real-time (MUSIC)",
             "detail": "2D-MUSIC (azimuth + elevation) on the 5-element UCA at 868 MHz. Requires Heimdall active and LibreSDR beacon transmitting.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_realtime.py",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -275,7 +291,9 @@
             "detail": "2D-Capon (MVDR) on the 5-element UCA at 868 MHz. Less sensitive to source-count errors than MUSIC.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_realtime.py --algo capon",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -288,7 +306,9 @@
             "detail": "2D-MUSIC on the 5-element UCA at 868 MHz with continuous .npz recording to recordings/doa_868/. Auto-saves checkpoint every 300 frames. Requires Heimdall + LibreSDR pilot-tone beacon.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_realtime.py --out-dir ${workspaceFolder}/recordings/doa_868",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -296,18 +316,14 @@
             },
             "problemMatcher": "$python"
         },
-
-        // ═══════════════════════════════════════════════════════════════════
-        // LIBRESDR — 868 MHz beacon TX (ISM band, for UCA DoA testing)
-        // WARNING: ETSI EN 300 220 — 868.0-868.6 MHz ERP ≤ 25 mW, DC ≤ 1 %.
-        //          Always use TX→RX coaxial cable + attenuator in the lab.
-        // ═══════════════════════════════════════════════════════════════════
         {
             "label": "LibreSDR: TX 868 MHz — pilot-tone beacon (+100 kHz, -15 dB)",
             "detail": "Transmits a CW pilot tone at LO+100 kHz (868.1+0.1 MHz) at -15 dB via AD9363. Matches KrakenSDR PILOT_TONE_OFFSET_HZ=100000. Stop with Ctrl+C.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 tx_868_libresdr.py --pilot-offset 100000 --gain -15",
-            "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/libreSDR/src"
+            },
             "group": "test",
             "isBackground": true,
             "presentation": {
@@ -316,7 +332,10 @@
                 "focus": false
             },
             "problemMatcher": {
-                "pattern": { "regexp": "^(.*)$", "message": 1 },
+                "pattern": {
+                    "regexp": "^(.*)$",
+                    "message": 1
+                },
                 "background": {
                     "activeOnStart": true,
                     "beginsPattern": "LibreSDR",
@@ -329,7 +348,9 @@
             "detail": "Burst-gated 2D-MUSIC: detects IRA π/4-DQPSK bursts from LibreSDR tx_868_gui.py, extracts preamble tone at +3125 Hz (Rs/8), runs per-burst DoA. Requires Heimdall + LibreSDR in BURST mode.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_burst.py",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -342,7 +363,9 @@
             "detail": "Synthetic IRA burst at az=45° — tests burst DoA pipeline without hardware.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_burst.py --demo",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -351,11 +374,61 @@
             "problemMatcher": "$python"
         },
         {
+            "label": "LibreSDR: TX 868 MHz — GUI BURST (IRA π/4-DQPSK)",
+            "detail": "Apre la GUI LibreSDR in modalità BURST IRA. Trasmette slot IRA π/4-DQPSK (preamble+dati) ogni 90 ms. Usare con 'DoA BURST'. Richiede hardware AD9363.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx_868_gui.py --mode ira",
+            "options": {
+                "cwd": "${workspaceFolder}/libreSDR/src"
+            },
+            "group": "test",
+            "isBackground": true,
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            },
+            "problemMatcher": {
+                "pattern": { "regexp": "^(.*)$", "message": 1 },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "LibreSDR 868",
+                    "endsPattern": "GUI closed|Done\\."
+                }
+            }
+        },
+        {
+            "label": "LibreSDR: TX 868 MHz — GUI BURST demo (no hardware)",
+            "detail": "GUI loopback sintetica in modalità IRA — nessun hardware richiesto. Utile per testare la catena TX+DoA senza AD9363.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx_868_gui.py --demo --mode ira",
+            "options": {
+                "cwd": "${workspaceFolder}/libreSDR/src"
+            },
+            "group": "test",
+            "isBackground": true,
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            },
+            "problemMatcher": {
+                "pattern": { "regexp": "^(.*)$", "message": 1 },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "LibreSDR 868",
+                    "endsPattern": "GUI closed|Done\\."
+                }
+            }
+        },
+        {
             "label": "LibreSDR: TX 868 MHz — CW cyclic (DoA beacon)",
             "detail": "Transmits a continuous pure carrier tone at 868.1 MHz via AD9363 DMA loop. Use as reference beacon for UCA DoA testing. Stop with Ctrl+C.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 tx_868_libresdr.py",
-            "options": { "cwd": "${workspaceFolder}/libreSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/libreSDR/src"
+            },
             "group": "test",
             "isBackground": true,
             "presentation": {
@@ -364,7 +437,10 @@
                 "focus": false
             },
             "problemMatcher": {
-                "pattern": { "regexp": "^(.*)$", "message": 1 },
+                "pattern": {
+                    "regexp": "^(.*)$",
+                    "message": 1
+                },
                 "background": {
                     "activeOnStart": true,
                     "beginsPattern": "LibreSDR TX",
@@ -372,15 +448,14 @@
                 }
             }
         },
-        // ═══════════════════════════════════════════════════════════════════
-        // CALIBRATION — Phase-diff → (az, el) NN pipeline
-        // ═══════════════════════════════════════════════════════════════════
         {
             "label": "KrakenSDR: Calibration — auto (collect + train + validate)",
             "detail": "Full NN calibration pipeline on one or more recordings. Fetches satellite Az/El from CelesTrak, trains MLP, and produces report + plots. Accepts a single .npz file, multiple files (space-separated), or a directory.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py auto ${input:calibInput}",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -393,7 +468,9 @@
             "detail": "Extract phase-diff features + ground-truth labels from .npz recordings. Accepts single file, multiple files, or directory.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py collect ${input:calibInput}",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -406,7 +483,9 @@
             "detail": "Train MLP on a collected calibration dataset.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py train ${input:calibDataset}",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -419,7 +498,9 @@
             "detail": "Train MLP on a collected calibration dataset.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py train ${input:calibDataset}",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
@@ -432,14 +513,17 @@
             "detail": "Stima i phase offset per canale dal GT TLE. Salva phase_offsets_latest.json che viene caricato automaticamente all'avvio di space_doa_realtime.py.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py phase-cal ${input:calibInput}",
-            "options": { "cwd": "${workspaceFolder}/krakenSDR/src" },
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
             "group": "test",
             "presentation": {
                 "reveal": "always",
                 "panel": "new"
             },
             "problemMatcher": "$python"
-        }    ],
+        }
+    ],
 
     "inputs": [
         {

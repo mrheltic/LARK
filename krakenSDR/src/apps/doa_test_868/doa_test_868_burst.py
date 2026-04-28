@@ -217,6 +217,9 @@ def _acq_loop(
     _pilot_bw    = float(getattr(C, "PILOT_TONE_BW_HZ", 5_000))
     _amp_norm    = getattr(C, "AMPLITUDE_NORMALIZE", True)
 
+    # Consecutive-no-burst counter — warns user if TX is likely in CW mode
+    _no_burst_streak = 0
+
     # Streaming sample buffer: accumulate CPI frames until we have enough
     # for reliable burst detection (≥ 1 full SUPERFRAME).
     _buf: list[np.ndarray] = []
@@ -272,24 +275,26 @@ def _acq_loop(
         with S.lock:
             S.frame_n += 1
 
-        # ── Accumulate into circular buffer ──────────────────────────────────
+        # ── Accumulate into sliding-window buffer ────────────────────────────
         _buf.append(frame)
         _buf_len += frame.shape[1]
 
         if _buf_len < _min_buf:
             continue   # not enough samples yet
 
-        # Concatenate and trim to _min_buf + one extra frame for overlap
+        # Flatten to one contiguous array for detection
         X_stream = np.concatenate(_buf, axis=1)
         n_total  = X_stream.shape[1]
 
-        # Keep only the last two frames in the buffer to avoid growing without bound
-        if len(_buf) > 2:
-            _buf = _buf[-1:]
-            _buf_len = _buf[0].shape[1]
+        # Sliding-window trim: keep the last _WINDOW_SAMPLES as overlap so
+        # bursts that straddle frame boundaries are never missed.
+        _keep = _WINDOW_SAMPLES + 512
+        if n_total > _keep:
+            _buf = [X_stream[:, -_keep:]]
+            _buf_len = _keep
         else:
-            _buf_len = 0
-            _buf = []
+            _buf = [X_stream]
+            _buf_len = n_total
 
         # ── Burst detection on channel 0 (reference) ─────────────────────────
         bursts = _detect_bursts(X_stream[0])
@@ -300,7 +305,15 @@ def _acq_loop(
             with S.lock:
                 S.energy_hist.append(10 * np.log10(pwr + 1e-20))
                 S.no_signal = True
+            _no_burst_streak += 1
+            if _no_burst_streak == 10:
+                print("[WARN] 10 consecutive frames with no burst detected.\n"
+                      "       Make sure LibreSDR is in IRA/BURST mode (not CW).\n"
+                      "       Use task 'LibreSDR: TX 868 MHz — GUI BURST' or\n"
+                      "       pass --mode ira to tx_868_gui.py")
             continue
+
+        _no_burst_streak = 0
 
         for b_start in bursts:
             b_end = min(b_start + _WINDOW_SAMPLES, n_total)
