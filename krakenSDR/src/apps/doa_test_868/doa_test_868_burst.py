@@ -399,28 +399,36 @@ def _acq_loop(
             if _amp_norm:
                 X_nb = amplitude_normalize_channels(X_nb)
 
-            # ── Covariance: instantaneous (per burst) + selective EMA update ──
+            # ── Covariance: instantaneous quality gate + EMA for phase/DoA ─────
             try:
-                # Instantaneous R from the current preamble window.
-                # Phase diffs, SNR, and eigenvalue spread MUST come from R_inst
-                # to avoid the EMA-contamination problem: in session 20260428
-                # (burst_data_153622), 309 consecutive garbage bursts (idx 37–345)
-                # shifted EMA phase by >60° and disabled valid-burst detection
-                # for 28 s.  R_inst is burst-by-burst stable regardless of
-                # what happened in previous slots.
+                # R_inst: fresh covariance from this burst window only.
+                # Use it for per-burst quality diagnostics (honest, un-smoothed).
                 R_inst = (X_nb @ X_nb.conj().T) / X_nb.shape[1]
 
-                phase_diffs = np.degrees(np.angle(R_inst[1:, 0]))
-                snr         = snr_uca_db(R_inst)
-                eig         = eigenvalue_spread_uca_db(R_inst)
+                snr = snr_uca_db(R_inst)
+                eig = eigenvalue_spread_uca_db(R_inst)
 
-                # EMA pre-gate: only update when instantaneous eigenspread ≥ 1.5 dB.
-                # Prevents misaligned (wideband DATA) bursts from polluting the
-                # MUSIC noise subspace used for DoA.
-                if eig[0] >= 1.5:
+                # EMA gate: only accumulate when the INSTANTANEOUS eigenspread
+                # confirms a genuine preamble capture (≥2.5 dB = has_signal level).
+                # This prevents DATA-section or noise bursts from polluting R_EMA.
+                # Root cause found in session 20260428_153622: 309 consecutive
+                # bad bursts (λ1 low) shifted EMA phase by >60° over 28 s.
+                if eig[0] >= 2.5:
                     R = acc.update(X_nb)
                 else:
                     R = acc.R if acc.R is not None else R_inst
+
+                # phase_diffs from EMA R — NOT from R_inst.
+                # In a multipath-rich indoor environment, R_inst captures a
+                # DIFFERENT multipath snapshot every 90 ms: λ1/λ2 ≈ 5 dB means
+                # the second source is at 30 % of the dominant power, so
+                # angle(R_inst[k,0]) is the angle of a RANDOM VECTOR SUM of
+                # direct + reflections → std ≈ 95° (observed in session 155352).
+                # The EMA with COV_ALPHA=0.97 (τ≈33 bursts, 3 s) averages out
+                # fast-fluctuating multipath, recovering the stable direct-path
+                # phase: confirmed by R_saved showing [70.5°,-112.4°,118.4°,62.6°]
+                # constant across bursts while R_inst varied over ±180°.
+                phase_diffs = np.degrees(np.angle(R[1:, 0]))
 
                 _el_now   = S.el_deg
                 _use_algo = algo
