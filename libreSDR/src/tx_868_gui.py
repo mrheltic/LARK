@@ -53,6 +53,7 @@ from types import SimpleNamespace
 warnings.filterwarnings("ignore", message="Unable to import Axes3D")
 
 import numpy as np
+import scipy.signal as sp_signal
 import matplotlib
 matplotlib.use("TkAgg")           # works headless on Linux with $DISPLAY
 import matplotlib.pyplot as plt
@@ -65,11 +66,28 @@ _SRC = os.path.dirname(os.path.abspath(__file__))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from iridium.burst_gen import (
-    SYMBOL_RATE, SAMPLES_PER_SYMBOL, SAMPLE_RATE as BURST_SAMPLE_RATE,
-    RRC_BETA, RRC_NUM_TAPS,
-    generate_rrc_filter, generate_burst, apply_pulse_shaping,
+# ── Real Iridium parameters (from iridium/realistic_sim.py) ──────────────────
+# realistic_sim.py now defers its matplotlib import, so importing here is safe.
+from iridium.realistic_sim import (
+    SYMBOL_RATE,                        # 25 000 sps
+    SPS,                                # 10   (samples/symbol at base rate)
+    SAMPLE_RATE       as IRA_SAMPLE_RATE,  # 250 000 Hz (= SYMBOL_RATE × SPS)
+    RRC_BETA,                           # 0.4  (confirmed by gr-iridium)
+    RRC_NUM_TAPS,                       # 111
+    IRA_BURST_SYMS,                     # 245  (preamble+UW+data+tail)
+    IRA_PREAMBLE_SYMS,                  # 64
+    IRA_GUARD_SYMS,                     # 8
+    SLOT_SYMS,                          # 281
+    SUPERFRAME_S,                       # 0.090 s  (90 ms)
+    generate_rrc_filter,
+    generate_ira_burst,
 )
+
+# Upsampling ratio: IRA_SAMPLE_RATE (250 kHz) → TX_SAMPLE_RATE (1 MHz)
+_IRA_UPS  = 4   # TX_SAMPLE_RATE // IRA_SAMPLE_RATE
+
+# Preamble tone offset (64 × π/4-DQPSK all-zero dibits → tone at +Rs/8 above carrier)
+_PREAMBLE_TONE_HZ = SYMBOL_RATE // 8  # = 3125 Hz
 
 # ── Defaults (overridden by CLI args) ────────────────────────────────────────
 DEFAULT_URI       = "ip:192.168.1.10"
@@ -116,19 +134,35 @@ def _make_cw_buf(n: int = TX_SAMPLE_RATE // 10) -> np.ndarray:
     return (np.ones(n, dtype=np.complex64) * 0.9 * (2 ** 14)).astype(np.complex64)
 
 
-def _make_burst_buf(rrc: np.ndarray) -> np.ndarray:
-    """One Iridium-like π/4-DQPSK burst, resampled to TX_SAMPLE_RATE."""
-    symbols, _ = generate_burst()
-    bb = apply_pulse_shaping(symbols, rrc, SAMPLES_PER_SYMBOL)  # @ BURST_SAMPLE_RATE
-    # Resample to TX_SAMPLE_RATE (integer ratio: both match at 1 MSPS when
-    # BURST_SAMPLE_RATE == 200 kHz → need 5× upsample)
-    ratio = TX_SAMPLE_RATE // BURST_SAMPLE_RATE   # e.g. 5
-    if ratio != 1:
-        bb = np.repeat(bb, ratio)
-    # Normalise and scale to 80 % full-scale DAC
-    peak = float(np.max(np.abs(bb))) + 1e-12
-    bb = (bb / peak * 0.8 * (2 ** 14)).astype(np.complex64)
-    return bb
+def _make_ira_buf(rrc: np.ndarray,
+                  frame_count: int = 0,
+                  sat_id: int = 47,
+                  beam_id: int = 3) -> np.ndarray:
+    """
+    Generate one complete IRA TDMA slot using the faithful Iridium model.
+
+    Structure (281 symbols @ 25 ksps = 11.24 ms per slot):
+      [Guard 8] [Preamble 64] [UW 12] [Data 167+2 tail] [Guard 8] [Silence 20]
+
+    Preamble properties:
+      All-zero dibits → constant Δφ = +π/4 per symbol → single-frequency
+      tone at carrier + Rs/8 = carrier + 3 125 Hz.  This is the burst
+      detection signature used by gr-iridium.
+
+    RRC pulse shaping: β = 0.4, 111-tap filter (10 samples/symbol @ 250 kHz)
+    Convolutional encoding: rate 1/2, K=7, G0=0x79, G1=0x5B (NASA/CCSDS)
+    UW: absolute BPSK symbols from iridium.h UW_DL[]
+
+    The slot is resampled 250 kHz → 1 MHz (×4) for the AD9363.
+    """
+    # Generate slot at 250 kHz (10 SPS)
+    slot_iq, _ = generate_ira_burst(rrc, sat_id=sat_id, beam_id=beam_id,
+                                     frame_count=frame_count)
+    # Resample to TX_SAMPLE_RATE = 1 MHz (ratio 4:1, exact integer)
+    upsampled = sp_signal.resample_poly(slot_iq, _IRA_UPS, 1)
+    # Scale to 80 % DAC full-scale
+    peak = float(np.max(np.abs(upsampled))) + 1e-12
+    return (upsampled / peak * 0.8 * (2 ** 14)).astype(np.complex64)
 
 
 # =============================================================================
@@ -196,8 +230,11 @@ class TxThread(threading.Thread):
         self._state = state
         self._demo  = demo
         self._rng   = np.random.default_rng(42)
-        # Pre-build RRC filter once
-        self._rrc   = generate_rrc_filter(RRC_BETA, SAMPLES_PER_SYMBOL, RRC_NUM_TAPS)
+        # Pre-build RRC filter once (at construction time, not per-burst)
+        self._rrc          = generate_rrc_filter(RRC_BETA, SPS, RRC_NUM_TAPS)
+        self._frame_count  = 0
+        self._sat_id       = 47   # typical Iridium satellite ID
+        self._beam_id      = 3    # typical Iridium beam ID
 
     def run(self) -> None:
         S = self._state
@@ -208,17 +245,24 @@ class TxThread(threading.Thread):
                 time.sleep(0.05)
                 continue
 
-            mode = S.mode   # "cw" | "burst"
+            mode = S.mode   # "cw" | "ira"
 
             if mode == "cw":
                 buf = _make_cw_buf()
             else:
-                # Burst: transmit one burst every BURST_PERIOD_S, silence otherwise
+                # IRA: one TDMA slot every SUPERFRAME_S (90 ms)
+                # Slot = 281 symbols @ 25 ksps = 11.24 ms of data;
+                # the remaining ~78.8 ms we sleep to honour the superframe period.
                 now = time.monotonic()
-                if now - last_burst < BURST_PERIOD_S:
+                if now - last_burst < SUPERFRAME_S:
                     time.sleep(0.005)
                     continue
-                buf = _make_burst_buf(self._rrc)
+                buf = _make_ira_buf(self._rrc,
+                                    frame_count=self._frame_count,
+                                    sat_id=self._sat_id,
+                                    beam_id=self._beam_id)
+                self._frame_count += 1
+                S.ira_frame_count  = self._frame_count
                 last_burst = time.monotonic()
 
             with S.tx_buf_lock:
@@ -252,38 +296,66 @@ class RxThread(threading.Thread):
         self._state = state
         self._demo  = demo
         self._rng   = np.random.default_rng(7)
+        # Position within tx_buf for cyclic loopback (advances per _demo_samples call)
+        self._loopback_pos = 0
 
     def _demo_samples(self) -> np.ndarray:
-        """Synthetic loopback: CW tone + AWGN (+ burst envelope if in burst mode).
+        """
+        Realistic loopback demo.
 
-        Noise floor is kept at a VISIBLE level (-50 dBFS idle, -40 dBFS TX on)
-        so the waterfall and spectrum always show activity even with TX off.
-        The tone appears as a sharp peak ~30 dB above the noise floor.
+        When TX is off: AWGN noise floor at −50 dBFS (always visible in waterfall).
+
+        When TX is on:
+          CW mode — CW tone at +50 kHz offset (clearly off-centre in spectrum).
+          IRA mode — cyclic loopback of the last transmitted IRA slot.
+                     The RX window (2048 samples = 2.048 ms) scrolls through the
+                     11.24 ms slot, so the waterfall shows alternating sections:
+                       • Guard (silence)          0.32 ms
+                       • Preamble (tone at +3125 Hz) 2.56 ms  ← visible spike!
+                       • UW + Data (broadband)    7.32 ms
+                       • Guard + Silence           1.12 ms
+
+        All samples are scaled to DAC range (±2^14) to match _compute_fft.
         """
         S = self._state
-        n  = RX_BUF_SIZE
-        t  = np.arange(n) / TX_SAMPLE_RATE
-        if S.tx_on:
-            # Visible noise floor + strong CW/burst tone
-            noise_sigma = 10 ** (-40.0 / 20.0)   # -40 dBFS RMS noise
-            tone_amp    = 10 ** (-10.0 / 20.0)   # -10 dBFS tone (30 dB SNR)
+        n = RX_BUF_SIZE
+
+        # Baseline AWGN noise — always visible
+        noise_sigma = 10 ** (-52.0 / 20.0)   # −52 dBFS per-sample RMS
+        noise = (noise_sigma * (2 ** 14) * (
+            self._rng.standard_normal(n) + 1j * self._rng.standard_normal(n)
+        )).astype(np.complex64)
+
+        if not S.tx_on:
+            return noise
+
+        # ── TX ON ──────────────────────────────────────────────────────────────
+        with S.tx_buf_lock:
+            tx = S.tx_buf.copy()
+
+        if len(tx) < n:
+            # Buffer not ready yet (first frame still being generated)
+            return noise
+
+        if S.mode == "ira":
+            # Cyclic scroll through the IRA slot to expose all sections
+            pos = self._loopback_pos % len(tx)
+            end = pos + n
+            if end <= len(tx):
+                loopback = tx[pos:end].copy()
+            else:
+                loopback = np.concatenate([tx[pos:], tx[:end - len(tx)]])
+            self._loopback_pos = end % len(tx)
+            # 20 dB path loss (cable loopback)
+            loopback = loopback * 0.1
         else:
-            # No tone; keep noise visible so waterfall isn't all-black
-            noise_sigma = 10 ** (-50.0 / 20.0)   # -50 dBFS RMS noise
-            tone_amp    = 0.0
-        noise = noise_sigma * (self._rng.standard_normal(n)
-                               + 1j * self._rng.standard_normal(n)).astype(np.complex64)
-        if S.mode == "burst" and S.tx_on:
-            # Synthetic burst envelope: 1 ms on, 9 ms off
-            env  = np.zeros(n, dtype=np.float32)
-            on_n = int(TX_SAMPLE_RATE * 0.001)
-            env[:min(on_n, n)] = 1.0
-            tone = (env * tone_amp * np.exp(1j * 2 * np.pi * 50e3 * t)).astype(np.complex64)
-        else:
-            # CW tone at +50 kHz offset so it's clearly visible off-centre
-            tone = (tone_amp * np.exp(1j * 2 * np.pi * 50e3 * t)).astype(np.complex64)
-        # Scale to DAC range (2^14 = half full-scale)
-        return ((2 ** 14) * (tone + noise)).astype(np.complex64)
+            # CW: static tone at +50 kHz offset
+            t = np.arange(n) / TX_SAMPLE_RATE
+            tone_amp = 10 ** (-10.0 / 20.0) * (2 ** 14)
+            loopback = (tone_amp * np.exp(1j * 2 * np.pi * 50e3 * t)
+                        ).astype(np.complex64)
+
+        return (loopback + noise).astype(np.complex64)
 
     def run(self) -> None:
         S = self._state
@@ -314,7 +386,7 @@ def _make_state(freq_hz: int, tx_gain: float) -> SimpleNamespace:
     return SimpleNamespace(
         running     = True,
         tx_on       = False,
-        mode        = "cw",        # "cw" | "burst"
+        mode        = "cw",        # "cw" | "ira"
         freq_hz     = freq_hz,
         tx_gain     = tx_gain,
         # TX waveform
@@ -331,6 +403,7 @@ def _make_state(freq_hz: int, tx_gain: float) -> SimpleNamespace:
         rx_power_db = -999.0,
         snr_db      = -999.0,
         frame_count = 0,
+        ira_frame_count = 0,
         # Reconfig request from UI
         reconfig    = False,
     )
@@ -598,7 +671,7 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
         fig.canvas.draw_idle()
 
     def _on_mode(event):
-        S.mode = "burst" if S.mode == "cw" else "cw"
+        S.mode = "ira" if S.mode == "cw" else "cw"
         btns["mode"].label.set_text(f"Mode:  {S.mode.upper()}")
         fig.canvas.draw_idle()
 
@@ -694,7 +767,9 @@ def _build_gui(S: SimpleNamespace, sdr, demo: bool) -> None:  # noqa: C901
             f"TX:    {'● ACTIVE' if S.tx_on else '○ OFF'}",
             f"RX pwr: {pwr:.1f} dBFS",
             f"SNR est: {snr:.1f} dB",
-            f"Frames: {S.frame_count}  |  {TX_SAMPLE_RATE/1e6:.1f} MSPS",
+            (f"IRA frame: {S.ira_frame_count}  |  sat#47 beam#3"
+             if S.mode == "ira" else
+             f"Frames: {S.frame_count}  |  {TX_SAMPLE_RATE/1e6:.1f} MSPS"),
         ]
         _colors = [
             C_TEXT, C_TEXT,
@@ -742,8 +817,8 @@ def main() -> None:
                    help="TX/RX centre frequency [Hz]")
     p.add_argument("--gain",  type=float, default=DEFAULT_TX_GAIN,
                    help="TX attenuation [dB]  0=max power, -89.75=min. Start at -40!")
-    p.add_argument("--mode",  choices=["cw", "burst"], default="cw",
-                   help="Initial TX mode: cw (continuous wave) | burst (pi/4-DQPSK)")
+    p.add_argument("--mode",  choices=["cw", "ira"], default="cw",
+                   help="Initial TX mode: cw (continuous wave) | ira (Iridium IRA burst, pi/4-DQPSK + conv K=7)")
     p.add_argument("--demo",  action="store_true",
                    help="Run without hardware — synthetic loopback data")
     args = p.parse_args()

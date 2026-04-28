@@ -57,9 +57,8 @@ import os
 import time
 import numpy as np
 from scipy import signal as sp_signal
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+# matplotlib imported lazily inside plot_analysis() to avoid backend conflicts
+# when this module is imported inside a GUI that already set its own backend.
 
 # ── Physical constants ──────────────────────────────────────────────────────────
 C          = 2.99792458e8    # speed of light [m/s]
@@ -696,6 +695,7 @@ def detect_preamble(iq: np.ndarray, rrc: np.ndarray,
 def plot_analysis(iq: np.ndarray, burst_log: list, doppler_model: IridiumLEODoppler,
                   detections: list = None, save_path: str = None):
     """Generate a 4-panel diagnostic plot."""
+    import matplotlib.pyplot as plt  # deferred: avoid backend conflict when imported as lib
     duration_s = len(iq) / SAMPLE_RATE
     t_ms = np.arange(len(iq)) / SAMPLE_RATE * 1000
 
