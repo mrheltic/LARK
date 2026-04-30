@@ -1,37 +1,44 @@
 """
-core.calibration_features
-=========================
+core.calibration_features — Feature extraction for NN calibration
+===================================================================
+
 Feature extraction from 5-channel IQ bursts for the phase-difference → (az, el)
 neural-network calibration pipeline.
 
-Feature vector (per burst)
---------------------------
+Feature Vector (14 features per burst)
+--------------------------------------
 From the 5×5 spatial covariance matrix R (after Doppler comp + BPF + FBA):
 
-  * 4 inter-antenna phase differences   Δφ_k = ∠R_{0,k}  for k=1..4
-    (center vs east, north, west, south — canonical order)
-    Encoded as (cos Δφ_k, sin Δφ_k) to avoid 2π wrapping → 8 features
+Phase differences (8 features)
+    Δφ_k = ∠R_{0,k} for k=1..4 (center vs E/N/W/S)
+    Encoded as (cos Δφ_k, sin Δφ_k) to avoid 2π wrapping
 
-  * 4 coherence magnitudes   |ρ_{0,k}| = |R_{0,k}| / √(R_{0,0}·R_{k,k})
-    High = clean signal; low = noise/multipath → 4 features
+Coherence magnitudes (4 features)
+    |ρ_{0,k}| = |R_{0,k}| / √(R_{0,0}·R_{k,k})
+    High = clean signal; low = noise/multipath
 
-  * Eigenvalue spread  λ_max/λ_min  [dB] → 1 feature (signal quality proxy)
+Signal quality (2 features)
+    • Eigenvalue spread λ_max/λ_min [dB]
+    • Doppler offset [normalized kHz]
 
-  * Doppler offset [kHz, normalized] → 1 feature
-    (Doppler shifts array pattern slightly at L-band; learnable)
-
-Total: 14 features per burst.
-
-Target encoding
+Target Encoding
 ---------------
-Azimuth uses (cos az, sin az) to avoid 0°/360° discontinuity → 2 values.
-Elevation uses raw degrees (naturally bounded 0–90°) → 1 value.
-Total target: 3 values.
+    • Azimuth: (cos az, sin az) — avoids 0°/360° discontinuity
+    • Elevation: normalized [0, 1]
 
 All arrays are float32 for compact storage and fast training.
 """
 
 from __future__ import annotations
+
+__all__ = [
+    "phase_diff_features",
+    "coherence_features", 
+    "eigenvalue_spread_feature",
+    "extract_feature_vector",
+    "encode_target",
+    "decode_target",
+]
 
 import numpy as np
 

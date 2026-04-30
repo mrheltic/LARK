@@ -1,41 +1,42 @@
 """
-core.calibration_model
-======================
+core.calibration_model — Pure-numpy MLP for DoA calibration
+============================================================
+
 Pure-numpy MLP for phase-difference → (az, el) calibration.
 
 Architecture
 ------------
-Input  :  14 features  (8 phase cos/sin + 4 coherence + eig_spread + doppler)
-Hidden :  14 → 64 → 64 → 32  (ReLU activations, batch-norm style normalization)
-Output :  3 values  (cos_az, sin_az, el_norm)
+    Input  : 14 features (8 phase cos/sin + 4 coherence + eig_spread + doppler)
+    Hidden : 14 → 64 → 64 → 32 (ReLU activations)
+    Output : 3 values (cos_az, sin_az, el_norm)
 
-The model intentionally uses **no external ML framework** — only numpy + scipy —
-so it can run on any LARK deployment without extra dependencies.  For production
-training with large datasets, a PyTorch wrapper is provided as an optional
-accelerator.
+Framework-free: uses only numpy + scipy for zero-dependency deployment.
 
-Loss
-----
-Composite loss that respects angular geometry:
-  L = w_az · L_az  +  w_el · L_el
-
-  L_az = 1 − cos(az_pred − az_true)          (great-circle-aware, no wrap issue)
-  L_el = (el_pred − el_true)² / 90²          (MSE on normalized elevation)
-
-This avoids the 0°/360° discontinuity and weights azimuth/elevation errors
-proportionally to their typical magnitude.
+Loss Function
+-------------
+Composite angular loss respecting geometry:
+    L = L_az + L_el
+    
+    L_az = 1 − cos(az_pred − az_true)     # great-circle, no wrap issue
+    L_el = (el_pred − el_true)² / 90²     # MSE on normalized elevation
 
 Serialization
 -------------
-Model weights are stored as a flat .npz file with named arrays:
-  W1, b1, W2, b2, W3, b3, W4, b4   (layer weights and biases)
-  feat_mean, feat_std               (input normalization stats)
-  train_meta                        (JSON string with training history)
-
-The .npz can be loaded by numpy alone — no pickle, no framework dependency.
+Model stored as flat .npz with named arrays:
+    W{i}, b{i}        — layer weights and biases
+    feat_mean/std     — input normalization
+    train_meta        — JSON training history
 """
 
 from __future__ import annotations
+
+__all__ = [
+    "CalibrationMLP",
+    "TrainConfig", 
+    "angular_loss",
+    "angular_loss_grad",
+    "train",
+]
 
 import json
 import time

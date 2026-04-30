@@ -93,6 +93,25 @@ from .signal_quality import (
     CRITICAL_CHANNEL_THRESHOLD,
 )
 
+# Calibration features
+from .calibration_features import (
+    phase_diff_features,
+    coherence_features,
+    eigenvalue_spread_feature,
+    extract_feature_vector,
+    encode_target,
+    decode_target,
+)
+
+# Calibration model
+from .calibration_model import (
+    CalibrationMLP,
+    TrainConfig,
+    angular_loss,
+    angular_loss_grad,
+    train,
+)
+
 # =============================================================================
 # Legacy compatibility exports
 # =============================================================================
@@ -137,11 +156,20 @@ snr_from_covariance = _snr_from_covariance
 eigenvalue_spread_db = _eigenvalue_spread_db
 coherence_matrix = _coherence_matrix
 
+# 3D/2D DoA exports from doa_algorithms_3d
+CrossArrayConfig = _CrossArrayConfig
+doa_music_2d = _doa_music_2d_legacy
+doa_capon_2d = _doa_capon_2d_legacy
+doa_bartlett_2d = _doa_bartlett_2d
+find_peak_2d = _find_peak_2d
+SatellitePassAccumulator = _SatellitePassAccumulator
+
 # Aliases for naming consistency
 papr_db = compute_papr
 
 __all__ = [
-    # New modular API
+    # === New Modular API (Recommended) ===
+    # Array geometry
     "ArrayGeometryBase",
     "UniformLinearArray",
     "UniformCircularArray",
@@ -150,9 +178,17 @@ __all__ = [
     "compute_steering_matrix_1d",
     "compute_steering_matrix_2d",
     "reorder_channels",
+    "CROSS_ARRAY_CANONICAL_ORDER",
+    # Covariance operations
     "covariance",
+    "sample_covariance",
+    "forward_backward_avg",
+    "toeplitzify",
+    "fb_toeplitz",
     "apply_decorrelation",
+    "spatial_smoothing",
     "CovarianceAccumulator",
+    # DoA estimators
     "music",
     "capon",
     "bartlett",
@@ -160,16 +196,48 @@ __all__ = [
     "esprit",
     "music_2d",
     "capon_2d",
+    "subspace_decomposition",
     "estimate_signal_count",
+    "peak_interpolation_1d",
+    "peak_interpolation_2d",
+    "normalize_spectrum_db",
+    "compute_papr",
+    # Burst processing
     "BurstDetector",
     "BurstResult",
     "PassTracker",
+    "IRD_CHANS",
+    "TDMA_FRAME_S",
+    "TDMA_SLOT_S",
+    "MAX_DOP_HZ",
+    "PILOT_TONE_OFFSET_HZ",
+    # Iridium-specific burst processing
     "detect_and_extract_burst",
+    "detect_and_extract_all_bursts",
     "compensate_doppler",
     "compute_single_shot_covariance",
+    "validate_burst_uw",
+    "narrowband_filter_burst",
+    # Signal quality
     "channel_power_balance",
     "ChannelPowerReport",
-    # Legacy compatibility
+    "check_recording_health",
+    "WEAK_CHANNEL_THRESHOLD",
+    "CRITICAL_CHANNEL_THRESHOLD",
+    # Calibration features
+    "phase_diff_features",
+    "coherence_features",
+    "eigenvalue_spread_feature",
+    "extract_feature_vector",
+    "encode_target",
+    "decode_target",
+    # Calibration model
+    "CalibrationMLP",
+    "TrainConfig",
+    "angular_loss",
+    "angular_loss_grad",
+    "train",
+    # === Legacy Compatibility API ===
     "ArrayConfig",
     "Geometry",
     "doa_music",
@@ -182,4 +250,10 @@ __all__ = [
     "papr_db",
     "eigenvalue_spread_db",
     "coherence_matrix",
+    "CrossArrayConfig",
+    "doa_music_2d",
+    "doa_capon_2d",
+    "doa_bartlett_2d",
+    "find_peak_2d",
+    "SatellitePassAccumulator",
 ]
