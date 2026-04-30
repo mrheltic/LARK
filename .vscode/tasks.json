@@ -449,6 +449,30 @@
             }
         },
         {
+            "label": "LibreSDR: TX 868 MHz — Headless IRA burst (no GUI)",
+            "detail": "Transmits authentic Iridium IRA π/4-DQPSK bursts at 868 MHz via AD9363. No display required — use over SSH. Loops forever until Ctrl+C. Pair with 'DoA BURST' task. Requires hardware AD9363.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx_868_ira.py --cyclic",
+            "options": {
+                "cwd": "${workspaceFolder}/libreSDR/src"
+            },
+            "group": "test",
+            "isBackground": true,
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": false
+            },
+            "problemMatcher": {
+                "pattern": { "regexp": "^(.*)$", "message": 1 },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "Iridium IRA burst TX",
+                    "endsPattern": "Done\\.|Stop requested"
+                }
+            }
+        },
+        {
             "label": "KrakenSDR: Calibration — auto (collect + train + validate)",
             "detail": "Full NN calibration pipeline on one or more recordings. Fetches satellite Az/El from CelesTrak, trains MLP, and produces report + plots. Accepts a single .npz file, multiple files (space-separated), or a directory.",
             "type": "shell",
