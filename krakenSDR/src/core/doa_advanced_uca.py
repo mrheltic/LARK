@@ -1,18 +1,34 @@
 """
-Advanced DoA algorithms for Uniform Circular Array (UCA) based on research papers.
+core.doa_advanced_uca — Advanced UCA DoA algorithms
+====================================================
 
-Implements state-of-the-art algorithms beyond basic MUSIC/Capon/Bartlett:
+State-of-the-art algorithms for Uniform Circular Array:
 - Root-MUSIC for UCA (polynomial rooting approach)
 - Unitary ESPRIT for UCA
-- Modified Forward-Backward Averaging for UCA
-- Enhanced preprocessing techniques from literature
+- Modified Forward-Backward Averaging (MFBA)
+- Enhanced preprocessing techniques
+
+These algorithms extend the base estimators in doa_estimators.py with
+UCA-specific optimizations from recent literature.
+
+References
+----------
+* Mathews & Zoltowski, IEEE Trans. SP 42(9), 1994 — UCA Root-MUSIC
+* Zoltowski & Stavrinides, IEEE Trans. ASSP 37(5), 1989 — UCA ESPRIT
+* Shubair et al., MMS 2016 — MFBA for UCA
 """
 
-import numpy as np
-from scipy.linalg import eig, qr, svd, pinv
-from scipy.optimize import minimize_scalar
-from typing import Tuple, Optional, Union
+from __future__ import annotations
+
 import warnings
+from typing import Tuple
+
+import numpy as np
+from scipy.linalg import eig
+
+# Import from new modular API
+from .array_geometry import UniformCircularArray
+from .covariance import forward_backward_avg
 
 # ── Enhanced UCA Steering Vector ──────────────────────────────────────────────
 def uca_steering_vector(
