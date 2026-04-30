@@ -72,7 +72,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 from .burst import MAX_DOP_HZ, PILOT_TONE_OFFSET_HZ, PILOT_TONE_BW_HZ
-from .doa_algorithms import covariance
+from .covariance import covariance
 
 # ---------------------------------------------------------------------------
 # System constants
