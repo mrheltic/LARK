@@ -149,6 +149,24 @@ from .iridium_demod import (
     PREAMBLE_LENGTH,
 )
 
+# Smart API (LEGO-like, intuitive)
+from .smart_api import (
+    # Factory functions
+    create_array,
+    create_doa_estimator,
+    create_iridium_pipeline,
+    create_calibrator,
+    estimate_doa,
+    # Result classes
+    DoAResult,
+    BurstResult as SmartBurstResult,
+    CalibrationResult,
+    # Convenience functions
+    quick_doa,
+    quick_burst_detect,
+    auto_configure,
+)
+
 # =============================================================================
 # Legacy compatibility exports
 # =============================================================================
@@ -302,6 +320,18 @@ __all__ = [
     "UW_DOWNLINK",
     "UW_UPLINK",
     "PREAMBLE_LENGTH",
+    # Smart API (LEGO-like, intuitive)
+    "create_array",
+    "create_doa_estimator",
+    "create_iridium_pipeline",
+    "create_calibrator",
+    "estimate_doa",
+    "DoAResult",
+    "SmartBurstResult",
+    "CalibrationResult",
+    "quick_doa",
+    "quick_burst_detect",
+    "auto_configure",
     # === Legacy Compatibility API ===
     "ArrayConfig",
     "Geometry",
