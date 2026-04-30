@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-_playback_analysis.py — post-hoc MUSIC analysis on recorded NPZ burst files
+playback_analysis.py — post-hoc MUSIC analysis on recorded NPZ burst files
 ============================================================================
 
 Applies the full fixed pipeline (no FBA, n_sig=1) to every burst stored in
@@ -19,12 +19,12 @@ Two recording format variants are handled transparently:
 
 Usage
 -----
-  python3 apps/space/_playback_analysis.py                          # all *.npz in recordings/
-  python3 apps/space/_playback_analysis.py FILE1.npz FILE2.npz
-  python3 apps/space/_playback_analysis.py --recordings-dir path/to/dir
-  python3 apps/space/_playback_analysis.py recordings/*.npz --verbose
-  python3 apps/space/_playback_analysis.py recordings/*.npz --no-save
-  python3 apps/space/_playback_analysis.py recordings/*.npz --d-lambda 0.45
+    python3 src/scripts/playback_analysis.py                          # all *.npz in recordings/
+    python3 src/scripts/playback_analysis.py FILE1.npz FILE2.npz
+    python3 src/scripts/playback_analysis.py --recordings-dir path/to/dir
+    python3 src/scripts/playback_analysis.py recordings/*.npz --verbose
+    python3 src/scripts/playback_analysis.py recordings/*.npz --no-save
+    python3 src/scripts/playback_analysis.py recordings/*.npz --d-lambda 0.45
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ TLE_REFRESH_MS         = 15_000   # ms  — refresh visible satellites every 15 
 
 
 # =============================================================================
-# FDMA channel tracker (identical logic to _test_deep_multichannel.py)
+# FDMA channel tracker (identical logic to deep_multichannel_analysis.py)
 # =============================================================================
 
 @dataclass

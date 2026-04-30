@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-_test_deep_multichannel.py — comprehensive multi-FDMA-channel MUSIC analysis
+deep_multichannel_analysis.py — comprehensive multi-FDMA-channel MUSIC analysis
 =============================================================================
 
 Runs a deep-dive analysis of ALL Iridium FDMA channels visible in the
@@ -46,10 +46,10 @@ Stored calibration from phase_offsets_latest.json is valid for ALL channels.
 
 Usage
 -----
-  python3 apps/space/_test_deep_multichannel.py
-  python3 apps/space/_test_deep_multichannel.py --duration 600
-  python3 apps/space/_test_deep_multichannel.py --duration 300 --verbose
-  python3 apps/space/_test_deep_multichannel.py --threshold 6 --gain 40 --duration 120
+    python3 src/scripts/deep_multichannel_analysis.py
+    python3 src/scripts/deep_multichannel_analysis.py --duration 600
+    python3 src/scripts/deep_multichannel_analysis.py --duration 300 --verbose
+    python3 src/scripts/deep_multichannel_analysis.py --threshold 6 --gain 40 --duration 120
 """
 
 from __future__ import annotations

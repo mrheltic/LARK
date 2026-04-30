@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-_test_gt_matching.py  — one-shot CLI test for the GT Doppler matching pipeline.
+test_gt_matching.py  — one-shot CLI test for the GT Doppler matching pipeline.
 
 Connects to Heimdall, collects 60 s of bursts (or N_LIMIT), runs
 compensate_doppler() on each accepted burst, then compares the measured
@@ -9,8 +9,8 @@ satellite.  Prints a summary so you can verify the threshold (8 kHz) works.
 
 Usage
 -----
-    python3 apps/space/_test_gt_matching.py
-    python3 apps/space/_test_gt_matching.py --duration 30
+    python3 src/scripts/test_gt_matching.py
+    python3 src/scripts/test_gt_matching.py --duration 30
 """
 from __future__ import annotations
 
