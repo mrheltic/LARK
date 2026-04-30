@@ -112,6 +112,43 @@ from .calibration_model import (
     train,
 )
 
+# UCA 2D DoA
+from .doa_uca_2d import (
+    UcaConfig,
+    find_peak_uca_2d,
+    extract_pilot_tone,
+    amplitude_normalize_channels,
+    doa_music_uca_2d,
+    doa_bartlett_uca_2d,
+    doa_capon_uca_2d,
+    eigenvalue_spread_uca_db,
+    snr_uca_db,
+    CovarianceAccumulatorUca,
+    doa_root_music_uca_2d,
+    doa_unitary_esprit_uca_2d,
+    doa_mfba_music_uca_2d,
+    enhanced_preprocessing,
+)
+
+# Burst pipeline
+from .burst_pipeline import (
+    PipelineResult,
+    BurstPipeline,
+)
+
+# Iridium demodulator
+from .iridium_demod import (
+    IridiumDemod,
+    DemodDebug,
+    SYMBOLS_PER_SECOND,
+    UW_LENGTH,
+    DOWNLINK,
+    UPLINK,
+    UW_DOWNLINK,
+    UW_UPLINK,
+    PREAMBLE_LENGTH,
+)
+
 # =============================================================================
 # Legacy compatibility exports
 # =============================================================================
@@ -237,6 +274,34 @@ __all__ = [
     "angular_loss",
     "angular_loss_grad",
     "train",
+    # UCA 2D DoA
+    "UcaConfig",
+    "find_peak_uca_2d",
+    "extract_pilot_tone",
+    "amplitude_normalize_channels",
+    "doa_music_uca_2d",
+    "doa_bartlett_uca_2d",
+    "doa_capon_uca_2d",
+    "eigenvalue_spread_uca_db",
+    "snr_uca_db",
+    "CovarianceAccumulatorUca",
+    "doa_root_music_uca_2d",
+    "doa_unitary_esprit_uca_2d",
+    "doa_mfba_music_uca_2d",
+    "enhanced_preprocessing",
+    # Burst pipeline
+    "PipelineResult",
+    "BurstPipeline",
+    # Iridium demodulator
+    "IridiumDemod",
+    "DemodDebug",
+    "SYMBOLS_PER_SECOND",
+    "UW_LENGTH",
+    "DOWNLINK",
+    "UPLINK",
+    "UW_DOWNLINK",
+    "UW_UPLINK",
+    "PREAMBLE_LENGTH",
     # === Legacy Compatibility API ===
     "ArrayConfig",
     "Geometry",

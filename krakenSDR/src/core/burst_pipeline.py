@@ -1,48 +1,31 @@
 """
-core.burst_pipeline
-===================
+core.burst_pipeline — Burst detection + demodulation pipeline
+==============================================================
 
 Connects the burst *detector* to the Iridium *demodulator* and exposes a
 single :class:`BurstPipeline` class with a simple ``process()`` interface.
 
-Because the KrakenSDR DAQ delivers CPI frames of 131 072 samples at
-1 024 000 sps (≈ 128 ms), each frame is long enough to contain at least one
-complete Iridium simplex burst (≈ 8.28 ms, ≈ 8 480 samples).  The pipeline
-therefore works frame-by-frame without cross-frame buffering.
-
 Architecture
 ------------
+    KrakenIQSource → BurstPipeline.process(x, ts_ms)
+        ├─ BurstDetector.process(x) → BurstResult
+        └─ [if is_burst] IridiumDemod.demod(x, ...) → RAW: line
 
-    KrakenIQSource  →  BurstPipeline.process(x, ts_ms)
-                           │
-                           ├─ BurstDetector.process(x)   ──→  BurstResult
-                           │     (FFT-based, stateless)
-                           │
-                           └─ [if is_burst] IridiumDemod.demod(x, ...)
-                                 │
-                                 ├─ resample → 1 Msps
-                                 ├─ downmix by doppler_hz
-                                 ├─ LPF + RRC
-                                 ├─ sync search
-                                 └─ DQPSK decode  ──→  RAW: line str | None
-
-Usage::
-
-    pipeline = BurstPipeline(
-        input_fs       = 1_024_000,
-        center_freq_hz = 1_626_270_000.0,
-        burst_snr      = 8.0,
-        burst_papr     = 5.0,
-        burst_pwr      = -90.0,
-    )
-
+Usage
+-----
+    pipeline = BurstPipeline(input_fs=1_024_000, center_freq_hz=1_626_270_000.0)
     for x, ts_ms in frames:
         result, raw_line = pipeline.process(x, ts_ms)
         if raw_line:
-            print(raw_line)           # forward to iridium-parser.py
+            print(raw_line)  # forward to iridium-parser.py
 """
 
 from __future__ import annotations
+
+__all__ = [
+    "PipelineResult",
+    "BurstPipeline",
+]
 
 import time
 from dataclasses import dataclass

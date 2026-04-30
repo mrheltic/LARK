@@ -1,56 +1,54 @@
 """
-doa_uca_2d — 2D (azimuth + elevation) DoA for Uniform Circular Arrays
-=======================================================================
+core.doa_uca_2d — 2D DoA for Uniform Circular Arrays
+=====================================================
 
 Direction-of-Arrival estimation in 2D (azimuth + elevation) for an N-element
 Uniform Circular Array (UCA).
 
-UCA geometry (East-North plane, coordinates in wavelengths):
+UCA Geometry
+------------
+    Antenna k at angle φ_k = 2π·k/N clockwise from North.
+    Coordinates: p_k_E = r·sin(φ_k), p_k_N = r·cos(φ_k)
 
-              ant0 (North)
-             /
-    ant4 ···●··· ant1
-            |
-          ant3   ant2
+Angular Convention
+------------------
+    azimuth  φ : degrees from North, clockwise (0°=N, 90°=E, 180°=S, 270°=W)
+    elevation θ : degrees above horizon (0°=horizon, 90°=zenith)
 
-    Antenna k at angle  φ_k = 2π·k/N  clockwise from North.
-    East-North coordinates:
-        p_k_E = r · sin(φ_k)
-        p_k_N = r · cos(φ_k)
-
-Angular convention (same as doa_algorithms_3d for consistency):
-    azimuth  φ : degrees from North, clockwise  (0°=N, 90°=E, 180°=S, 270°=W)
-    elevation θ : degrees above horizon          (0°=horizon, 90°=zenith)
-
-Phase delay on antenna k for a source at (φ, θ):
-    τ_k = 2π · ( p_k_E · cos(θ) · sin(φ) + p_k_N · cos(θ) · cos(φ) )
-
-Steering vector:
-    a(φ,θ) = [exp(j·τ_0), …, exp(j·τ_{N-1})]^T ∈ ℂ^N
-
-Implemented algorithms
+Implemented Algorithms
 ----------------------
-- 2D-MUSIC   : P = 1 / ‖E_n^H · a‖²          (super-resolution, subspace)
-- 2D-Capon   : P = 1 / (a^H · R^{-1} · a)    (MVDR, adaptive)
-- 2D-Bartlett: P = a^H · R · a                (CBF, most robust fallback)
+    • 2D-MUSIC    : P = 1 / ‖E_n^H · a‖²         (super-resolution)
+    • 2D-Capon    : P = 1 / (a^H · R^{-1} · a)   (MVDR, adaptive)
+    • 2D-Bartlett : P = a^H · R · a               (CBF, robust)
 
-All functions return a spectrum shaped (n_el, n_az) in dB
-(peak = 0 dB, floor = −40 dB), compatible with find_peak_uca_2d().
-
-Signal pre-processing helpers
-------------------------------
-- extract_pilot_tone()          : narrow-band FFT gate around known CW offset
-- amplitude_normalize_channels(): per-channel RMS normalisation
+All spectra returned as (n_el, n_az) in dB (peak=0, floor=-40).
 
 References
 ----------
-* Schmidt R.O., IEEE Trans. Antennas Propagat. 34(3), 1986        — MUSIC
-* Capon J., Proc. IEEE 57(8), 1969                                — MVDR
-* Van Trees H.L., Optimum Array Processing, Wiley 2002, §9.2      — UCA steering
-* Mathews C.P. & Zoltowski M.D., IEEE Trans. SP 42(9), 1994       — UCA phase modes
+    • Schmidt 1986 — MUSIC
+    • Capon 1969 — MVDR
+    • Van Trees 2002 — UCA steering
+    • Mathews & Zoltowski 1994 — UCA phase modes
 """
 
 from __future__ import annotations
+
+__all__ = [
+    "UcaConfig",
+    "find_peak_uca_2d",
+    "extract_pilot_tone",
+    "amplitude_normalize_channels",
+    "doa_music_uca_2d",
+    "doa_bartlett_uca_2d",
+    "doa_capon_uca_2d",
+    "eigenvalue_spread_uca_db",
+    "snr_uca_db",
+    "CovarianceAccumulatorUca",
+    "doa_root_music_uca_2d",
+    "doa_unitary_esprit_uca_2d",
+    "doa_mfba_music_uca_2d",
+    "enhanced_preprocessing",
+]
 
 from dataclasses import dataclass, field
 from typing import Optional, Tuple

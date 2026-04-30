@@ -1,31 +1,31 @@
 """
-core.iridium_demod
-==================
+core.iridium_demod — Iridium DQPSK demodulator
+===============================================
 
 Python 3 port of the extractor-python demodulation pipeline from iridium-toolkit.
 
-Converts raw complex IQ samples (at any input sample rate) to decoded DQPSK
-symbol bits formatted as the RAW: lines accepted by iridium-parser.py.
+Converts raw complex IQ samples to decoded DQPSK symbol bits formatted as
+RAW: lines accepted by iridium-parser.py.
 
 Pipeline
 --------
-1. Rational resampling to 1,000,000 sps  (25 000 sym/s × 40 sps/sym)
-2. Downmix by caller-supplied Doppler offset
-3. Low-pass channel-select filter  (±50 kHz passband)
-4. Signal-start detection  (envelope threshold)
-5. RRC matched filter  (α = 0.4, 161 taps)
-6. Sync word cross-correlation  → exact burst start sample
-7. DQPSK demodulation with first-order timing recovery
-8. Gray decode  → bit string
-9. RAW: line assembly
+    1. Rational resampling to 1,000,000 sps (25 000 sym/s × 40 sps/sym)
+    2. Downmix by caller-supplied Doppler offset
+    3. Low-pass channel-select filter (±50 kHz passband)
+    4. Signal-start detection (envelope threshold)
+    5. RRC matched filter (α = 0.4, 161 taps)
+    6. Sync word cross-correlation → exact burst start sample
+    7. DQPSK demodulation with first-order timing recovery
+    8. Gray decode → bit string
+    9. RAW: line assembly
 
-Usage::
-
+Usage
+-----
     demod = IridiumDemod(input_fs=1_024_000)
     line  = demod.demod(iq_array, doppler_hz=3200.0, timestamp_ms=841.3,
                         center_freq_hz=1_626_270_000, filename="kraken")
     if line:
-        print(line)           # pipe to iridium-parser.py
+        print(line)  # pipe to iridium-parser.py
 
 Credits
 -------
@@ -36,6 +36,18 @@ contributors, GPLv3+.  Python 3 port by this project.
 """
 
 from __future__ import annotations
+
+__all__ = [
+    "IridiumDemod",
+    "DemodDebug",
+    "SYMBOLS_PER_SECOND",
+    "UW_LENGTH",
+    "DOWNLINK",
+    "UPLINK",
+    "UW_DOWNLINK",
+    "UW_UPLINK",
+    "PREAMBLE_LENGTH",
+]
 
 import cmath
 import itertools
