@@ -37,6 +37,7 @@ from types import SimpleNamespace
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
+_DATA_DIR = os.path.normpath(os.path.join(_SRC, "..", "data", "doa_868"))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 sys.path.insert(0, _HERE)
@@ -55,8 +56,10 @@ from hardware.kraken_iq_source import KrakenIQSource
 from core.doa_uca_2d import (
     UcaConfig, CovarianceAccumulatorUca,
     doa_music_uca_2d, doa_capon_uca_2d, doa_bartlett_uca_2d,
+    doa_root_music_uca_2d, doa_unitary_esprit_uca_2d, doa_mfba_music_uca_2d,
     find_peak_uca_2d, eigenvalue_spread_uca_db, snr_uca_db,
     extract_pilot_tone, amplitude_normalize_channels,
+    enhanced_preprocessing as enhanced_preprocessing_doa,
 )
 
 # ── Palette ───────────────────────────────────────────────────────────────────
@@ -71,18 +74,50 @@ _SPEC_EMA     = 0.10  # display spectrum temporal smoothing (lower = more stable
 
 
 def _circ_median(angles_deg: np.ndarray) -> float:
-    """
-    Circular median of azimuth values [0..360°].
-
-    Rotates to the distribution centre, computes the scalar median, then
-    un-rotates.  More robust to outliers than the circular mean.
-    """
+    """Circular median of azimuth values [0..360°]."""
     if len(angles_deg) == 0:
         return 0.0
     a  = np.deg2rad(angles_deg)
     mu = float(np.angle(np.mean(np.exp(1j * a))))
     residui = np.angle(np.exp(1j * (a - mu)))
     return float(np.degrees(mu + np.median(residui)) % 360.0)
+
+
+def _circ_distance(a_deg: float, b_deg: float) -> float:
+    """Shortest angular distance between two azimuths [0..360°]."""
+    d = abs(a_deg - b_deg) % 360.0
+    return min(d, 360.0 - d)
+
+
+def _select_algo_by_snr(user_algo: str, snr_db: float) -> str:
+    """SNR-adaptive algorithm selection."""
+    if not getattr(C, "SNR_ADAPTIVE_ENABLED", False):
+        return user_algo
+    snr_high = getattr(C, "SNR_HIGH_DB", 10.0)
+    snr_low  = getattr(C, "SNR_LOW_DB", 4.0)
+    if snr_db >= snr_high:
+        return user_algo
+    elif snr_db <= snr_low:
+        return "bartlett"
+    else:
+        return "capon" if user_algo != "bartlett" else "bartlett"
+
+
+def _check_phase_coherence(
+    phase_diffs: np.ndarray,
+    phase_history: list[collections.deque],
+    max_jump_deg: float,
+) -> bool:
+    """Return True if phase diffs are coherent with recent history."""
+    min_hist = 3
+    for i, ph in enumerate(phase_diffs):
+        hist = phase_history[i]
+        if len(hist) < min_hist:
+            continue
+        med = _circ_median(np.array(hist))
+        if _circ_distance(float(ph), med) > max_jump_deg:
+            return False
+    return True
 
 
 # =============================================================================
@@ -146,18 +181,25 @@ def _acq_loop(src, cfg: UcaConfig, algo: str,
               acc: CovarianceAccumulatorUca, S: SimpleNamespace,
               demo: bool = False) -> None:
     rng      = np.random.default_rng(42)
-    # Demo source at 45° azimuth (East-NorthEast), 10° elevation — matches
-    # typical indoor LibreSDR bench test at 45° from array North.
     demo_az  = np.deg2rad(45.0)
     demo_el  = np.deg2rad(10.0)
     pos      = cfg.positions
 
-    # Pilot-tone extraction parameters (from config)
     _pilot_enabled = getattr(C, "PILOT_TONE_ENABLED",   False)
     _pilot_hz      = float(getattr(C, "PILOT_TONE_OFFSET_HZ", 100_000))
     _pilot_bw      = float(getattr(C, "PILOT_TONE_BW_HZ",     10_000))
     _amp_norm      = getattr(C, "AMPLITUDE_NORMALIZE",  True)
     _sample_rate   = float(getattr(C, "SAMPLE_RATE_HZ", 1_024_000))
+
+    _phase_coh_en     = getattr(C, "PHASE_COHERENCE_ENABLED", False)
+    _phase_max_jump   = getattr(C, "PHASE_COHERENCE_MAX_JUMP_DEG", 60.0)
+    _az_outlier_en    = getattr(C, "AZ_OUTLIER_ENABLED", False)
+    _az_outlier_max   = getattr(C, "AZ_OUTLIER_MAX_DEV_DEG", 45.0)
+    _az_outlier_min_n = getattr(C, "AZ_OUTLIER_MIN_HISTORY", 5)
+    _use_ema_snr      = getattr(C, "USE_EMA_FOR_DOA_BELOW_SNR", 6.0)
+
+    # Phase history for coherence gating (separate from display history)
+    _ph_coh_hist = [collections.deque(maxlen=20) for _ in range(cfg.n_ant - 1)]
 
     while S.running:
         # ── IQ frame ─────────────────────────────────────────────────────────
@@ -165,14 +207,11 @@ def _acq_loop(src, cfg: UcaConfig, algo: str,
             N = 65536
             tau = 2 * np.pi * (pos[:, 0] * np.cos(demo_el) * np.sin(demo_az)
                                 + pos[:, 1] * np.cos(demo_el) * np.cos(demo_az))
-            # Demo: pure pilot tone at demo_az + per-channel gain imbalance +
-            # random phase offsets to simulate realistic hardware conditions.
             phase_offsets = np.deg2rad([0.0, 5.0, -8.0, 12.0, -3.0])
             gain_offsets  = np.array([1.0, 0.92, 1.08, 0.95, 1.03])
-            # Pilot tone is at PILOT_TONE_OFFSET_HZ in the demo spectrum
             t = np.arange(N, dtype=np.float64)
             pilot_phasor = np.exp(2j * np.pi * _pilot_hz / _sample_rate * t)
-            snr_linear = 10 ** (15.0 / 10.0)   # 15 dB SNR on the pilot
+            snr_linear = 10 ** (15.0 / 10.0)
             s = pilot_phasor * np.sqrt(snr_linear)
             X = (
                 np.outer(
@@ -198,59 +237,105 @@ def _acq_loop(src, cfg: UcaConfig, algo: str,
             continue
 
         try:
-            # ── Pilot tone extraction (narrow-band SNR boost) ─────────────────
-            if _pilot_enabled and _pilot_hz != 0.0:
-                X_proc = extract_pilot_tone(X, _sample_rate, _pilot_hz, _pilot_bw)
+            # ── Pilot tone extraction ─────────────────────────────────────────
+            if C.PILOT_TONE_ENABLED:
+                X_proc = extract_pilot_tone(
+                    X, C.SAMPLE_RATE_HZ, C.PILOT_TONE_OFFSET_HZ, C.PILOT_TONE_BW_HZ
+                )
             else:
                 X_proc = X
 
-            # ── Per-channel amplitude normalisation ───────────────────────────
-            if _amp_norm:
+            # ── Amplitude normalization ───────────────────────────────────────
+            if C.AMPLITUDE_NORMALIZE:
                 X_proc = amplitude_normalize_channels(X_proc)
+
+            # ── Enhanced preprocessing (optional) ─────────────────────────────
+            if getattr(C, "ENABLE_ENHANCED_PREPROCESSING", False):
+                X_proc = enhanced_preprocessing_doa(
+                    X_proc, cfg,
+                    sample_rate=C.SAMPLE_RATE_HZ,
+                    center_freq=C.FREQ_HZ,
+                    apply_spatial_smoothing=getattr(C, "APPLY_SPATIAL_SMOOTHING", True),
+                    apply_mfba=getattr(C, "APPLY_MFBA", True),
+                    apply_adaptive_filtering=getattr(C, "APPLY_ADAPTIVE_FILTERING", False),
+                    apply_outlier_rejection=getattr(C, "APPLY_OUTLIER_REJECTION", False)
+                )
 
             # ── EMA covariance ────────────────────────────────────────────────
             R = acc.update(X_proc)
 
-            # High-elevation fallback: at cos(el)→0 inter-channel phase spread
-            # shrinks → MUSIC spectrum becomes flat → switch to Bartlett.
-            _el_now    = S.el_deg
-            _use_algo  = algo
-            if _el_now >= C.HIGH_EL_THRESHOLD_DEG and algo in ("music", "capon"):
+            # ── Pre-DoA quality metrics (computed on R_EMA) ──────────────────
+            eig         = eigenvalue_spread_uca_db(R)
+            snr         = snr_uca_db(R)
+            phase_diffs = np.degrees(np.angle(R[1:, 0]))
+
+            # ── Phase coherence gating ────────────────────────────────────────
+            if _phase_coh_en and not _check_phase_coherence(
+                phase_diffs, _ph_coh_hist, _phase_max_jump
+            ):
+                with S.lock:
+                    S.snr_db  = snr
+                    S.eig_db  = eig
+                    S.no_signal = True
+                    S.no_doa    = True
+                    S.el_hist.append(S.el_deg)
+                    S.snr_hist.append(snr)
+                    for _i, _p in enumerate(phase_diffs):
+                        S.phase_hist[_i].append(float(_p))
+                    S.frame_n += 1
+                continue
+
+            # Accept phase diffs into coherence history
+            for _i, _p in enumerate(phase_diffs):
+                _ph_coh_hist[_i].append(float(_p))
+
+            # ── SNR-adaptive algorithm selection ──────────────────────────────
+            _el_now   = S.el_deg
+            _use_algo = _select_algo_by_snr(algo, snr)
+            if _el_now >= C.HIGH_EL_THRESHOLD_DEG and _use_algo in ("music", "capon"):
                 _use_algo = C.HIGH_EL_ALGO.lower()
 
+            # At low SNR, use R_EMA for DoA instead of single-frame R
+            R_doa = R
+            if snr < _use_ema_snr and acc.is_warm:
+                R_doa = R
+
             if _use_algo == "capon":
-                spec2d = doa_capon_uca_2d(X_proc, cfg, R_in=R,
+                spec2d = doa_capon_uca_2d(X_proc, cfg, R_in=R_doa,
                                           decorr=getattr(C, "CAPNT_DECORR", "none"))
             elif _use_algo == "bartlett":
-                spec2d = doa_bartlett_uca_2d(X_proc, cfg, R_in=R)
+                spec2d = doa_bartlett_uca_2d(X_proc, cfg, R_in=R_doa)
             else:
-                spec2d = doa_music_uca_2d(X_proc, cfg, R_in=R,
+                spec2d = doa_music_uca_2d(X_proc, cfg, R_in=R_doa,
                                           decorr=getattr(C, "MUSIC_DECORR", "none"))
 
-            # Collapse elevation scan → 1-D azimuth spectrum (max over elevation)
             az_spec = np.max(spec2d, axis=0)
-
             az, el_est, papr = find_peak_uca_2d(spec2d, cfg)
 
-            # Auto-fallback to Bartlett when spectrum is flat (high-el or low PAPR)
+            # Auto-fallback to Bartlett when spectrum is flat
             if papr < _PAPR_FLAT_DB and _use_algo != "bartlett":
-                spec2d_b = doa_bartlett_uca_2d(X_proc, cfg, R_in=R)
+                spec2d_b = doa_bartlett_uca_2d(X_proc, cfg, R_in=R_doa)
                 az_b, el_b, papr_b = find_peak_uca_2d(spec2d_b, cfg)
                 if papr_b > papr:
                     spec2d, az, el_est, papr = spec2d_b, az_b, el_b, papr_b
                     az_spec = np.max(spec2d, axis=0)
 
-            eig         = eigenvalue_spread_uca_db(R)
-            snr         = snr_uca_db(R)
-            phase_diffs = np.degrees(np.angle(R[1:, 0]))   # (4,) ΔΦ CH1..4 vs CH0
         except Exception as exc:
             print(f"[DoA] frame #{S.frame_n+1}: {exc}")
             continue
 
-        # Signal detection: eigenvalue spread is robust to elevation angle
-        # (unlike PAPR, which drops at high el where the spectrum flattens).
         has_signal = float(eig[0]) >= C.EIG_SPREAD_MIN_DB
         has_doa    = has_signal and papr >= _PAPR_MIN_DB
+
+        # ── Circular az outlier rejection ─────────────────────────────────
+        if has_doa and _az_outlier_en:
+            with S.lock:
+                n_hist = len(S.az_hist)
+            if n_hist >= _az_outlier_min_n:
+                with S.lock:
+                    az_med = S.az_median
+                if _circ_distance(az, az_med) > _az_outlier_max:
+                    has_doa = False
 
         with S.lock:
             S.az_spec    = (1 - _SPEC_EMA) * S.az_spec + _SPEC_EMA * az_spec
@@ -273,7 +358,6 @@ def _acq_loop(src, cfg: UcaConfig, algo: str,
                     S.az_median = _circ_median(np.array(S.az_hist))
                 else:
                     S.az_median = az
-            # ── Recording (every frame, valid or not) ─────────────────────────
             if S.rec_enabled:
                 S.rec_t.append(time.time())
                 S.rec_az.append(float(az))
@@ -587,7 +671,7 @@ def _save_recording(
         print("[REC] No frames recorded — file not saved.")
         return None
     if out_dir is None:
-        out_dir = os.path.dirname(os.path.abspath(__file__))
+        out_dir = _DATA_DIR
     os.makedirs(out_dir, exist_ok=True)
     ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     path = os.path.join(out_dir, f"{label}_{ts}.npz")
@@ -683,11 +767,18 @@ def main() -> None:
         if getattr(C, "PILOT_TONE_ENABLED", False) and getattr(C, "PILOT_TONE_OFFSET_HZ", 0) != 0
         else "broadband (no pilot tone)"
     )
+    print("=" * 58)
     print(f"  DoA CW — {args.algo.upper()}  @  {freq_hz/1e6:.3f} MHz")
     print(f"  UCA: {cfg.n_ant} ant  r={args.radius:.3f}λ  offset={args.offset:.1f}°")
     print(f"  Heimdall: {C.HEIMDALL_HOST}:{C.HEIMDALL_PORT}")
     print(f"  Mode: {pilot_str}")
     print(f"  Amplitude normalise: {getattr(C, 'AMPLITUDE_NORMALIZE', True)}")
+    if getattr(C, "SNR_ADAPTIVE_ENABLED", False):
+        print(f"  SNR-adaptive algo: BARTLETT<{C.SNR_LOW_DB:.0f}dB / CAPON / {args.algo.upper()}>{C.SNR_HIGH_DB:.0f}dB")
+    if getattr(C, "PHASE_COHERENCE_ENABLED", False):
+        print(f"  Phase coherence gate: ±{C.PHASE_COHERENCE_MAX_JUMP_DEG:.0f}°")
+    if getattr(C, "AZ_OUTLIER_ENABLED", False):
+        print(f"  Az outlier rejection: ±{C.AZ_OUTLIER_MAX_DEV_DEG:.0f}° from median")
     if S.rec_enabled:
         rec_dir_str = out_dir or os.path.dirname(os.path.abspath(__file__))
         print(f"  Recording: every {args.rec_every} frames → {rec_dir_str}")

@@ -43,6 +43,7 @@ from types import SimpleNamespace
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
+_DATA_DIR = os.path.normpath(os.path.join(_SRC, "..", "data", "doa_868"))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 sys.path.insert(0, _HERE)
@@ -61,8 +62,10 @@ from hardware.kraken_iq_source import KrakenIQSource
 from core.doa_uca_2d import (
     UcaConfig, CovarianceAccumulatorUca,
     doa_music_uca_2d, doa_capon_uca_2d, doa_bartlett_uca_2d,
+    doa_root_music_uca_2d, doa_unitary_esprit_uca_2d, doa_mfba_music_uca_2d,
     find_peak_uca_2d, eigenvalue_spread_uca_db, snr_uca_db,
     extract_pilot_tone, amplitude_normalize_channels,
+    enhanced_preprocessing as enhanced_preprocessing_doa,
 )
 from core.doa_algorithms import apply_phase_correction as _apply_phase_correction
 
@@ -114,8 +117,12 @@ _PAPR_FLAT_DB    = 2.0
 # preamble captures with up to ±20° hardware phase errors (min papr = 12.4 dB).
 # After hardware calibration (see CHANNEL_PHASE_OFFSETS_DEG in config.py), raise
 # back to 20 dB for a cleaner gate.
-_PAPR_INST_MIN_DB = 12.0
-_SPEC_EMA        = 0.20  # faster update than CW: each burst is ~90ms
+# NOTE: soglia dipende dall'algoritmo:
+#   MUSIC/Capon:    12 dB (super-resolution → picchi molto netti)
+#   Bartlett:       2 dB  (beamformer convenzionale → picchi più larghi)
+_PAPR_INST_MIN_DB_MUSIC    = 12.0
+_PAPR_INST_MIN_DB_BARTLETT = 2.0
+_SPEC_EMA                  = 0.20  # faster update than CW: each burst is ~90ms
 
 
 def _check_heimdall(host: str, port: int) -> bool:
@@ -273,6 +280,26 @@ def _find_tone_onset(
 # Acquisition + DoA thread
 # =============================================================================
 
+def _circ_distance_burst(a_deg: float, b_deg: float) -> float:
+    """Shortest angular distance between two azimuths [0..360°]."""
+    d = abs(a_deg - b_deg) % 360.0
+    return min(d, 360.0 - d)
+
+
+def _select_algo_burst(user_algo: str, snr_db: float) -> str:
+    """SNR-adaptive algorithm selection for burst mode."""
+    if not getattr(C, "SNR_ADAPTIVE_ENABLED", False):
+        return user_algo
+    snr_high = getattr(C, "SNR_HIGH_DB", 10.0)
+    snr_low  = getattr(C, "SNR_LOW_DB", 4.0)
+    if snr_db >= snr_high:
+        return user_algo
+    elif snr_db <= snr_low:
+        return "bartlett"
+    else:
+        return "capon" if user_algo != "bartlett" else "bartlett"
+
+
 def _acq_loop(
     src, cfg: UcaConfig, algo: str,
     acc: CovarianceAccumulatorUca, S: SimpleNamespace,
@@ -282,31 +309,39 @@ def _acq_loop(
     pos     = cfg.positions
     _fs     = _FS
 
-    # Pilot extraction parameters
     _pilot_bw    = float(getattr(C, "PILOT_TONE_BW_HZ", 5_000))
     _amp_norm    = getattr(C, "AMPLITUDE_NORMALIZE", True)
 
-    # Hardware phase calibration (per-channel offset in degrees, ch0 = reference 0°)
     _phase_offs  = list(getattr(C, "CHANNEL_PHASE_OFFSETS_DEG", [0.0] * cfg.n_ant))
-    _phase_offs  = (_phase_offs + [0.0] * cfg.n_ant)[: cfg.n_ant]  # pad/clip
+    _phase_offs  = (_phase_offs + [0.0] * cfg.n_ant)[: cfg.n_ant]
     _has_cal     = any(o != 0.0 for o in _phase_offs)
-    # Circular EMA alpha for per-burst az angle smoothing
     _az_alpha    = float(getattr(C, "AZ_SMOOTH_ALPHA", 0.50))
 
-    # Consecutive-no-burst counter — warns user if TX is likely in CW mode
     _no_burst_streak = 0
 
-    # Streaming sample buffer: accumulate CPI frames until we have enough
-    # for reliable burst detection (≥ 1 full SUPERFRAME).
+    # Multi-burst covariance accumulation
+    _multi_n       = max(1, getattr(C, "MULTI_BURST_N", 1))
+    _R_accum       = None
+    _accum_count   = 0
+    _use_ema_snr   = getattr(C, "USE_EMA_FOR_DOA_BELOW_SNR", 6.0)
+
+    # Phase coherence gating
+    _phase_coh_en  = getattr(C, "PHASE_COHERENCE_ENABLED", False)
+    _phase_max_jmp = getattr(C, "PHASE_COHERENCE_MAX_JUMP_DEG", 60.0)
+    _ph_coh_hist   = [collections.deque(maxlen=20) for _ in range(cfg.n_ant - 1)]
+
+    # Az outlier rejection
+    _az_outlier_en    = getattr(C, "AZ_OUTLIER_ENABLED", False)
+    _az_outlier_max   = getattr(C, "AZ_OUTLIER_MAX_DEV_DEG", 45.0)
+    _az_outlier_min_n = getattr(C, "AZ_OUTLIER_MIN_HISTORY", 5)
+
     _buf: list[np.ndarray] = []
     _buf_len = 0
-    _min_buf = _SF_SAMPLES + _WINDOW_SAMPLES + 2048  # need ≥ superframe + burst
+    _min_buf = _SF_SAMPLES + _WINDOW_SAMPLES + 2048
 
     while S.running:
         # ── Get IQ frame ────────────────────────────────────────────────────
         if demo:
-            # Synthetic: inject one IRA burst at demo_az every 90 ms.
-            # Silence + burst + silence fills one synthetic "CPI".
             demo_az = np.deg2rad(45.0)
             demo_el = np.deg2rad(10.0)
             gain_off  = np.array([1.0, 0.92, 1.08, 0.95, 1.03])
@@ -316,24 +351,18 @@ def _acq_loop(
 
             N_frame = _SF_SAMPLES
             t = np.arange(N_frame, dtype=np.float64)
-            # Place burst at sample 512
             burst_start = 512
-            burst_len   = _BURST_SAMPLES
-            pre_len     = _PRE_SAMPLES
-            # Preamble tone at +3125 Hz
             preamble_tone = np.exp(2j * np.pi * _PREAMBLE_TONE_HZ / _fs * t)
 
             X = np.zeros((cfg.n_ant, N_frame), dtype=np.complex128)
-            snr_lin = 10 ** (18.0 / 10.0)   # 18 dB SNR
+            snr_lin = 10 ** (18.0 / 10.0)
             for k in range(cfg.n_ant):
                 channel_phase = tau[k] + phase_off[k]
-                # Preamble (pure tone with array phase)
-                X[k, burst_start: burst_start + pre_len] += (
+                X[k, burst_start: burst_start + _PRE_SAMPLES] += (
                     gain_off[k] * np.exp(1j * channel_phase)
-                    * preamble_tone[burst_start: burst_start + pre_len]
+                    * preamble_tone[burst_start: burst_start + _PRE_SAMPLES]
                     * np.sqrt(snr_lin)
                 )
-            # Add white noise everywhere
             X += ((rng.standard_normal((cfg.n_ant, N_frame))
                    + 1j * rng.standard_normal((cfg.n_ant, N_frame))) / np.sqrt(2))
 
@@ -351,19 +380,15 @@ def _acq_loop(
         with S.lock:
             S.frame_n += 1
 
-        # ── Accumulate into sliding-window buffer ────────────────────────────
         _buf.append(frame)
         _buf_len += frame.shape[1]
 
         if _buf_len < _min_buf:
-            continue   # not enough samples yet
+            continue
 
-        # Flatten to one contiguous array for detection
         X_stream = np.concatenate(_buf, axis=1)
         n_total  = X_stream.shape[1]
 
-        # Sliding-window trim: keep the last _WINDOW_SAMPLES as overlap so
-        # bursts that straddle frame boundaries are never missed.
         _keep = _WINDOW_SAMPLES + 512
         if n_total > _keep:
             _buf = [X_stream[:, -_keep:]]
@@ -372,21 +397,18 @@ def _acq_loop(
             _buf = [X_stream]
             _buf_len = n_total
 
-        # ── Burst detection on channel 0 (reference) ─────────────────────────
         bursts = _detect_bursts(X_stream[0])
 
+        pwr = float(np.mean(np.abs(X_stream) ** 2))
+        pwr_db = 10 * np.log10(pwr + 1e-20)
+
         if not bursts:
-            # No burst in this block — update energy display anyway
-            pwr = float(np.mean(np.abs(X_stream) ** 2))
             with S.lock:
-                S.energy_hist.append(10 * np.log10(pwr + 1e-20))
+                S.energy_hist.append(pwr_db)
                 S.no_signal = True
             _no_burst_streak += 1
             if _no_burst_streak == 10:
-                print("[WARN] 10 consecutive frames with no burst detected.\n"
-                      "       Make sure LibreSDR is in IRA/BURST mode (not CW).\n"
-                      "       Use task 'LibreSDR: TX 868 MHz — GUI BURST' or\n"
-                      "       pass --mode ira to tx_868_gui.py")
+                print("[WARN] 10 frames without burst — check TX is in IRA/BURST mode")
             continue
 
         _no_burst_streak = 0
@@ -394,51 +416,53 @@ def _acq_loop(
         for b_start in bursts:
             b_end = min(b_start + _WINDOW_SAMPLES, n_total)
             if b_end - b_start < _PRE_SAMPLES:
-                continue   # too close to end of buffer
+                continue
 
-            # Locate the actual IRA preamble tone within the burst window.
-            # The energy detector may fire on the DATA portion (wideband → low
-            # PAPR); scanning for the 3125 Hz peak corrects the alignment.
-            tone_start = _find_tone_onset(
-                X_stream[0], b_start, n_total
-            )
+            tone_start = _find_tone_onset(X_stream[0], b_start, n_total)
             tone_end = min(tone_start + _PRE_SAMPLES, n_total)
             if tone_end - tone_start < _PRE_SAMPLES // 2:
-                continue   # not enough preamble to process
+                continue
 
             X_pre = X_stream[:, tone_start: tone_end]
-
             pwr_db = float(10 * np.log10(np.mean(np.abs(X_pre) ** 2) + 1e-20))
 
-            # ── Pilot tone extraction (preamble tone at +3125 Hz) ─────────────
-            X_nb = extract_pilot_tone(X_pre, _fs, float(_PREAMBLE_TONE_HZ), _pilot_bw)
-
-            # ── Per-channel amplitude normalisation ───────────────────────────
-            if _amp_norm:
-                X_nb = amplitude_normalize_channels(X_nb)
-
-            # ── Hardware phase calibration ────────────────────────────────────
-            # Compensates cable-length differences and ADC phase imbalances that
-            # shift the steering vectors relative to theoretical UCA positions.
-            # Without calibration, instantaneous MUSIC PAPR drops from ≥29 dB to
-            # ~14-17 dB at ±10-15° error, limiting preamble detection rate.
-            # Configure CHANNEL_PHASE_OFFSETS_DEG in config.py (run --calibrate).
-            if _has_cal:
-                X_cal = _apply_phase_correction(X_nb, _phase_offs)
+            # ── Pilot tone extraction ─────────────────────────────────────────
+            if C.PILOT_TONE_ENABLED:
+                X_proc = extract_pilot_tone(
+                    X_pre, C.SAMPLE_RATE_HZ, C.PILOT_TONE_OFFSET_HZ, C.PILOT_TONE_BW_HZ
+                )
             else:
-                X_cal = X_nb
+                X_proc = X_pre
 
-            # ── Instantaneous covariance + quality gate ───────────────────────
+            if C.AMPLITUDE_NORMALIZE:
+                X_proc = amplitude_normalize_channels(X_proc)
+
+            if getattr(C, "ENABLE_ENHANCED_PREPROCESSING", False):
+                X_proc = enhanced_preprocessing_doa(
+                    X_proc, cfg,
+                    sample_rate=C.SAMPLE_RATE_HZ,
+                    center_freq=C.FREQ_HZ,
+                    apply_spatial_smoothing=getattr(C, "APPLY_SPATIAL_SMOOTHING", True),
+                    apply_mfba=getattr(C, "APPLY_MFBA", True),
+                    apply_adaptive_filtering=getattr(C, "APPLY_ADAPTIVE_FILTERING", False),
+                    apply_outlier_rejection=getattr(C, "APPLY_OUTLIER_REJECTION", False)
+                )
+
+            if _has_cal:
+                X_cal = _apply_phase_correction(X_proc, _phase_offs)
+            else:
+                X_cal = X_proc
+
             try:
                 R_inst = (X_cal @ X_cal.conj().T) / X_cal.shape[1]
                 snr    = snr_uca_db(R_inst)
                 eig    = eigenvalue_spread_uca_db(R_inst)
 
-                # Stage 1 fast-reject: skip MUSIC if eigenspread too low
+                # Stage 1: eigenspread gate
                 if eig[0] < C.EIG_SPREAD_MIN_DB:
                     with S.lock:
-                        S.snr_db  = snr
-                        S.eig_db  = eig
+                        S.snr_db    = snr
+                        S.eig_db    = eig
                         S.no_signal = True
                         S.no_doa    = True
                         S.energy_hist.append(pwr_db)
@@ -446,23 +470,55 @@ def _acq_loop(
                         S.burst_n += 1
                     continue
 
-                # Stage 2: instantaneous MUSIC on R_inst — per-burst DoA estimator.
-                # For a genuine preamble window (rank-1 after pilot BPF), MUSIC
-                # gives papr_inst ≥ 12 dB even with ±20° HW phase errors.
-                # For DATA/noise windows the BPF output is near-isotropic →
-                # papr_inst ≤ 12 dB → rejected.  This separation makes MUSIC
-                # the SIGNAL DETECTOR and DOA ESTIMATOR simultaneously.
-                spec2d_inst = doa_music_uca_2d(X_cal, cfg, R_in=R_inst)
-                az_inst, el_inst, papr_inst = find_peak_uca_2d(spec2d_inst, cfg)
+                # ── Multi-burst covariance accumulation ──────────────────────
+                if _R_accum is None:
+                    _R_accum = R_inst.copy()
+                else:
+                    _R_accum += R_inst
+                _accum_count += 1
 
-                is_preamble = (papr_inst >= _PAPR_INST_MIN_DB)
+                if _accum_count < _multi_n:
+                    with S.lock:
+                        S.snr_db    = snr
+                        S.eig_db    = eig
+                        S.no_signal = False
+                        S.no_doa    = True
+                        S.energy_hist.append(pwr_db)
+                        S.snr_hist.append(snr)
+                        S.burst_n += 1
+                    continue
+
+                R_multi = _R_accum / _accum_count
+                _R_accum = None
+                _accum_count = 0
+
+                # At low SNR, prefer R_EMA for DoA
+                if snr < _use_ema_snr and acc.is_warm and acc.R is not None:
+                    R_doa = acc.R
+                else:
+                    R_doa = R_multi
+
+                # Stage 2: DoA with SNR-adaptive algorithm
+                _use_algo = _select_algo_burst(algo, snr)
+                if _use_algo == "capon":
+                    spec2d_inst = doa_capon_uca_2d(X_cal, cfg, R_in=R_doa,
+                                                    decorr=getattr(C, "CAPNT_DECORR", "none"))
+                elif _use_algo == "bartlett":
+                    spec2d_inst = doa_bartlett_uca_2d(X_cal, cfg, R_in=R_doa)
+                else:
+                    spec2d_inst = doa_music_uca_2d(X_cal, cfg, R_in=R_doa,
+                                                   decorr=getattr(C, "MUSIC_DECORR", "none"))
+
+                az_inst, el_inst, papr_inst = find_peak_uca_2d(spec2d_inst, cfg)
+                _papr_threshold = _PAPR_INST_MIN_DB_BARTLETT if _use_algo == "bartlett" else _PAPR_INST_MIN_DB_MUSIC
+
+                is_preamble = (papr_inst >= _papr_threshold)
 
                 if not is_preamble:
-                    # Non-preamble window: update EMA from existing acc, skip DoA
-                    R = acc.R if acc.R is not None else R_inst
+                    R = acc.R if acc.R is not None else R_doa
                     with S.lock:
-                        S.snr_db  = snr
-                        S.eig_db  = eig
+                        S.snr_db    = snr
+                        S.eig_db    = eig
                         S.no_signal = True
                         S.no_doa    = True
                         S.energy_hist.append(pwr_db)
@@ -471,13 +527,33 @@ def _acq_loop(
                     continue
 
                 # ── Valid preamble burst ──────────────────────────────────────
-                # Update R_EMA for temporal multipath decorrelation / phase display
                 R = acc.update(X_cal)
+                phase_diffs = np.degrees(np.angle(R[1:, 0]))
 
-                # Circular EMA on per-burst az angle — responsive and noise-free.
-                # This replaces the old R_EMA MUSIC (which was frozen between
-                # EMA updates).  Each valid preamble gives a fresh az sample;
-                # circular EMA with alpha=AZ_SMOOTH_ALPHA smooths over ~2 bursts.
+                # ── Phase coherence gating ────────────────────────────────────
+                if _phase_coh_en:
+                    _coherent = True
+                    for _i, _p in enumerate(phase_diffs):
+                        hist = _ph_coh_hist[_i]
+                        if len(hist) >= 3:
+                            med = _circ_median(np.array(hist))
+                            if _circ_distance_burst(float(_p), med) > _phase_max_jmp:
+                                _coherent = False
+                                break
+                    if not _coherent:
+                        with S.lock:
+                            S.snr_db  = snr
+                            S.eig_db  = eig
+                            S.no_signal = False
+                            S.no_doa    = True
+                            S.energy_hist.append(pwr_db)
+                            S.snr_hist.append(snr)
+                            S.burst_n += 1
+                        continue
+                    for _i, _p in enumerate(phase_diffs):
+                        _ph_coh_hist[_i].append(float(_p))
+
+                # Circular EMA on az angle
                 az_ph     = np.exp(1j * np.deg2rad(az_inst))
                 S.az_phasor = _az_alpha * S.az_phasor + (1.0 - _az_alpha) * az_ph
                 az        = float(np.degrees(np.angle(S.az_phasor)) % 360.0)
@@ -486,18 +562,32 @@ def _acq_loop(
                 az_spec   = np.max(spec2d, axis=0)
                 papr      = papr_inst
 
-                # phase_diffs from R_EMA — temporal average of calibrated preamble
-                # covariances; reflects true geometry + residual HW offset.
-                phase_diffs = np.degrees(np.angle(R[1:, 0]))
-
             except Exception as exc:
                 print(f"[DoA] burst #{S.burst_n+1}: {exc}")
                 continue
 
-            # has_signal = valid preamble detected (papr_inst ≥ threshold)
-            # has_doa    = same (az_inst is already the DoA result)
             has_signal = True
             has_doa    = True
+
+            # ── Az outlier rejection ──────────────────────────────────────
+            if _az_outlier_en:
+                with S.lock:
+                    n_hist = len(S.az_hist)
+                    az_med = S.az_median
+                if n_hist >= _az_outlier_min_n:
+                    if _circ_distance_burst(az, az_med) > _az_outlier_max:
+                        has_doa = False
+
+            if not has_doa:
+                with S.lock:
+                    S.snr_db    = snr
+                    S.eig_db    = eig
+                    S.no_signal = False
+                    S.no_doa    = True
+                    S.energy_hist.append(pwr_db)
+                    S.snr_hist.append(snr)
+                    S.burst_n += 1
+                continue
 
             with S.lock:
                 S.az_spec     = (1 - _SPEC_EMA) * S.az_spec + _SPEC_EMA * az_spec
@@ -564,7 +654,7 @@ def _save_recording(
         print("[REC] No bursts recorded — file not saved.")
         return None
     if out_dir is None:
-        out_dir = os.path.dirname(os.path.abspath(__file__))
+        out_dir = _DATA_DIR
     os.makedirs(out_dir, exist_ok=True)
     ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     path = os.path.join(out_dir, f"{label}_{ts}.npz")
@@ -1003,6 +1093,15 @@ def main() -> None:
         print(f"  HW phase cal:  {[f'{o:.1f}' for o in phase_offs]} deg")
     else:
         print("  HW phase cal:  uncalibrated — run --calibrate <az_deg>")
+    _multi_n = max(1, getattr(C, "MULTI_BURST_N", 1))
+    if _multi_n > 1:
+        print(f"  Multi-burst:   accumulate {_multi_n} bursts before DoA (~{10*np.log10(_multi_n):.1f} dB gain)")
+    if getattr(C, "SNR_ADAPTIVE_ENABLED", False):
+        print(f"  SNR-adaptive:  BARTLETT<{C.SNR_LOW_DB:.0f}dB / CAPON / {args.algo.upper()}>{C.SNR_HIGH_DB:.0f}dB")
+    if getattr(C, "PHASE_COHERENCE_ENABLED", False):
+        print(f"  Phase gate:    ±{C.PHASE_COHERENCE_MAX_JUMP_DEG:.0f}°")
+    if getattr(C, "AZ_OUTLIER_ENABLED", False):
+        print(f"  Az outlier:    ±{C.AZ_OUTLIER_MAX_DEV_DEG:.0f}° from median")
     burst_dir_str = out_dir or os.path.dirname(os.path.abspath(__file__))
     if S.rec_enabled:
         print(f"  Recording every {args.rec_every} bursts → {burst_dir_str}")

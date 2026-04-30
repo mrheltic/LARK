@@ -67,10 +67,14 @@ RADIUS_LAMBDA  = 0.4253
 #  Case 2 — known physical radius (e.g. 12.5 cm at 868 MHz, λ=34.56 cm):
 #    RADIUS_LAMBDA = 0.125 / (300e6 / 868e6) ≈ 0.362
 
-ANT_CCW = True
+ANT_CCW = False
 # True  — antennas physically arranged counter-clockwise (CCW) viewed from above.
 # False — clockwise (CW).
 # With CCW antennas and CW steering: az_est = 360° − az_real for az ≠ 0°/180°.
+#
+# Verification: place TX at a known azimuth (e.g. 90° East).
+#   If az_est ≈  90° → ANT_CCW is correct.
+#   If az_est ≈ 270° → flip ANT_CCW (mirror ambiguity due to CW/CCW mismatch).
 
 ANT0_OFFSET_DEG = 0.0
 # Rotation of antenna 0 relative to geographic North [degrees].
@@ -87,14 +91,19 @@ GAIN_DB   = 40            # KrakenSDR IF gain [dB].
 #                          #  Lower back to 20–30 dB if ADC saturates (check eig values).
 
 # ── 2D DoA algorithm ─────────────────────────────────────────────────────────
-DOA_ALGORITHM  = "MUSIC"
-# "MUSIC"    — subspace super-resolution (recommended for CW beacon).
-#               Temporal EMA (COV_ALPHA=0.97) acts as indoor multipath decorrelation.
-# "CAPON"    — MVDR: good at low SNR but may lock onto multipath mean direction.
-# "BARTLETT" — conventional beamformer: robust fallback, lower resolution.
+DOA_ALGORITHM  = "BARTLETT"
+# "MUSIC"        — subspace super-resolution (raccomandato per CW beacon outdoor).
+# "CAPON"        — MVDR: buono a basso SNR ma può bloccarsi sulla direzione media del multipath.
+# "BARTLETT"     — beamformer convenzionale: ROBUSTO al multipath indoor, risoluzione inferiore
+#                    ma molto più stabile in ambiente indoor con riflessioni.  Consigliato per stanze.
+# "ROOT-MUSIC"   — approccio polynomial rooting: alta risoluzione, buono per UCA.
+# "UNITARY-ESPRIT"— elaborazione a valori reali: efficiente computazionalmente.
+# "MFBA-MUSIC"   — Modified Forward-Backward Averaging: stima covarianza migliorata.
+#
+# INDOOR (stanza piccola, molto multipath):  BARTLETT  ← più stabile, meno jitter
+# OUTDOOR / LOS (linea di vista libera):     MUSIC     ← massima risoluzione
 
-NUM_SIGNALS    = 1        # expected simultaneous sources
-#                          # 0 = auto-detect via MDL (slower, useful in complex RF env.)
+NUM_SIGNALS    = 1        # sorgenti attese simultanee
 
 # ── 2D scan grid ─────────────────────────────────────────────────────────────
 N_AZ       = 180          # azimuth scan points (180 → 2° step)
@@ -102,20 +111,17 @@ N_EL       = 36           # elevation scan points (36 → 2.5° step from 0° to
 EL_MIN_DEG = 0.0          # minimum elevation [°] — 0° for ground-level ISM beacons
 
 # ── Covariance EMA accumulation ──────────────────────────────────────────────
-COV_ALPHA  = 0.90         # EMA weight  (time constant τ = 1/(1-α) frames)
-#                          # 0.90 → ~10 valid-burst frames of memory ≈ 1-2 s at 11 Hz
-#                          # burst rate (reduced from 0.97 because the two-stage EMA
-#                          # gate now admits only genuine preamble captures; with the
-#                          # old contaminated EMA the long τ was needed but now shorter
-#                          # τ converges faster and tracks slow hardware drift).
-#                          # Lower to 0.50–0.70 for moving sources.
+COV_ALPHA  = 0.95         # EMA weight  (time constant τ = 1/(1-α) frames)
+#                          # 0.95 → ~20 valid-burst frames of memory ≈ 3-4 s
+#                          # INDOOR: usare α ALTO (0.95-0.98) per mediare su più
+#                          # riflessioni e ottenere direzione stabile.
+#                          # OUTDOOR / TX in movimento: usare α BASSO (0.50-0.70).
 
-AZ_SMOOTH_ALPHA = 0.50
+AZ_SMOOTH_ALPHA = 0.70
 # Circular EMA smoothing on the per-burst az angle estimate.
-# τ = 1 / (1 − α) valid-preamble bursts.  At 0.50 → τ ≈ 2 bursts ≈ 0.76 s at
-# the 2.6 Hz preamble-detection rate observed in field recordings.
-# Tracks TX movements with ~1.5 s lag; higher values mean slower but smoother display.
-# Set to 0.0 to disable (raw per-burst output).
+# τ = 1 / (1 − α) valid-preamble bursts.
+# INDOOR: α=0.70 → τ≈3.3 burst → più stabile contro il multipath.
+# OUTDOOR: α=0.50 → τ≈2 burst → più reattivo.
 
 # ── Hardware phase calibration ────────────────────────────────────────────────
 CHANNEL_PHASE_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
@@ -137,42 +143,29 @@ CHANNEL_PHASE_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
 
 # ── Squelch ───────────────────────────────────────────────────────────────────
 SQUELCH_ENABLED      = True
-SQUELCH_THRESHOLD_DB = -60.0
+SQUELCH_THRESHOLD_DB = -55.0
 # Minimum mean IQ power [dBW] below which the frame is discarded.
-# From field data: valid frames at GAIN=20 had power ≈ −50…−40 dBW.
-# −60 dBW is a conservative floor; raise to −50 if noise bursts cause ghost estimates.
+# INDOOR: -55 dBW è un buon compromesso per stanze piccole (TX vicino → segnale forte).
+# Se vedi troppi "NO SIGNAL" con TX acceso, abbassa a -60 o -65.
+# Se vedi falsi segnali (ghost) con TX spento, alza a -50.
 
-EIG_SPREAD_MIN_DB = 2.5
+EIG_SPREAD_MIN_DB = 1.5
 # Minimum eigenvalue spread (λ_max / λ_noise in dB) to declare signal present.
-# Lowered from 3.0 → 2.5 (data-driven, burst session 20260428, N=3101):
-#   all 3101 detected bursts had λ1 ≥ 2.5 dB even at TX gain = −40 dB (SNR≈0 dB).
-#   Valid bursts (PAPR≥4 dB) showed λ1 ≈7 dB.  The 2.5 dB floor rejects only
-#   pure-noise frames while accepting weak-signal preamble captures.
+# IMPORTANTE: con BARTLETT (non MUSIC) l'eigenspread è intrinsecamente più basso
+# perché non c'è separazione netta sottospazio segnale/rumore.
+#   BARTLETT: usare 1.0-1.5 dB
+#   MUSIC:    usare 2.5-3.0 dB
+# Se perdi troppi burst validi, abbassa ulteriormente.
 
 # ── Pilot tone extraction ─────────────────────────────────────────────────────
+# ⚠️  IMPORTANTE: PILOT_TONE_ENABLED va abilitato SOLO in modalità CW (tono continuo).
+# In modalità BURST (IRA) il tono pilota è a +3125 Hz nel preamble e viene gestito
+# automaticamente dal codice burst-specifico.  Abilitare PILOT_TONE_ENABLED in burst
+# mode fa estrarre una banda a 100 kHz che contiene solo rumore → SNR crolla.
 SAMPLE_RATE_HZ        = 1_024_000
-# Heimdall DAQ sample rate [Hz] — must match daq_chain_config_868.ini sample_rate.
-# Used to compute FFT bin indices for pilot-tone extraction.
-
-PILOT_TONE_ENABLED    = True
-# Enable narrow-band extraction of the LibreSDR CW pilot tone.
-# When enabled, each IQ frame is bandpass-filtered around PILOT_TONE_OFFSET_HZ
-# before the covariance is computed.  This rejects broadband noise and interference,
-# yielding ~20 dB SNR improvement (10·log10(sample_rate / PILOT_TONE_BW_HZ)).
-# Requires LibreSDR to be transmitting at  LO_freq + PILOT_TONE_OFFSET_HZ.
-# Set PILOT_TONE_ENABLED = False when using a non-LibreSDR beacon (e.g. Arduino).
-
-PILOT_TONE_OFFSET_HZ  = 100_000
-# Pilot tone offset from the Heimdall LO centre frequency [Hz].
-# 100 kHz is chosen for exact FFT bin alignment at 1.024 MSPS / CPI 131072:
-#   bin = 100 000 × 131 072 / 1 024 000 = 12 800  (integer → zero spectral leakage)
-# Must match --pilot-offset passed to tx_868_libresdr.py.
-
-PILOT_TONE_BW_HZ      = 15_000
-# Extraction bandwidth [Hz].  Wider = higher tolerance for TX frequency drift;
-# narrower = more noise rejection.  Raised from 10 kHz → 15 kHz (2026-04-28):
-# at 868.1 MHz the AD9363 TCXO drift can reach ±3–4 kHz; 15 kHz ensures the
-# tone stays within the extraction window.  SNR penalty vs 10 kHz: <1 dB.
+PILOT_TONE_ENABLED    = False   # ← False per BURST mode, True solo per CW mode
+PILOT_TONE_OFFSET_HZ  = 100_000 # ← Usato solo se PILOT_TONE_ENABLED=True (CW mode)
+PILOT_TONE_BW_HZ      = 15_000  # ← Usato solo se PILOT_TONE_ENABLED=True (CW mode)
 
 # ── Per-channel amplitude normalisation ──────────────────────────────────────
 AMPLITUDE_NORMALIZE = True
@@ -180,6 +173,71 @@ AMPLITUDE_NORMALIZE = True
 # Cancels between-channel gain imbalance (up to ~5 dB measured on hardware).
 # Does not affect phase relationships (DoA accuracy is preserved).
 # Disable for hardware calibration sessions.
+
+# ── Enhanced preprocessing options ────────────────────────────────────────────
+# ⚠️ ATTENZIONE: il preprocessing avanzato può CORROMPERE il segnale se non
+# configurato correttamente.  Per indoor, è generalmente meglio lasciarlo
+# disabilitato e affidarsi all'EMA temporale (COV_ALPHA) per il multipath.
+ENABLE_ENHANCED_PREPROCESSING = False
+# Abilita tecniche avanzate di preprocessing basate sui paper scientifici:
+# - Spatial smoothing per decorrelare segnali coerenti (riflessioni indoor)
+# - Modified Forward-Backward Averaging (MFBA) per UCA
+# - Adaptive filtering per sopprimere interferenze
+# - Outlier rejection per statistica robusta
+
+APPLY_SPATIAL_SMOOTHING = False
+# Applica spatial smoothing per decorrelare segnali coerenti.
+# INDOOR: può essere utile ma richiede tuning.  Inizia con False.
+
+APPLY_MFBA = False
+# Applica Modified Forward-Backward Averaging per migliorare la stima della covarianza.
+
+APPLY_ADAPTIVE_FILTERING = False
+# ⚠️ PERICOLOSO: il filtraggio adattivo sottrae la media degli altri canali,
+# annullando completamente un segnale coerente su tutti i canali (come il nostro
+# burst IRA).  Lascia sempre False per questa applicazione.
+
+APPLY_OUTLIER_REJECTION = False
+# Applica reiezione statistica di outlier.  Utile solo per rumore impulsivo forte.
+
+# ── SNR-adaptive algorithm switching ──────────────────────────────────────────
+SNR_ADAPTIVE_ENABLED = True
+SNR_HIGH_DB = 10.0
+# Above this SNR, use the user-selected algorithm (MUSIC / Capon).
+# MUSIC at high SNR delivers the best resolution.
+SNR_LOW_DB  = 4.0
+# Below this SNR, force BARTLETT (most robust, degrades gracefully).
+# Between SNR_LOW and SNR_HIGH: use CAPON as a compromise.
+# Set SNR_ADAPTIVE_ENABLED = False to always use DOA_ALGORITHM.
+
+# ── Phase coherence gating ──────────────────────────────────────────────────
+PHASE_COHERENCE_ENABLED = True
+PHASE_COHERENCE_MAX_JUMP_DEG = 60.0
+# Reject a frame if ANY inter-channel phase difference jumps by more
+# than this from the running circular median.  Indoor multipath causes
+# sudden phase flips on individual bursts → this gates them out.
+# 60° works well for stationary TX; widen to 90° for moving TX.
+
+# ── Circular azimuth outlier rejection ───────────────────────────────────────
+AZ_OUTLIER_ENABLED = True
+AZ_OUTLIER_MAX_DEV_DEG = 45.0
+# Reject an az estimate that deviates more than this from the
+# running circular median.  This catches the wild 200° jumps
+# observed in indoor multipath (az_std ≈ 80° without gating).
+# 45° is conservative; tighten to 30° once array is calibrated.
+AZ_OUTLIER_MIN_HISTORY = 5
+# Minimum number of accepted estimates before outlier rejection kicks in.
+
+# ── Multi-burst / multi-frame accumulation ──────────────────────────────────
+MULTI_BURST_N = 3
+# Number of valid bursts to accumulate before running DoA.
+# Averaging N covariance matrices reduces noise by ~10*log10(N) dB.
+# 3 bursts → ~4.8 dB improvement; 5 → ~7 dB.
+# Set to 1 to disable (per-burst DoA as before).
+USE_EMA_FOR_DOA_BELOW_SNR = 6.0
+# When instantaneous SNR is below this, use the EMA covariance R for
+# DoA instead of the single-frame R_inst.  R_EMA has much lower noise
+# at the cost of tracking speed.
 
 # ── Display ───────────────────────────────────────────────────────────────────
 UPDATE_INTERVAL_MS = 200   # animation refresh interval [ms]  (200 ms ≈ 5 fps)
