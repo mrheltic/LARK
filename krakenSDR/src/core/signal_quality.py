@@ -23,14 +23,90 @@ from typing import Sequence
 
 import numpy as np
 
-# Re-export quality metrics defined in doa_algorithms_3d to provide a single
-# import path for callers that want *all* quality functions together.
-from .doa_algorithms_3d import (           # noqa: F401
-    eigenvalue_spread_db,
-    snr_from_covariance,
-    coherence_matrix,
-    CROSS_ARRAY_CANONICAL_ORDER,
-)
+# Import from new modular API
+from .array_geometry import CROSS_ARRAY_CANONICAL_ORDER
+from .doa_estimators import compute_papr as _compute_papr
+
+
+# =============================================================================
+# Quality metrics (moved from doa_algorithms_3d for cleaner separation)
+# =============================================================================
+
+def eigenvalue_spread_db(R: np.ndarray) -> np.ndarray:
+    """
+    Eigenvalue spread of covariance matrix in dB.
+    
+    Parameters
+    ----------
+    R : (M, M) array
+        Covariance matrix
+    
+    Returns
+    -------
+    spreads : (M,) array
+        Cumulative eigenvalue spreads in dB
+    """
+    ev = np.linalg.eigvalsh(R)
+    ev = np.sort(ev)[::-1]  # descending
+    ev_pos = np.maximum(ev, 1e-30)
+    
+    spreads = np.empty_like(ev)
+    for i in range(len(ev)):
+        spreads[i] = 10.0 * np.log10(ev_pos[0] / ev_pos[i])
+    
+    return spreads
+
+
+def snr_from_covariance(R: np.ndarray) -> float:
+    """
+    Estimate SNR from covariance matrix eigenvalue structure.
+    
+    Uses ratio of largest eigenvalue (signal+noise) to remaining (noise).
+    
+    Parameters
+    ----------
+    R : (M, M) array
+        Covariance matrix
+    
+    Returns
+    -------
+    snr_db : float
+        Estimated SNR in dB
+    """
+    ev = np.linalg.eigvalsh(R)
+    ev = np.sort(ev)[::-1]
+    
+    if len(ev) < 2:
+        return 0.0
+    
+    signal_plus_noise = ev[0]
+    noise_power = np.mean(ev[1:])
+    
+    if noise_power <= 0:
+        return 100.0  # Cap high SNR
+    
+    snr_linear = (signal_plus_noise - noise_power) / noise_power
+    return 10.0 * np.log10(max(snr_linear, 1e-10))
+
+
+def coherence_matrix(R: np.ndarray) -> np.ndarray:
+    """
+    Compute coherence (correlation coefficient) matrix from covariance.
+    
+    Parameters
+    ----------
+    R : (M, M) array
+        Covariance matrix
+    
+    Returns
+    -------
+    rho : (M, M) array
+        Coherence matrix with values in [0, 1]
+    """
+    diag = np.sqrt(np.maximum(np.real(np.diag(R)), 1e-30))
+    outer = np.outer(diag, diag)
+    rho = np.abs(R) / np.maximum(outer, 1e-30)
+    return np.clip(rho, 0.0, 1.0)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -216,11 +292,7 @@ def papr_db_from_spectrum(spec: np.ndarray) -> float:
     -------
     papr_db : float — PAPR in dB; 0 = flat (no peak); > 10 dB = clear peak
     """
-    s_lin  = 10.0 ** (np.clip(spec, -200.0, 0.0) / 10.0)
-    mean_v = float(np.mean(s_lin))
-    if mean_v < 1e-15:
-        return 0.0
-    return float(10.0 * np.log10(float(np.max(s_lin)) / mean_v))
+    return _compute_papr(spec)
 
 
 # ---------------------------------------------------------------------------
