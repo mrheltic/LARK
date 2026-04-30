@@ -74,12 +74,12 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
-_ROOT = os.path.dirname(os.path.dirname(_SRC))     # LARK/
-for _p in [_HERE, _SRC, _ROOT]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+_SRC_BOOT = str(Path(__file__).resolve().parents[2])  # krakenSDR/src
+if _SRC_BOOT not in sys.path:
+    sys.path.insert(0, _SRC_BOOT)
+
+from runtime_paths import setup_paths
+_HERE, _SRC, _ROOT, _APP = setup_paths(__file__, include_root=True)
 
 import numpy as np
 

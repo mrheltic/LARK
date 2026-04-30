@@ -36,15 +36,14 @@ import os
 import sys
 import time
 import threading
+from pathlib import Path
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_SRC  = os.path.dirname(os.path.dirname(_HERE))   # krakenSDR/src/
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
-# Always re-insert _HERE at 0: Python may have already added it further down
-# the list when the script launched, which would let krakenSDR/src/config.py
-# shadow the app-local apps/space/config.py.
-sys.path.insert(0, _HERE)
+_SRC_BOOT = str(Path(__file__).resolve().parents[2])  # krakenSDR/src
+if _SRC_BOOT not in sys.path:
+    sys.path.insert(0, _SRC_BOOT)
+
+from runtime_paths import setup_paths
+_HERE, _SRC, _ROOT, _APP = setup_paths(__file__, include_root=True)
 
 import numpy as np
 import matplotlib

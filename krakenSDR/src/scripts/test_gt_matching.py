@@ -19,15 +19,16 @@ import os
 import sys
 import time
 import collections
+from pathlib import Path
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_SRC  = os.path.dirname(os.path.dirname(_HERE))
-_ROOT = os.path.dirname(os.path.dirname(_SRC))
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
-sys.path.insert(0, _HERE)
+_SRC_BOOT = str(Path(__file__).resolve().parents[1])  # krakenSDR/src
+if _SRC_BOOT not in sys.path:
+    sys.path.insert(0, _SRC_BOOT)
+
+from runtime_paths import setup_paths
+_HERE, _SRC, _ROOT, _APP = setup_paths(
+    __file__, app_relative="apps/space", include_root=True
+)
 
 import numpy as np
 import config as C
