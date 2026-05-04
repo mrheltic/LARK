@@ -91,17 +91,16 @@ GAIN_DB   = 40            # KrakenSDR IF gain [dB].
 #                          #  Lower back to 20–30 dB if ADC saturates (check eig values).
 
 # ── 2D DoA algorithm ─────────────────────────────────────────────────────────
-DOA_ALGORITHM  = "BARTLETT"
-# "MUSIC"        — subspace super-resolution (raccomandato per CW beacon outdoor).
+DOA_ALGORITHM  = "MUSIC"
+# "MUSIC"        — subspace super-resolution.  PAPR 17-20 dB con nsig=2 indoor.
+#                  Con MUSIC_DECORR='fb' e NUM_SIGNALS=2 gestisce il multipath indoor.
+#                  RACCOMANDATO per questo setup (verificato su dati reali 2026-05-04).
 # "CAPON"        — MVDR: buono a basso SNR ma può bloccarsi sulla direzione media del multipath.
-# "BARTLETT"     — beamformer convenzionale: ROBUSTO al multipath indoor, risoluzione inferiore
-#                    ma molto più stabile in ambiente indoor con riflessioni.  Consigliato per stanze.
+# "BARTLETT"     — beamformer convenzionale: PAPR max ~6 dB con 5 antenne (beamwidth 72°)
+#                  → cade sempre sotto la soglia PAPR_INST_MIN_DB. Non usare.
 # "ROOT-MUSIC"   — approccio polynomial rooting: alta risoluzione, buono per UCA.
 # "UNITARY-ESPRIT"— elaborazione a valori reali: efficiente computazionalmente.
 # "MFBA-MUSIC"   — Modified Forward-Backward Averaging: stima covarianza migliorata.
-#
-# INDOOR (stanza piccola, molto multipath):  BARTLETT  ← più stabile, meno jitter
-# OUTDOOR / LOS (linea di vista libera):     MUSIC     ← massima risoluzione
 
 MUSIC_DECORR   = "fb"
 # Decorrelation applied to covariance before MUSIC (and Capon).
@@ -182,9 +181,10 @@ EIG_SPREAD_MIN_DB = 0.5
 
 PAPR_INST_MIN_DB = 8.0
 # Minimum MUSIC PAPR to accept a preamble burst as valid.
-# INDOOR (multipath, SNR basso): abbassare a 6-8 dB.
-# OUTDOOR / LOS (array calibrato): 12-20 dB.
-# Override a runtime con: python3 doa_test_868_burst.py --papr-min 6
+# Con MUSIC + nsig=2 + cal hardware: PAPR tipico indoor = 17-20 dB → soglia 8 dB ampiamente superata.
+# BARTLETT con 5 ant: PAPR max ~6 dB → non usare con questa soglia.
+# OUTDOOR / LOS (array calibrato): alzare a 12-20 dB per ridurre falsi positivi.
+# Override a runtime con: python3 doa_test_868_burst.py --papr-min 8
 
 # ── Pilot tone extraction ─────────────────────────────────────────────────────
 # ⚠️  IMPORTANTE: PILOT_TONE_ENABLED va abilitato SOLO in modalità CW (tono continuo).
