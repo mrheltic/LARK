@@ -159,6 +159,12 @@ def _make_ira_buf(rrc: np.ndarray,
     UW: absolute BPSK symbols from iridium.h UW_DL[]
 
     The slot is resampled 250 kHz → 1 MHz (×4) for the AD9363.
+
+    IMPORTANT: the returned buffer is padded with zeros to exactly SUPERFRAME_S
+    seconds (90 000 samples @ 1 MHz = 90 ms).  This ensures that the DAC output
+    is silent between bursts — without padding the AD9363 holds the last IQ
+    sample of the burst during the inter-burst gap, creating a spurious
+    constant-phase tone ~80 ms long that the KrakenSDR receiver misdetects.
     """
     # Generate slot at 250 kHz (10 SPS)
     slot_iq, _ = generate_ira_burst(rrc, sat_id=sat_id, beam_id=beam_id,
@@ -167,7 +173,17 @@ def _make_ira_buf(rrc: np.ndarray,
     upsampled = sp_signal.resample_poly(slot_iq, _IRA_UPS, 1)
     # Scale to 80 % DAC full-scale
     peak = float(np.max(np.abs(upsampled))) + 1e-12
-    return (upsampled / peak * 0.8 * (2 ** 14)).astype(np.complex64)
+    burst = (upsampled / peak * 0.8 * (2 ** 14)).astype(np.complex64)
+
+    # Pad burst to full superframe (90 ms @ 1 MHz = 90 000 samples) with silence.
+    # This eliminates the "last-sample hold" output of the AD9363 during the
+    # inter-burst gap and removes the spurious constant tone from the spectrum.
+    n_sf = int(TX_SAMPLE_RATE * SUPERFRAME_S)   # = 90 000
+    if len(burst) >= n_sf:
+        return burst[:n_sf]
+    padded = np.zeros(n_sf, dtype=np.complex64)
+    padded[:len(burst)] = burst
+    return padded
 
 
 # =============================================================================
@@ -255,9 +271,10 @@ class TxThread(threading.Thread):
             if mode == "cw":
                 buf = _make_cw_buf()
             else:
-                # IRA: one TDMA slot every SUPERFRAME_S (90 ms)
-                # Slot = 281 symbols @ 25 ksps = 11.24 ms of data;
-                # the remaining ~78.8 ms we sleep to honour the superframe period.
+                # IRA: one TDMA slot every SUPERFRAME_S (90 ms).
+                # _make_ira_buf now returns a full 90 ms padded buffer, so
+                # sdr.tx(buf) blocks for exactly 90 ms → self-timed.
+                # The timing guard below is kept as a safety net.
                 now = time.monotonic()
                 if now - last_burst < SUPERFRAME_S:
                     time.sleep(0.005)

@@ -421,11 +421,28 @@ def _acq_loop(
 
             pwr_db = float(10 * np.log10(np.mean(np.abs(X_pre) ** 2) + 1e-20))
 
-            # ── Pilot tone extraction ─────────────────────────────────────────
-            if C.PILOT_TONE_ENABLED:
-                X_proc = extract_pilot_tone(X_pre, cfg, fs=C.SAMPLE_RATE_HZ)
+            # ── Preamble narrowband BPF — always applied in burst mode ──────────
+            # The IRA preamble is a pure tone at +Rs/8 = +3125 Hz (all-zero
+            # dibits produce constant +π/4 rotation per symbol → sinusoid at
+            # carrier+3125 Hz).  Bandpass-filtering to 6 kHz around this tone
+            # gives the same +20 dB SNR gain as CW pilot-tone extraction:
+            #   SNR_gain ≈ 10·log10(FS / BW) = 10·log10(1024000/6000) ≈ +22 dB
+            # Without this filter X_proc = X_pre (full 35 kHz RRC bandwidth)
+            # → inter-channel phases are buried in wideband noise → jumpy ΔΦ.
+            # In CW mode (PILOT_TONE_ENABLED=True), filter at the configured offset.
+            if getattr(C, "PILOT_TONE_ENABLED", False):
+                X_proc = extract_pilot_tone(
+                    X_pre, float(C.SAMPLE_RATE_HZ),
+                    tone_hz=float(C.PILOT_TONE_OFFSET_HZ),
+                    bw_hz=float(C.PILOT_TONE_BW_HZ),
+                )
             else:
-                X_proc = X_pre
+                # Burst mode: filter at preamble tone +3125 Hz
+                X_proc = extract_pilot_tone(
+                    X_pre, float(C.SAMPLE_RATE_HZ),
+                    tone_hz=float(_PREAMBLE_TONE_HZ),
+                    bw_hz=float(getattr(C, "PREAMBLE_BPF_BW_HZ", 6_000.0)),
+                )
 
             # ── Amplitude normalization ───────────────────────────────────────
             if C.AMPLITUDE_NORMALIZE:
@@ -1088,6 +1105,7 @@ def main() -> None:
     cfg = UcaConfig(
         n_ant=C.N_ANTENNAS, radius_lambda=args.radius,
         n_az=C.N_AZ, n_el=C.N_EL, el_min_deg=C.EL_MIN_DEG,
+        el_max_deg=float(getattr(C, "EL_MAX_DEG", 90.0)),
         num_expected_signals=args.nsig, ant0_offset_deg=args.offset,
         ant_ccw=C.ANT_CCW,
     )

@@ -87,6 +87,7 @@ class UcaConfig:
     n_az:                 int   = 72
     n_el:                 int   = 18
     el_min_deg:           float = 5.0
+    el_max_deg:           float = 90.0  # elevazione massima [°]; abbassare indoor (es. 45°)
     num_expected_signals: int   = 1
     ant0_offset_deg:      float = 0.0   # rotazione fisica ant0 rispetto al Nord
     ant_ccw:              bool  = False  # True = antenne in senso anti-orario (CCW)
@@ -112,8 +113,8 @@ class UcaConfig:
         return np.linspace(0.0, 360.0, self.n_az, endpoint=False)
 
     def el_range_deg(self) -> np.ndarray:
-        """Griglia di scansione elevazione in gradi: el_min … 90°."""
-        return np.linspace(self.el_min_deg, 90.0, self.n_el)
+        """Griglia di scansione elevazione in gradi: el_min … el_max."""
+        return np.linspace(self.el_min_deg, self.el_max_deg, self.n_el)
 
     # ── Matrice di steering (pre-calcolata e cachata) ─────────────────────────
 

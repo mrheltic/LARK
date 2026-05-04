@@ -103,6 +103,14 @@ DOA_ALGORITHM  = "BARTLETT"
 # INDOOR (stanza piccola, molto multipath):  BARTLETT  ← più stabile, meno jitter
 # OUTDOOR / LOS (linea di vista libera):     MUSIC     ← massima risoluzione
 
+MUSIC_DECORR   = "fb"
+# Decorrelation applied to covariance before MUSIC (and Capon).
+# 'none'      — nessuna decorrelazione (default sicuro, usa solo EMA)
+# 'fb'        — Forward-Backward averaging: migliora MUSIC con multipath coerente
+#               SICURO per UCA; riduce l'impatto delle riflessioni dal soffitto.
+# 'circulant' — solo per debug offline (forza simmetria ciclica: valida solo per UCA pura).
+# 'both'      — circulant + FB: solo per analisi offline.
+
 NUM_SIGNALS    = 1        # sorgenti attese simultanee
 
 # ── 2D scan grid ─────────────────────────────────────────────────────────────
@@ -117,11 +125,11 @@ COV_ALPHA  = 0.95         # EMA weight  (time constant τ = 1/(1-α) frames)
 #                          # riflessioni e ottenere direzione stabile.
 #                          # OUTDOOR / TX in movimento: usare α BASSO (0.50-0.70).
 
-AZ_SMOOTH_ALPHA = 0.70
+AZ_SMOOTH_ALPHA = 0.50
 # Circular EMA smoothing on the per-burst az angle estimate.
 # τ = 1 / (1 − α) valid-preamble bursts.
-# INDOOR: α=0.70 → τ≈3.3 burst → più stabile contro il multipath.
-# OUTDOOR: α=0.50 → τ≈2 burst → più reattivo.
+# 0.50 → τ≈2 burst → più reattivo ora che il BPF preambolo dà fasi più pulite.
+# Alzare a 0.70-0.80 se l'azimuth è ancora troppo jitter.
 
 # ── Hardware phase calibration ────────────────────────────────────────────────
 CHANNEL_PHASE_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
@@ -172,6 +180,13 @@ SAMPLE_RATE_HZ        = 1_024_000
 PILOT_TONE_ENABLED    = False   # ← False per BURST mode, True solo per CW mode
 PILOT_TONE_OFFSET_HZ  = 100_000 # ← Usato solo se PILOT_TONE_ENABLED=True (CW mode)
 PILOT_TONE_BW_HZ      = 15_000  # ← Usato solo se PILOT_TONE_ENABLED=True (CW mode)
+
+PREAMBLE_BPF_BW_HZ = 6_000
+# Larghezza di banda del filtro BPF applicato al preambolo IRA in burst mode.
+# Il preambolo è un tono a +Rs/8=+3125 Hz; il filtro tiene solo quella banda
+# and rigetta rumore fuori banda: gain SNR ≈ 10·log10(1024000/6000) ≈ +22 dB.
+# VALORE CONSIGLIATO: 4000-8000 Hz.  Non scendere sotto 3000 Hz (troppo stretto
+# per la selezione del bin FFT alla risoluzione di un preambolo da 64 simboli).
 
 # ── Per-channel amplitude normalisation ──────────────────────────────────────
 AMPLITUDE_NORMALIZE = True
@@ -235,12 +250,11 @@ AZ_OUTLIER_MIN_HISTORY = 5
 # Minimum number of accepted estimates before outlier rejection kicks in.
 
 # ── Multi-burst / multi-frame accumulation ──────────────────────────────────
-MULTI_BURST_N = 5
+MULTI_BURST_N = 3
 # Number of valid bursts to accumulate before running DoA.
-# Averaging N covariance matrices reduces noise by ~10*log10(N) dB.
-# 3 bursts → ~4.8 dB improvement; 5 → ~7 dB; 10 → 10 dB.
-# INDOOR: usare 5-10 per maggiore stabilità (multipath cambia lentamente).
-# OUTDOOR TX in movimento: 1-3 per reattività.
+# Ora che il BPF preambolo è attivo (+22 dB SNR), ogni singolo burst è molto
+# più stabile: 3 burst bilanciano stabilità (4.8 dB extra) e latenza (~270 ms).
+# OUTDOOR: 1-2 per reattività. INDOOR pesante multipath: 4-5.
 # Set to 1 to disable (per-burst DoA as before).
 USE_EMA_FOR_DOA_BELOW_SNR = 6.0
 # When instantaneous SNR is below this, use the EMA covariance R for
