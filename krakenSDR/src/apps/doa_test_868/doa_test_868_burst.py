@@ -415,9 +415,9 @@ def _acq_loop(
 
             # ── Pilot tone extraction ─────────────────────────────────────────
             if C.PILOT_TONE_ENABLED:
-                X_proc = extract_pilot_tone(X, cfg, fs=C.SAMPLE_RATE_HZ)
+                X_proc = extract_pilot_tone(X_pre, cfg, fs=C.SAMPLE_RATE_HZ)
             else:
-                X_proc = X
+                X_proc = X_pre
 
             # ── Amplitude normalization ───────────────────────────────────────
             if C.AMPLITUDE_NORMALIZE:
