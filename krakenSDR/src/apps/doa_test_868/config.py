@@ -122,12 +122,15 @@ NUM_SIGNALS    = 2        # sorgenti attese simultanee
 N_AZ       = 180          # azimuth scan points (180 → 2° step)
 N_EL       = 36           # elevation scan points (36 → 2.5° step from EL_MIN to EL_MAX)
 EL_MIN_DEG = 0.0          # minimum elevation [°] — 0° for ground-level ISM beacons
-EL_MAX_DEG = 60.0
+EL_MAX_DEG = 25.0
 # Elevazione massima della griglia di scansione [°].
-# Indoor (TX sullo stesso tavolo/stanza): 60° copre segnali diretti + riflessioni.
-# Outdoor / bassa quota: 30-45° — taglia futte le riflessioni verticali spurie.
-# Il valore precedente era 90° (default), che diluisce lo spettro MUSIC su direzioni
-# improbabili abbassando leggermente il PAPR. 60° è il compromesso per indoor.
+# IMPORTANTE: impostare leggermente sopra all'elevazione massima attesa del TX.
+# Utente ha confermato: TX a ≤20° di elevazione → 25° (5° di margine).
+# Con N_EL=36 e range [0–25°], passo = 25/35 ≈ 0.7° → ottima risoluzione.
+# Con EL_MAX=60° il picco MUSIC toccava il soffitto ogni burst (el=60° std=0°)
+# perché le riflessioni da soffitto dominano a elevazione alta → stima saturata.
+# Abbassare a 25° esclude le riflessioni verticali spurie e concentra la griglia
+# sulla direzione reale → PAPR più alto, elevazione corretta.
 
 # ── Covariance EMA accumulation ──────────────────────────────────────────────
 COV_ALPHA  = 0.95         # EMA weight  (time constant τ = 1/(1-α) frames)
