@@ -149,13 +149,19 @@ SQUELCH_THRESHOLD_DB = -55.0
 # Se vedi troppi "NO SIGNAL" con TX acceso, abbassa a -60 o -65.
 # Se vedi falsi segnali (ghost) con TX spento, alza a -50.
 
-EIG_SPREAD_MIN_DB = 1.5
+EIG_SPREAD_MIN_DB = 0.5
 # Minimum eigenvalue spread (λ_max / λ_noise in dB) to declare signal present.
-# IMPORTANTE: con BARTLETT (non MUSIC) l'eigenspread è intrinsecamente più basso
-# perché non c'è separazione netta sottospazio segnale/rumore.
-#   BARTLETT: usare 1.0-1.5 dB
-#   MUSIC:    usare 2.5-3.0 dB
-# Se perdi troppi burst validi, abbassa ulteriormente.
+# IMPORTANTE: in ambienti indoor il multipath invalida la separazione classica dei
+# sottospazi: tutti gli autovalori appaiono simili.  Soglia molto bassa per non
+# perdere burst validi; la separazione viene poi fatta dalla soglia PAPR del MUSIC.
+#   INDOOR piccola stanza: 0.5 dB  (lascia passare quasi tutto, filtra il PAPR)
+#   OUTDOOR / LOS:         2.5-3.0 dB  (segnale ben separato dal rumore)
+
+PAPR_INST_MIN_DB = 8.0
+# Minimum MUSIC PAPR to accept a preamble burst as valid.
+# INDOOR (multipath, SNR basso): abbassare a 6-8 dB.
+# OUTDOOR / LOS (array calibrato): 12-20 dB.
+# Override a runtime con: python3 doa_test_868_burst.py --papr-min 6
 
 # ── Pilot tone extraction ─────────────────────────────────────────────────────
 # ⚠️  IMPORTANTE: PILOT_TONE_ENABLED va abilitato SOLO in modalità CW (tono continuo).
@@ -229,10 +235,12 @@ AZ_OUTLIER_MIN_HISTORY = 5
 # Minimum number of accepted estimates before outlier rejection kicks in.
 
 # ── Multi-burst / multi-frame accumulation ──────────────────────────────────
-MULTI_BURST_N = 3
+MULTI_BURST_N = 5
 # Number of valid bursts to accumulate before running DoA.
 # Averaging N covariance matrices reduces noise by ~10*log10(N) dB.
-# 3 bursts → ~4.8 dB improvement; 5 → ~7 dB.
+# 3 bursts → ~4.8 dB improvement; 5 → ~7 dB; 10 → 10 dB.
+# INDOOR: usare 5-10 per maggiore stabilità (multipath cambia lentamente).
+# OUTDOOR TX in movimento: 1-3 per reattività.
 # Set to 1 to disable (per-burst DoA as before).
 USE_EMA_FOR_DOA_BELOW_SNR = 6.0
 # When instantaneous SNR is below this, use the EMA covariance R for

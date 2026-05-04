@@ -173,6 +173,9 @@ def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
         rec_phase   = [],
         rec_R       = [],
         rec_has_sig = [],
+        rec_X       = [],          # raw preamble IQ windows (n_ant × n_samp)
+        rec_iq_enabled = False,    # set by --save-iq CLI flag
+        burst_acc   = [],          # multi-burst covariance accumulation buffer
     )
 
 
@@ -298,6 +301,11 @@ def _acq_loop(
 
     # Consecutive-no-burst counter — warns user if TX is likely in CW mode
     _no_burst_streak = 0
+
+    # Multi-burst accumulation (MULTI_BURST_N covariance matrices averaged before DoA)
+    _multi_n = max(1, int(getattr(C, "MULTI_BURST_N", 1)))
+    _R_batch: collections.deque = collections.deque(maxlen=_multi_n)
+    _papr_min = float(getattr(C, "PAPR_INST_MIN_DB", _PAPR_INST_MIN_DB))
 
     # Streaming sample buffer: accumulate CPI frames until we have enough
     # for reliable burst detection (≥ 1 full SUPERFRAME).
@@ -453,6 +461,9 @@ def _acq_loop(
                 snr    = snr_uca_db(R_inst)
                 eig    = eigenvalue_spread_uca_db(R_inst)
 
+                # Phase diffs from R_inst — always computed so the plot is always live
+                phase_diffs_inst = np.degrees(np.angle(R_inst[1:, 0]))
+
                 # Stage 1 fast-reject: skip MUSIC if eigenspread too low
                 if eig[0] < C.EIG_SPREAD_MIN_DB:
                     with S.lock:
@@ -462,6 +473,9 @@ def _acq_loop(
                         S.no_doa    = True
                         S.energy_hist.append(pwr_db)
                         S.snr_hist.append(snr)
+                        # Still show phase diffs so the plot does not freeze
+                        for _i, _p in enumerate(phase_diffs_inst):
+                            S.phase_hist[_i].append(float(_p))
                         S.burst_n += 1
                     continue
 
@@ -490,11 +504,10 @@ def _acq_loop(
                 
                 az_inst, el_inst, papr_inst = find_peak_uca_2d(spec2d_inst, cfg)
 
-                is_preamble = (papr_inst >= _PAPR_INST_MIN_DB)
+                is_preamble = (papr_inst >= _papr_min)
 
                 if not is_preamble:
                     # Non-preamble window: update EMA from existing acc, skip DoA
-                    R = acc.R if acc.R is not None else R_inst
                     with S.lock:
                         S.snr_db  = snr
                         S.eig_db  = eig
@@ -502,12 +515,46 @@ def _acq_loop(
                         S.no_doa    = True
                         S.energy_hist.append(pwr_db)
                         S.snr_hist.append(snr)
+                        # Phase diffs still shown so the plot is always live
+                        for _i, _p in enumerate(phase_diffs_inst):
+                            S.phase_hist[_i].append(float(_p))
                         S.burst_n += 1
                     continue
 
                 # ── Valid preamble burst ──────────────────────────────────────
+                # Multi-burst accumulation: average N covariance matrices before DoA
+                _R_batch.append(R_inst)
+                if len(_R_batch) < _multi_n:
+                    # Accumulate EMA while waiting for N bursts
+                    acc.update(X_cal)
+                    with S.lock:
+                        S.snr_db = snr; S.eig_db = eig
+                        S.energy_hist.append(pwr_db); S.snr_hist.append(snr)
+                        for _i, _p in enumerate(phase_diffs_inst):
+                            S.phase_hist[_i].append(float(_p))
+                        S.burst_n += 1
+                    continue
+                # Average the accumulated batch → lower noise floor by ~5 dB (N=3)
+                R_avg = np.mean(list(_R_batch), axis=0)
+
                 # Update R_EMA for temporal multipath decorrelation / phase display
                 R = acc.update(X_cal)
+
+                # For DoA, run algorithm again on R_avg (averaged over N bursts)
+                # This reduces the noise floor by ~10*log10(N) dB.
+                if _multi_n > 1:
+                    if algo == "capon":
+                        spec2d_avg = doa_capon_uca_2d(X_cal, cfg, R_in=R_avg,
+                                                       decorr=getattr(C, "CAPNT_DECORR", "none"))
+                    elif algo == "bartlett":
+                        spec2d_avg = doa_bartlett_uca_2d(X_cal, cfg, R_in=R_avg)
+                    else:
+                        spec2d_avg = doa_music_uca_2d(X_cal, cfg, R_in=R_avg,
+                                                       decorr=getattr(C, "MUSIC_DECORR", "none"))
+                    az_avg, el_avg, papr_avg = find_peak_uca_2d(spec2d_avg, cfg)
+                    az_inst  = az_avg
+                    el_inst  = el_avg
+                    spec2d_inst = spec2d_avg
 
                 # Circular EMA on per-burst az angle — responsive and noise-free.
                 # This replaces the old R_EMA MUSIC (which was frozen between
@@ -521,9 +568,8 @@ def _acq_loop(
                 az_spec   = np.max(spec2d, axis=0)
                 papr      = papr_inst
 
-                # phase_diffs from R_EMA — temporal average of calibrated preamble
-                # covariances; reflects true geometry + residual HW offset.
-                phase_diffs = np.degrees(np.angle(R[1:, 0]))
+                # phase_diffs from R_avg (multi-burst average) for display
+                phase_diffs = np.degrees(np.angle(R_avg[1:, 0]))
 
             except Exception as exc:
                 print(f"[DoA] burst #{S.burst_n+1}: {exc}")
@@ -565,6 +611,8 @@ def _acq_loop(
                     S.rec_phase.append(phase_diffs.copy())
                     S.rec_R.append(np.array(R, dtype=np.complex128).copy())
                     S.rec_has_sig.append(True)
+                    if S.rec_iq_enabled:
+                        S.rec_X.append(X_pre.copy())
                 S.burst_n += 1
 
 
@@ -620,6 +668,22 @@ def _save_recording(
         burst_mode  = np.bytes_(b"IRA_PREAMBLE"),
         preamble_tone_hz = np.int32(_PREAMBLE_TONE_HZ),
     )
+    # Save raw preamble IQ windows if --save-iq was used
+    if S.rec_iq_enabled and S.rec_X:
+        iq_path = path.replace(".npz", "_iq.npz")
+        try:
+            # Build array: shape (N_bursts, n_ant, n_samp) — pad to max length
+            max_samp = max(x.shape[1] for x in S.rec_X)
+            iq_arr = np.zeros((len(S.rec_X), S.rec_X[0].shape[0], max_samp),
+                               dtype=np.complex64)
+            for _k, _x in enumerate(S.rec_X):
+                iq_arr[_k, :, :_x.shape[1]] = _x.astype(np.complex64)
+            np.savez_compressed(iq_path, preamble_iq=iq_arr,
+                                         sample_rate=np.float64(_FS),
+                                         preamble_tone_hz=np.int32(_PREAMBLE_TONE_HZ))
+            print(f"[REC] IQ raw  → {iq_path}  ({len(S.rec_X)} bursts, shape {iq_arr.shape})")
+        except Exception as _e:
+            print(f"[REC] IQ save failed: {_e}")
     n_sig = int(np.sum(S.rec_has_sig))
     print(f"[REC] {n} bursts ({n_sig} valid, {n_sig*100//max(n,1)}%) → {path}")
     return path
@@ -1008,8 +1072,14 @@ def main() -> None:
                    help="Directory to write .npz recordings")
     p.add_argument("--no-rec",   action="store_true",
                    help="Disable recording")
+    p.add_argument("--save-iq",  action="store_true",
+                   help="Save raw preamble IQ windows to *_iq.npz for offline re-processing")
     p.add_argument("--rec-every", type=int, default=200, metavar="N",
                    help="Auto-save checkpoint every N bursts (0=only at exit)")
+    p.add_argument("--papr-min", type=float,
+                   default=float(getattr(C, "PAPR_INST_MIN_DB", _PAPR_INST_MIN_DB)),
+                   help="Min instantaneous PAPR [dB] to accept a preamble burst. "
+                        "Lower this (e.g. 8) for indoor / low-SNR operation.")
     args = p.parse_args()
 
     freq_hz = int(args.freq * 1e6)
@@ -1024,7 +1094,10 @@ def main() -> None:
     # Alpha=0 → fresh covariance each burst; moderate alpha → EMA smoothing
     acc = CovarianceAccumulatorUca(alpha=args.alpha)
     S   = _make_state(cfg.n_az, cfg.n_el)
-    S.rec_enabled = not args.no_rec
+    S.rec_enabled    = not args.no_rec
+    S.rec_iq_enabled = args.save_iq
+    # Override PAPR threshold at runtime (useful for indoor testing)
+    C.PAPR_INST_MIN_DB = args.papr_min   # type: ignore[attr-defined]
 
     print("=" * 58)
     print(f"  DoA BURST — {args.algo.upper()}  @  {freq_hz/1e6:.3f} MHz")
