@@ -181,12 +181,12 @@ PILOT_TONE_ENABLED    = False   # ← False per BURST mode, True solo per CW mod
 PILOT_TONE_OFFSET_HZ  = 100_000 # ← Usato solo se PILOT_TONE_ENABLED=True (CW mode)
 PILOT_TONE_BW_HZ      = 15_000  # ← Usato solo se PILOT_TONE_ENABLED=True (CW mode)
 
-PREAMBLE_BPF_BW_HZ = 6_000
-# Larghezza di banda del filtro BPF applicato al preambolo IRA in burst mode.
-# Il preambolo è un tono a +Rs/8=+3125 Hz; il filtro tiene solo quella banda
-# and rigetta rumore fuori banda: gain SNR ≈ 10·log10(1024000/6000) ≈ +22 dB.
-# VALORE CONSIGLIATO: 4000-8000 Hz.  Non scendere sotto 3000 Hz (troppo stretto
-# per la selezione del bin FFT alla risoluzione di un preambolo da 64 simboli).
+PREAMBLE_BPF_BW_HZ = 10_000
+# Larghezza di banda del filtro BPF in burst mode.
+# Con BW=10 kHz: SNR gain ≈ 10·log10(1024000/10000) ≈ +20 dB; finestra più ampia
+# gestisce eventuali imprecisioni nella rilevazione della frequenza del tono
+# (risoluzione FFT 2000 Hz su finestra 512 camp. → incertezza ±1000 Hz).
+# Non scendere sotto 4000 Hz.
 
 TONE_SEARCH_BW_HZ = 100_000
 # Finestra di ricerca della frequenza reale del tono IRA preamble [Hz].

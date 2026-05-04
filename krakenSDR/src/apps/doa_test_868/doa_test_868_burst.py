@@ -222,8 +222,68 @@ def _detect_bursts(iq: np.ndarray, threshold_factor: float = 6.0) -> list[int]:
 
 
 # =============================================================================
-# Preamble-tone onset localisation
+# Preamble-tone onset localisation  (joint time × frequency search)
 # =============================================================================
+
+def _find_preamble_onset(
+    iq:      np.ndarray,   # channel-0 samples, 1D complex
+    b_start: int,          # energy-detector burst onset (sample index)
+    n_total: int,          # total samples in iq
+    fs:      float = _FS,
+    win:     int   = _TONE_SCAN_WIN,
+) -> tuple:
+    """
+    Find (preamble_onset_sample, actual_tone_hz) via joint time×frequency search.
+
+    Why joint search:
+      The IRA preamble is a PURE TONE (all-zero dibits → constant +π/4 rotation
+      → sinusoid at carrier + Rs/8). In a win-sample FFT window the preamble
+      concentrates ≈100 × more power into a single bin than the wideband
+      data symbols (+20 dB), regardless of what frequency the actual LO offset
+      places the tone at.
+
+    Algorithm:
+      Sweep 50%-overlap windows over
+          [b_start − _BURST_SAMPLES … b_start + _BURST_SAMPLES/2]
+      For EACH window: compute rfft, find the max-power bin (excluding DC).
+      The global maximum over all windows identifies the preamble window AND
+      the actual tone frequency — no knowledge of LO offset needed.
+
+    Returns
+    -------
+    (onset, tone_hz) : (int, float)
+        onset    — sample index of the preamble start
+        tone_hz  — detected tone centre frequency [Hz]
+    """
+    step     = win // 2
+    scan_sta = max(0, b_start - _BURST_SAMPLES)
+    # Search forward too (½ burst) so we don’t miss late-firing energy triggers
+    scan_end = min(b_start + _BURST_SAMPLES // 2, n_total - win)
+
+    if scan_end <= scan_sta:
+        return b_start, float(_PREAMBLE_TONE_HZ)
+
+    freqs = np.fft.rfftfreq(win, d=1.0 / fs)  # bin centre frequencies
+
+    best_pwr  = -1.0
+    best_pos  = b_start
+    best_freq = float(_PREAMBLE_TONE_HZ)
+
+    for pos in range(scan_sta, scan_end, step):
+        seg     = iq[pos: pos + win]
+        fft_pwr = np.abs(np.fft.rfft(seg)) ** 2
+        fft_pwr[0] = 0.0    # zero DC bin (LO leakage)
+        pk_bin  = int(np.argmax(fft_pwr))
+        pwr     = float(fft_pwr[pk_bin])
+        if pwr > best_pwr:
+            best_pwr  = pwr
+            best_pos  = pos
+            best_freq = float(freqs[pk_bin])
+
+    # Shift back slightly so the full preamble run-up is included
+    onset = max(scan_sta, best_pos - win // 4)
+    return onset, best_freq
+
 
 def _find_tone_onset(
     iq:      np.ndarray,     # channel-0 samples, 1D complex
@@ -407,31 +467,20 @@ def _acq_loop(
             if b_end - b_start < _PRE_SAMPLES:
                 continue   # too close to end of buffer
 
-            # ── Auto-detect preamble tone frequency ───────────────────────────
-            # TX and RX use independent oscillators → LO offset of ±10–50 kHz
-            # is common.  The theoretical preamble tone is at +3125 Hz, but the
-            # actual tone may land anywhere within TONE_SEARCH_BW_HZ around that.
-            # We search for the FFT peak in that window on ch0 before calling
-            # _find_tone_onset, so that both the time-alignment scan and the
-            # subsequent BPF use the REAL tone frequency rather than the nominal.
-            _search_bw  = float(getattr(C, "TONE_SEARCH_BW_HZ", 100_000.0))
-            _rough_win  = min(b_end - b_start, _PRE_SAMPLES)
-            _seg_ch0    = X_stream[0, b_start: b_start + _rough_win]
-            _fft_pwr    = np.abs(np.fft.rfft(_seg_ch0)) ** 2
-            _rfft_freqs = np.fft.rfftfreq(_rough_win, d=1.0 / _FS)
-            _smask      = np.abs(_rfft_freqs - _PREAMBLE_TONE_HZ) < _search_bw * 0.5
-            if _smask.any():
-                _pk_bin   = int(np.argmax(np.where(_smask, _fft_pwr, 0.0)))
-                _tone_hz  = float(_rfft_freqs[_pk_bin])
-            else:
-                _tone_hz  = float(_PREAMBLE_TONE_HZ)  # fallback
-
-            # Locate the actual IRA preamble tone within the burst window.
-            # The energy detector may fire on the DATA portion (wideband → low
-            # PAPR); scanning for the detected tone peak corrects the alignment.
-            tone_start = _find_tone_onset(
-                X_stream[0], b_start, n_total, tone_hz=_tone_hz
+            # ── Joint time×frequency search: find preamble onset + real tone Hz ──
+            # No prior knowledge of the LO offset is needed: the preamble
+            # pure tone has the highest per-bin FFT power in the burst,
+            # regardless of where the actual frequency lands.
+            tone_start, _tone_hz = _find_preamble_onset(
+                X_stream[0], b_start, n_total
             )
+            # Print LO offset on first successful detection (diagnostic)
+            if not getattr(_acq_loop, "_offset_printed", False):
+                _lo_off_khz = (_tone_hz - _PREAMBLE_TONE_HZ) / 1_000.0
+                print(f"[INFO] Preamble tone auto-detected @ {_tone_hz/1e3:.2f} kHz  "
+                      f"(LO offset = {_lo_off_khz:+.1f} kHz  "
+                      f"= {_lo_off_khz*1e3/868_100:.0f} ppm)")
+                _acq_loop._offset_printed = True
             tone_end = min(tone_start + _PRE_SAMPLES, n_total)
             if tone_end - tone_start < _PRE_SAMPLES // 2:
                 continue   # not enough preamble to process
@@ -452,17 +501,18 @@ def _acq_loop(
                 )
             else:
                 # Burst mode: BPF at detected preamble tone (auto LO-offset corrected)
-                _bpf_bw = float(getattr(C, "PREAMBLE_BPF_BW_HZ", 6_000.0))
+                _bpf_bw = float(getattr(C, "PREAMBLE_BPF_BW_HZ", 10_000.0))
                 X_proc = extract_pilot_tone(
                     X_pre, float(C.SAMPLE_RATE_HZ),
                     tone_hz=_tone_hz,
                     bw_hz=_bpf_bw,
                 )
-                # Safety check: if BPF output is nearly zero (LO far outside search
-                # window, or tone undetectable), fall back to unfiltered preamble.
+                # Safety check: if BPF output power < 5% of raw input the tone
+                # was not captured (e.g. aliased or very below noise floor).
+                # Fall back to unfiltered X_pre so DoA can still gate on PAPR.
                 _bpf_pwr = float(np.mean(np.abs(X_proc) ** 2))
                 _raw_pwr = float(np.mean(np.abs(X_pre)  ** 2)) + 1e-30
-                if _bpf_pwr / _raw_pwr < 0.01:   # < 1% of raw power → BPF missed
+                if _bpf_pwr / _raw_pwr < 0.05:   # < 5% of raw power → BPF missed
                     X_proc = X_pre
 
             # ── Amplitude normalization ───────────────────────────────────────
