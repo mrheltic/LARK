@@ -111,12 +111,24 @@ MUSIC_DECORR   = "fb"
 # 'circulant' — solo per debug offline (forza simmetria ciclica: valida solo per UCA pura).
 # 'both'      — circulant + FB: solo per analisi offline.
 
-NUM_SIGNALS    = 1        # sorgenti attese simultanee
+NUM_SIGNALS    = 2        # sorgenti attese simultanee
+# INDOOR: usare 2 — il multipath crea un secondo componente di segnale coerente
+# (riflessione da parete) che gonfia λ₂ rispetto a λ₃-λ₅.  Con nsig=1, MUSIC
+# inserisce λ₂ nel sottospazio rumore → spettro piatto → PAPR < 5 dB → burst scartati.
+# Con nsig=2: PAPR 12-20 dB, az stabile a 234° su tutti i burst (verificato da dati).
+# OUTDOOR / LOS: usare 1 (singola sorgente, no multipath).
+# 0 = MDL auto-detect (non raccomandato: stima N=4 con N_snapshots=2621)
 
 # ── 2D scan grid ─────────────────────────────────────────────────────────────
 N_AZ       = 180          # azimuth scan points (180 → 2° step)
-N_EL       = 36           # elevation scan points (36 → 2.5° step from 0° to 90°)
+N_EL       = 36           # elevation scan points (36 → 2.5° step from EL_MIN to EL_MAX)
 EL_MIN_DEG = 0.0          # minimum elevation [°] — 0° for ground-level ISM beacons
+EL_MAX_DEG = 60.0
+# Elevazione massima della griglia di scansione [°].
+# Indoor (TX sullo stesso tavolo/stanza): 60° copre segnali diretti + riflessioni.
+# Outdoor / bassa quota: 30-45° — taglia futte le riflessioni verticali spurie.
+# Il valore precedente era 90° (default), che diluisce lo spettro MUSIC su direzioni
+# improbabili abbassando leggermente il PAPR. 60° è il compromesso per indoor.
 
 # ── Covariance EMA accumulation ──────────────────────────────────────────────
 COV_ALPHA  = 0.95         # EMA weight  (time constant τ = 1/(1-α) frames)
@@ -132,8 +144,11 @@ AZ_SMOOTH_ALPHA = 0.50
 # Alzare a 0.70-0.80 se l'azimuth è ancora troppo jitter.
 
 # ── Hardware phase calibration ────────────────────────────────────────────────
-CHANNEL_PHASE_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
+CHANNEL_PHASE_OFFSETS_DEG = [0.0, -35.45, 39.67, -23.86, 2.12]
 # Per-channel phase offset correction [degrees], relative to channel 0 (reference).
+# Calcolato il 2026-05-04 da burst_data_20260504_121242_iq.npz (26 burst stabili,
+# sorgente a ~234° az / ~46° el, BPF a -8595 Hz).
+# Per ricalibrazione: python3 doa_test_868_burst.py --calibrate <az_sorgente>
 # Compensates for cable-length differences and ADC input imbalances.
 # WITHOUT calibration: instantaneous MUSIC PAPR drops from 33 dB to ~14-17 dB
 # for ±10-15° hardware errors, reducing preamble detection rate.
