@@ -407,11 +407,30 @@ def _acq_loop(
             if b_end - b_start < _PRE_SAMPLES:
                 continue   # too close to end of buffer
 
+            # ── Auto-detect preamble tone frequency ───────────────────────────
+            # TX and RX use independent oscillators → LO offset of ±10–50 kHz
+            # is common.  The theoretical preamble tone is at +3125 Hz, but the
+            # actual tone may land anywhere within TONE_SEARCH_BW_HZ around that.
+            # We search for the FFT peak in that window on ch0 before calling
+            # _find_tone_onset, so that both the time-alignment scan and the
+            # subsequent BPF use the REAL tone frequency rather than the nominal.
+            _search_bw  = float(getattr(C, "TONE_SEARCH_BW_HZ", 100_000.0))
+            _rough_win  = min(b_end - b_start, _PRE_SAMPLES)
+            _seg_ch0    = X_stream[0, b_start: b_start + _rough_win]
+            _fft_pwr    = np.abs(np.fft.rfft(_seg_ch0)) ** 2
+            _rfft_freqs = np.fft.rfftfreq(_rough_win, d=1.0 / _FS)
+            _smask      = np.abs(_rfft_freqs - _PREAMBLE_TONE_HZ) < _search_bw * 0.5
+            if _smask.any():
+                _pk_bin   = int(np.argmax(np.where(_smask, _fft_pwr, 0.0)))
+                _tone_hz  = float(_rfft_freqs[_pk_bin])
+            else:
+                _tone_hz  = float(_PREAMBLE_TONE_HZ)  # fallback
+
             # Locate the actual IRA preamble tone within the burst window.
             # The energy detector may fire on the DATA portion (wideband → low
-            # PAPR); scanning for the 3125 Hz peak corrects the alignment.
+            # PAPR); scanning for the detected tone peak corrects the alignment.
             tone_start = _find_tone_onset(
-                X_stream[0], b_start, n_total
+                X_stream[0], b_start, n_total, tone_hz=_tone_hz
             )
             tone_end = min(tone_start + _PRE_SAMPLES, n_total)
             if tone_end - tone_start < _PRE_SAMPLES // 2:
@@ -421,14 +440,9 @@ def _acq_loop(
 
             pwr_db = float(10 * np.log10(np.mean(np.abs(X_pre) ** 2) + 1e-20))
 
-            # ── Preamble narrowband BPF — always applied in burst mode ──────────
-            # The IRA preamble is a pure tone at +Rs/8 = +3125 Hz (all-zero
-            # dibits produce constant +π/4 rotation per symbol → sinusoid at
-            # carrier+3125 Hz).  Bandpass-filtering to 6 kHz around this tone
-            # gives the same +20 dB SNR gain as CW pilot-tone extraction:
-            #   SNR_gain ≈ 10·log10(FS / BW) = 10·log10(1024000/6000) ≈ +22 dB
-            # Without this filter X_proc = X_pre (full 35 kHz RRC bandwidth)
-            # → inter-channel phases are buried in wideband noise → jumpy ΔΦ.
+            # ── Preamble narrowband BPF ────────────────────────────────────────
+            # Filter at the AUTO-DETECTED tone frequency (handles LO offset).
+            # Gain SNR ≈ 10·log10(FS / BPF_BW) ≈ +22 dB vs raw preamble.
             # In CW mode (PILOT_TONE_ENABLED=True), filter at the configured offset.
             if getattr(C, "PILOT_TONE_ENABLED", False):
                 X_proc = extract_pilot_tone(
@@ -437,12 +451,19 @@ def _acq_loop(
                     bw_hz=float(C.PILOT_TONE_BW_HZ),
                 )
             else:
-                # Burst mode: filter at preamble tone +3125 Hz
+                # Burst mode: BPF at detected preamble tone (auto LO-offset corrected)
+                _bpf_bw = float(getattr(C, "PREAMBLE_BPF_BW_HZ", 6_000.0))
                 X_proc = extract_pilot_tone(
                     X_pre, float(C.SAMPLE_RATE_HZ),
-                    tone_hz=float(_PREAMBLE_TONE_HZ),
-                    bw_hz=float(getattr(C, "PREAMBLE_BPF_BW_HZ", 6_000.0)),
+                    tone_hz=_tone_hz,
+                    bw_hz=_bpf_bw,
                 )
+                # Safety check: if BPF output is nearly zero (LO far outside search
+                # window, or tone undetectable), fall back to unfiltered preamble.
+                _bpf_pwr = float(np.mean(np.abs(X_proc) ** 2))
+                _raw_pwr = float(np.mean(np.abs(X_pre)  ** 2)) + 1e-30
+                if _bpf_pwr / _raw_pwr < 0.01:   # < 1% of raw power → BPF missed
+                    X_proc = X_pre
 
             # ── Amplitude normalization ───────────────────────────────────────
             if C.AMPLITUDE_NORMALIZE:

@@ -188,6 +188,14 @@ PREAMBLE_BPF_BW_HZ = 6_000
 # VALORE CONSIGLIATO: 4000-8000 Hz.  Non scendere sotto 3000 Hz (troppo stretto
 # per la selezione del bin FFT alla risoluzione di un preambolo da 64 simboli).
 
+TONE_SEARCH_BW_HZ = 100_000
+# Finestra di ricerca della frequenza reale del tono IRA preamble [Hz].
+# TX (LibreSDR) e RX (KrakenSDR) usano oscillatori indipendenti → offset LO
+# tipico ±10–50 kHz a 868 MHz.  Il codice cerca il picco FFT in
+# [+3125 - TONE_SEARCH_BW_HZ/2 … +3125 + TONE_SEARCH_BW_HZ/2] e usa quella
+# frequenza per il BPF.  100 kHz copre ±50 kHz offset (>50 ppm a 868 MHz).
+# Se il TX è calibrato o usa stesso clock: abbassare a 20_000 per più precisione.
+
 # ── Per-channel amplitude normalisation ──────────────────────────────────────
 AMPLITUDE_NORMALIZE = True
 # Normalise each KrakenSDR channel to unit RMS power before covariance.
