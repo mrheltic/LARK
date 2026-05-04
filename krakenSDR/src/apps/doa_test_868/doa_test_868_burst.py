@@ -363,6 +363,17 @@ def _acq_loop(
     # Circular EMA alpha for per-burst az angle smoothing
     _az_alpha    = float(getattr(C, "AZ_SMOOTH_ALPHA", 0.50))
 
+    # Outlier rejection gate (AZ_OUTLIER_ENABLED in config)
+    _az_outlier_enabled  = bool(getattr(C, "AZ_OUTLIER_ENABLED", True))
+    _az_outlier_max_dev  = float(getattr(C, "AZ_OUTLIER_MAX_DEV_DEG", 45.0))
+    _az_outlier_min_hist = int(getattr(C, "AZ_OUTLIER_MIN_HISTORY", 5))
+    _az_reject_streak    = 0      # resets EMA after N consecutive rejections
+    _AZ_RESET_AFTER      = 3     # force-accept after this many consecutive rejects
+
+    # Phase coherence gate (PHASE_COHERENCE_ENABLED in config)
+    _phase_coh_enabled   = bool(getattr(C, "PHASE_COHERENCE_ENABLED", True))
+    _phase_coh_max_jump  = float(getattr(C, "PHASE_COHERENCE_MAX_JUMP_DEG", 60.0))
+
     # Consecutive-no-burst counter — warns user if TX is likely in CW mode
     _no_burst_streak = 0
 
@@ -648,12 +659,44 @@ def _acq_loop(
                     el_inst  = el_avg
                     spec2d_inst = spec2d_avg
 
-                # Circular EMA on per-burst az angle — responsive and noise-free.
-                # This replaces the old R_EMA MUSIC (which was frozen between
-                # EMA updates).  Each valid preamble gives a fresh az sample;
-                # circular EMA with alpha=AZ_SMOOTH_ALPHA smooths over ~2 bursts.
-                az_ph     = np.exp(1j * np.deg2rad(az_inst))
-                S.az_phasor = _az_alpha * S.az_phasor + (1.0 - _az_alpha) * az_ph
+                # ── Outlier gate (AZ_OUTLIER) ────────────────────────────────────────
+                # Reject az estimates that deviate too much from the running median.
+                # Protects the EMA from wild multipath jumps.
+                # Exception: after _AZ_RESET_AFTER consecutive rejects, the array has
+                # likely moved → force-accept to let the EMA re-lock (rotation support).
+                az_ph    = np.exp(1j * np.deg2rad(az_inst))
+                _accept  = True
+                if _az_outlier_enabled and len(S.az_hist) >= _az_outlier_min_hist:
+                    _med = _circ_median(np.array(S.az_hist))
+                    _dev = float(abs(((az_inst - _med + 180) % 360) - 180))
+                    if _dev > _az_outlier_max_dev:
+                        _az_reject_streak += 1
+                        if _az_reject_streak >= _AZ_RESET_AFTER:
+                            # Likely array rotation — reset EMA and accept
+                            _az_reject_streak = 0
+                        else:
+                            _accept = False
+
+                # ── Phase coherence gate ─────────────────────────────────────────────
+                # Reject if ANY channel's phase diff jumps by more than the threshold.
+                # Catches sudden per-burst multipath inversion while allowing the
+                # genuine slow phase drift during array rotation.
+                if _accept and _phase_coh_enabled:
+                    _ph_hist_len = len(S.phase_hist[0])
+                    if _ph_hist_len >= 3:
+                        for _gi in range(4):
+                            _window = list(S.phase_hist[_gi])[-5:]
+                            _ph_med = float(np.degrees(np.angle(
+                                np.mean(np.exp(1j * np.deg2rad(_window))))))
+                            _ph_dev = float(abs(
+                                ((phase_diffs_inst[_gi] - _ph_med + 180) % 360) - 180))
+                            if _ph_dev > _phase_coh_max_jump:
+                                _accept = False
+                                break
+
+                if _accept:
+                    _az_reject_streak = 0
+                    S.az_phasor = _az_alpha * S.az_phasor + (1.0 - _az_alpha) * az_ph
                 az        = float(np.degrees(np.angle(S.az_phasor)) % 360.0)
                 el_est    = el_inst
                 spec2d    = spec2d_inst
@@ -688,7 +731,7 @@ def _acq_loop(
                 S.snr_hist.append(snr)
                 for _i, _p in enumerate(phase_diffs):
                     S.phase_hist[_i].append(float(_p))
-                S.az_hist.append(az)
+                S.az_hist.append(az_inst)  # raw MUSIC peak → gate usa median reattiva
                 if len(S.az_hist) >= 3:
                     S.az_median = _circ_median(np.array(S.az_hist))
                 else:

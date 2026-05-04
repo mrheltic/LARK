@@ -119,7 +119,7 @@ NUM_SIGNALS    = 2        # sorgenti attese simultanee
 # 0 = MDL auto-detect (non raccomandato: stima N=4 con N_snapshots=2621)
 
 # ── 2D scan grid ─────────────────────────────────────────────────────────────
-N_AZ       = 180          # azimuth scan points (180 → 2° step)
+N_AZ       = 360          # azimuth scan points (360 → 1° step)
 N_EL       = 36           # elevation scan points (36 → 2.5° step from EL_MIN to EL_MAX)
 EL_MIN_DEG = 0.0          # minimum elevation [°] — 0° for ground-level ISM beacons
 EL_MAX_DEG = 25.0
@@ -139,11 +139,15 @@ COV_ALPHA  = 0.95         # EMA weight  (time constant τ = 1/(1-α) frames)
 #                          # riflessioni e ottenere direzione stabile.
 #                          # OUTDOOR / TX in movimento: usare α BASSO (0.50-0.70).
 
-AZ_SMOOTH_ALPHA = 0.50
+AZ_SMOOTH_ALPHA = 0.60
 # Circular EMA smoothing on the per-burst az angle estimate.
 # τ = 1 / (1 − α) valid-preamble bursts.
-# 0.50 → τ≈2 burst → più reattivo ora che il BPF preambolo dà fasi più pulite.
-# Alzare a 0.70-0.80 se l'azimuth è ancora troppo jitter.
+# 0.60 → τ≈2.5 burst — ottimale con gate outlier attivo:
+#   - Senza gate: α=0.50 (senza memoria) dà std=18.7°  ma 109-143° nei momenti di bassa qualità.
+#   - Con gate α=0.60: std=23° nella finestra stabile ma 0.9° e 18° dopo la rotazione.
+# Il gate (AZ_OUTLIER_ENABLED) rimuove i jump grandi; l'EMA può quindi avere
+# un po' di più memoria senza inseguire il rumore multipath.
+# Abbassare a 0.40-0.50 se il TX si muove rapidamente (tracking veloce).
 
 # ── Hardware phase calibration ────────────────────────────────────────────────
 CHANNEL_PHASE_OFFSETS_DEG = [0.0, -35.45, 39.67, -23.86, 2.12]
@@ -304,13 +308,14 @@ HIGH_EL_ALGO = "BARTLETT"
 # CAPON:    intermediate; better resolution than Bartlett, less stable than MUSIC.
 
 # ── Covariance decorrelation (anti-multipath) ─────────────────────────────────
-MUSIC_DECORR = "none"
-# Pre-processing decorrelation for 2D-MUSIC on UCA.
-# IMPORTANT: 'circulant' and 'fb' BREAK 2D-MUSIC on UCA:
-#   circulant smoothing forces R to be cyclically symmetric →
-#   eigenvectors = DFT vectors → N-fold star pattern in MUSIC spectrum → PAPR~0 dB.
-# For UCA the correct multipath decorrelation is temporal EMA (COV_ALPHA=0.97).
-# Leave 'none' unless running offline synthetic experiments.
+# NOTA: MUSIC_DECORR è definito anche sopra (sezione "2D DoA algorithm").
+# Il valore qui sotto era "none" e sovrascriveva silenziosamente il valore "fb"
+# definito sopra, perché Python usa l'ultima assegnazione.  Bug rimosso.
+# Il valore effettivo è ora quello in cima alla sezione DoA: "fb".
+# ─────────────────────────────────────────────────────────────────────────────
+# AVVERTENZA su circulant smoothing: 'circulant' forza R a essere ciclicamente
+# simmetrica → autovettori = DFT → pattern a stella N-fold → PAPR≈0 dB su UCA.
+# NON usare 'circulant' o 'both' su UCA.  'fb' è SICURO (non circulant).
 CAPNT_DECORR = "none"
 # Same restriction applies to Capon: circulant forces N-fold symmetry
 # in R^{-1} → Capon degrades to Bartlett on a circulant covariance.
