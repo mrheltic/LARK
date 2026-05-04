@@ -263,7 +263,11 @@ def _find_preamble_onset(
     if scan_end <= scan_sta:
         return b_start, float(_PREAMBLE_TONE_HZ)
 
-    freqs = np.fft.rfftfreq(win, d=1.0 / fs)  # bin centre frequencies
+    # IMPORTANT: use full complex FFT (not rfft) because IQ data is complex.
+    # rfft on complex input silently discards the Q channel, mapping a tone at
+    # -f to +f.  extract_pilot_tone uses the full complex FFT → BPF at +f would
+    # miss a tone actually at -f → X_proc ≈ 0 → PAPR = 0 dB.
+    freqs = np.fft.fftfreq(win, d=1.0 / fs)  # includes negative frequencies
 
     best_pwr  = -1.0
     best_pos  = b_start
@@ -271,7 +275,7 @@ def _find_preamble_onset(
 
     for pos in range(scan_sta, scan_end, step):
         seg     = iq[pos: pos + win]
-        fft_pwr = np.abs(np.fft.rfft(seg)) ** 2
+        fft_pwr = np.abs(np.fft.fft(seg)) ** 2
         fft_pwr[0] = 0.0    # zero DC bin (LO leakage)
         pk_bin  = int(np.argmax(fft_pwr))
         pwr     = float(fft_pwr[pk_bin])
