@@ -822,13 +822,20 @@ def _acq_loop(
                 # likely moved → force-accept to let the EMA re-lock (rotation support).
                 az_ph    = np.exp(1j * np.deg2rad(az_inst))
                 _accept   = True
-                _el_clamp = False   # True when el hits ceiling (az still valid)
+                _el_clamp = False   # True when el hits floor or ceiling (az still valid)
 
-                # Floor-boundary guard: el at bottom grid point → floor reflection.
-                # Reject entire burst: floor reflections produce wrong az too.
+                # Floor-boundary guard: el at bottom grid point.
+                # Previously this rejected the entire burst on the assumption that
+                # el≈el_min implies a ground reflection with wrong az.  However data
+                # shows PAPR-confirmed preamble bursts (≥8 dB) consistently land at
+                # the floor when the TX is at low elevation (~5-6°) — these are valid
+                # direct-path bursts, not reflections.  Az from the 1D marginal is
+                # reliable regardless of el position (marginal = max over all el rows).
+                # The outlier gate acts as a backstop against any wild az values.
+                # → Treat floor exactly like ceiling: clamp el, accept az.
                 if el_inst <= cfg.el_min_deg + _el_step * 0.5:
-                    _accept = False
-                    _cnt_floor += 1
+                    _el_clamp = True
+                    _cnt_floor += 1   # keep counting for diagnostics
                 # Ceiling-boundary guard: el at top grid point → el unreliable.
                 # Since az is now estimated via 1D marginal (independent of el),
                 # do NOT reject the burst — just skip the el_ema update.
