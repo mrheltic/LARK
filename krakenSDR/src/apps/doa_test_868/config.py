@@ -92,69 +92,84 @@ GAIN_DB   = 40            # KrakenSDR IF gain [dB].
 
 # ── 2D DoA algorithm ─────────────────────────────────────────────────────────
 DOA_ALGORITHM  = "MUSIC"
-# "MUSIC"        — subspace super-resolution.  PAPR 17-20 dB con nsig=2 indoor.
-#                  Con MUSIC_DECORR='fb' e NUM_SIGNALS=2 gestisce il multipath indoor.
-#                  RACCOMANDATO per questo setup (verificato su dati reali 2026-05-04).
-# "CAPON"        — MVDR: buono a basso SNR ma può bloccarsi sulla direzione media del multipath.
-# "BARTLETT"     — beamformer convenzionale: PAPR max ~6 dB con 5 antenne (beamwidth 72°)
-#                  → cade sempre sotto la soglia PAPR_INST_MIN_DB. Non usare.
-# "ROOT-MUSIC"   — approccio polynomial rooting: alta risoluzione, buono per UCA.
-# "UNITARY-ESPRIT"— elaborazione a valori reali: efficiente computazionalmente.
-# "MFBA-MUSIC"   — Modified Forward-Backward Averaging: stima covarianza migliorata.
+# "MUSIC"        — subspace super-resolution.  PAPR 17-20 dB with nsig=2 indoors.
+#                  With MUSIC_DECORR='fb' and NUM_SIGNALS=2 handles indoor multipath.
+#                  RECOMMENDED for this setup (validated on real data 2026-05-04).
+# "CAPON"        — MVDR: better at low SNR but can lock onto the multipath mean direction.
+# "BARTLETT"     — conventional beamformer: PAPR max ~6 dB with 5 antennas (beamwidth 72°)
+#                  → always falls below PAPR_INST_MIN_DB threshold. Do not use.
+# "ROOT-MUSIC"   — polynomial rooting approach: high resolution, good for UCA.
+# "UNITARY-ESPRIT"— real-valued processing: computationally efficient.
+# "MFBA-MUSIC"   — Modified Forward-Backward Averaging: improved covariance estimate.
 
 MUSIC_DECORR   = "fb"
 # Decorrelation applied to covariance before MUSIC (and Capon).
-# 'none'      — nessuna decorrelazione (default sicuro, usa solo EMA)
-# 'fb'        — Forward-Backward averaging: migliora MUSIC con multipath coerente
-#               SICURO per UCA; riduce l'impatto delle riflessioni dal soffitto.
-# 'circulant' — solo per debug offline (forza simmetria ciclica: valida solo per UCA pura).
-# 'both'      — circulant + FB: solo per analisi offline.
+# 'none'      — no decorrelation (safe default, relies on EMA only)
+# 'fb'        — Forward-Backward averaging: improves MUSIC with coherent multipath.
+#               SAFE for UCA; reduces the impact of ceiling/wall reflections.
+# 'circulant' — for offline debug only (forces cyclic symmetry: valid only for pure UCA).
+# 'both'      — circulant + FB: for offline analysis only.
 
 NUM_SIGNALS    = 2        # sorgenti attese simultanee
-# INDOOR: usare 2 — il multipath crea un secondo componente di segnale coerente
-# (riflessione da parete) che gonfia λ₂ rispetto a λ₃-λ₅.  Con nsig=1, MUSIC
-# inserisce λ₂ nel sottospazio rumore → spettro piatto → PAPR < 5 dB → burst scartati.
-# Con nsig=2: PAPR 12-20 dB, az stabile a 234° su tutti i burst (verificato da dati).
-# OUTDOOR / LOS: usare 1 (singola sorgente, no multipath).
-# 0 = MDL auto-detect (non raccomandato: stima N=4 con N_snapshots=2621)
+# INDOOR: use 2 — multipath creates a second coherent signal component
+# (wall reflection) that inflates λ₂ relative to λ₃-λ₅.  With nsig=1, MUSIC
+# places λ₂ in the noise subspace → flat spectrum → PAPR < 5 dB → bursts rejected.
+# With nsig=2: PAPR 12-20 dB, az stable at 234° across all bursts (validated on data).
+# OUTDOOR / LOS: use 1 (single source, no multipath).
+# 0 = MDL auto-detect (not recommended: estimates N=4 with N_snapshots=2621)
 
 # ── 2D scan grid ─────────────────────────────────────────────────────────────
 N_AZ       = 360          # azimuth scan points (360 → 1° step)
-N_EL       = 36           # elevation scan points (36 → 2.5° step from EL_MIN to EL_MAX)
-EL_MIN_DEG = 0.0          # minimum elevation [°] — 0° for ground-level ISM beacons
-EL_MAX_DEG = 25.0
-# Elevazione massima della griglia di scansione [°].
-# IMPORTANTE: impostare leggermente sopra all'elevazione massima attesa del TX.
-# Utente ha confermato: TX a ≤20° di elevazione → 25° (5° di margine).
-# Con N_EL=36 e range [0–25°], passo = 25/35 ≈ 0.7° → ottima risoluzione.
-# Con EL_MAX=60° il picco MUSIC toccava il soffitto ogni burst (el=60° std=0°)
-# perché le riflessioni da soffitto dominano a elevazione alta → stima saturata.
-# Abbassare a 25° esclude le riflessioni verticali spurie e concentra la griglia
-# sulla direzione reale → PAPR più alto, elevazione corretta.
+N_EL       = 72        # elevation scan points (61 points over [EL_MIN, EL_MAX])
+EL_MIN_DEG = 5.0
+# Minimum grid elevation [°].
+# 5° excludes floor reflections that appear at el≈0° and lead to
+# wrong az estimates (data 20260504: Mode A with λ1=41.5 dB, az=171° instead of 234°).
+# With EL_MIN=0° the MUSIC peak at el=0° was consistently the highest.
+EL_MAX_DEG = 65.0
+# Maximum scan grid elevation [°].
+# IMPORTANT: set above the maximum expected TX elevation.
+# With EL_MAX=35°: burst_data_20260504_161052.npz (493 bursts, -30 dB atten.):
+#   geometric fit on ch3/ch4 (stable, std≈13°) → az≈301°, el≈44°.
+#   The true elevation is OUTSIDE the grid [5°,35°] → MUSIC finds the
+#   second local maximum at az≈170°/el≈5° (boundary ghost, NOT a reflection).
+#   46% of bursts saturated at the ceiling el=35°; the rest at floor el=5°.
+# 65° gives ~20° margin above geometrically estimated el≈44°.
+# If after the new run el stabilises below 35°, lower to 50° (↑resolution).
+# With N_EL=61 and range [5–65°]: step = 60/60 = 1.0°.
 
 # ── Covariance EMA accumulation ──────────────────────────────────────────────
 COV_ALPHA  = 0.95         # EMA weight  (time constant τ = 1/(1-α) frames)
 #                          # 0.95 → ~20 valid-burst frames of memory ≈ 3-4 s
-#                          # INDOOR: usare α ALTO (0.95-0.98) per mediare su più
-#                          # riflessioni e ottenere direzione stabile.
-#                          # OUTDOOR / TX in movimento: usare α BASSO (0.50-0.70).
+#                          # INDOOR: use HIGH α (0.95-0.98) to average over more
+#                          # reflections and get a stable direction estimate.
+#                          # OUTDOOR / moving TX: use LOW α (0.50-0.70).
 
 AZ_SMOOTH_ALPHA = 0.60
 # Circular EMA smoothing on the per-burst az angle estimate.
 # τ = 1 / (1 − α) valid-preamble bursts.
-# 0.60 → τ≈2.5 burst — ottimale con gate outlier attivo:
-#   - Senza gate: α=0.50 (senza memoria) dà std=18.7°  ma 109-143° nei momenti di bassa qualità.
-#   - Con gate α=0.60: std=23° nella finestra stabile ma 0.9° e 18° dopo la rotazione.
-# Il gate (AZ_OUTLIER_ENABLED) rimuove i jump grandi; l'EMA può quindi avere
-# un po' di più memoria senza inseguire il rumore multipath.
-# Abbassare a 0.40-0.50 se il TX si muove rapidamente (tracking veloce).
+# 0.60 → τ≈2.5 bursts — optimal with outlier gate active.
+# Lower to 0.40-0.50 if the TX moves quickly (faster tracking).
+
+EL_SMOOTH_ALPHA = 0.50
+# Linear EMA smoothing on the per-burst elevation estimate.
+# τ = 1 / (1 − α) valid-preamble bursts.
+# 0.50 → τ=2 bursts, 90% settle-time: ~4 bursts ≈ 0.36 s @ 90ms/burst.
+# LOWERED from 0.85 (2026-05-05): at 0.85 the EMA took 14 bursts (1.2s)
+# to follow an elevation jump — so at az=54° (99 bursts) the EMA was still
+# settling while in the az=234° segment the value was stable.
+# Theoretical el_sigma at SNR=20dB with 5 antennas is 0.2-0.4° → little smoothing needed.
+# The visible el instability comes from geometrically different multipath in the
+# two pointing directions, NOT from noise → lower alpha = more responsive.
+# The el EMA updates ONLY when the burst is not on a boundary (floor or ceiling)
+# to prevent floor/ceiling ghosts from dragging the estimate.
 
 # ── Hardware phase calibration ────────────────────────────────────────────────
-CHANNEL_PHASE_OFFSETS_DEG = [0.0, -35.45, 39.67, -23.86, 2.12]
+CHANNEL_PHASE_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
 # Per-channel phase offset correction [degrees], relative to channel 0 (reference).
-# Calcolato il 2026-05-04 da burst_data_20260504_121242_iq.npz (26 burst stabili,
-# sorgente a ~234° az / ~46° el, BPF a -8595 Hz).
-# Per ricalibrazione: python3 doa_test_868_burst.py --calibrate <az_sorgente>
+# Computed on 2026-05-04 from burst_data_20260504_121242_iq.npz (26 stable bursts,
+# source at ~234° az / ~46° el, BPF at -8595 Hz).
+# To recalibrate: python3 doa_test_868_burst.py --calibrate <source_az>
 # Compensates for cable-length differences and ADC input imbalances.
 # WITHOUT calibration: instantaneous MUSIC PAPR drops from 33 dB to ~14-17 dB
 # for ±10-15° hardware errors, reducing preamble detection rate.
@@ -174,49 +189,81 @@ CHANNEL_PHASE_OFFSETS_DEG = [0.0, -35.45, 39.67, -23.86, 2.12]
 SQUELCH_ENABLED      = True
 SQUELCH_THRESHOLD_DB = -55.0
 # Minimum mean IQ power [dBW] below which the frame is discarded.
-# INDOOR: -55 dBW è un buon compromesso per stanze piccole (TX vicino → segnale forte).
-# Se vedi troppi "NO SIGNAL" con TX acceso, abbassa a -60 o -65.
-# Se vedi falsi segnali (ghost) con TX spento, alza a -50.
+# INDOOR: -55 dBW is a good compromise for small rooms (TX nearby → strong signal).
+# If you see too many "NO SIGNAL" with TX on, lower to -60 or -65.
+# If you see false signals (ghosts) with TX off, raise to -50.
 
 EIG_SPREAD_MIN_DB = 0.5
 # Minimum eigenvalue spread (λ_max / λ_noise in dB) to declare signal present.
-# IMPORTANTE: in ambienti indoor il multipath invalida la separazione classica dei
-# sottospazi: tutti gli autovalori appaiono simili.  Soglia molto bassa per non
-# perdere burst validi; la separazione viene poi fatta dalla soglia PAPR del MUSIC.
-#   INDOOR piccola stanza: 0.5 dB  (lascia passare quasi tutto, filtra il PAPR)
-#   OUTDOOR / LOS:         2.5-3.0 dB  (segnale ben separato dal rumore)
+# IMPORTANT: in indoor environments multipath invalidates the classical subspace
+# separation: all eigenvalues appear similar.  Very low threshold to avoid losing
+# valid bursts; separation is then handled by the MUSIC PAPR threshold.
+#   INDOOR small room: 0.5 dB  (lets almost everything through, PAPR does the filtering)
+#   OUTDOOR / LOS:     2.5-3.0 dB  (signal well separated from noise)
+
+EIG_INST_MAX_DB = 50.0
+# Raised from 41→50 dB: synthetic demo generates λ1≈47 dB (perfect rank-1 after BPF)
+# while real hardware saturated ADC shows λ1≈44-48 dB. 50 dB leaves 3 dB margin.
+# Maximum acceptable dominant eigenvalue (λ₁) before discarding the burst.
+# When λ₁ exceeds this threshold the signal is strong enough to saturate the ADC.
+# Calibration 2026-05-04: saturated ADC → λ₁=41.5 dB (wrong az 171°).
+#                         normal ADC    → λ₁=21.6-37.9 dB (correct az 234°).
+# RAISED from 38 to 41 dB (2026-05-05): the good session (620 bursts) had λ₁ max=37.9 dB,
+# just below the old limit. With GAIN=40 and TX nearby, λ₁ fluctuates up to 38-40 dB
+# without saturation → the gate at 38 rejected EVERYTHING, giving only ~12 bursts in 3 min.
+# 41.0 dB: 3.5 dB above the good-session max, 0.5 dB below the known saturation point.
+# If the incorrect-az problem reappears, lower to 39 and reduce GAIN_DB to 35.
+# Do NOT lower below 38 dB.
+
+EIG_SN_GAP_MIN_DB = 0.0
+# Minimum signal/noise subspace boundary gap [dB] = λ₂/λ₃ ratio in dB.
+# ⚠️  POST-BPF: this gate is DISABLED (0.0) in burst mode.
+# Rationale: the pre-BPF calibration (20260504) showed:
+#   az≈0° (ghost):    gap ≈ 1.9 dB → MUSIC unreliable
+#   az≈54° (real):    gap ≈ 9.9 dB → MUSIC reliable
+# But after BPF preamble-tone extraction, the eigenvalue noise floor
+# collapses to 0 (λ3 ≈ λ4 ≈ λ5 ≈ 1e-20). The λ2/λ3 ratio becomes unstable:
+# with a SINGLE source (rank-1 expected), ev[1] and ev[2] are both numerical
+# artefacts → the gap can randomly be 0–20 dB → rejects valid bursts.
+# The PAPR gate (≥8 dB) already handles preamble/noise separation post-BPF
+# reliably. EIG_SN_GAP post-BPF is redundant and harmful.
+# To re-enable (raw IQ environments without BPF): set to 3.0-5.0.
 
 PAPR_INST_MIN_DB = 8.0
 # Minimum MUSIC PAPR to accept a preamble burst as valid.
-# Con MUSIC + nsig=2 + cal hardware: PAPR tipico indoor = 17-20 dB → soglia 8 dB ampiamente superata.
-# BARTLETT con 5 ant: PAPR max ~6 dB → non usare con questa soglia.
-# OUTDOOR / LOS (array calibrato): alzare a 12-20 dB per ridurre falsi positivi.
-# Override a runtime con: python3 doa_test_868_burst.py --papr-min 8
+# Intentionally low threshold: selection of "good" bursts is delegated to the
+# floor/ceiling gates (el_min+step/2, el_max-step/2) which prevent ghosts from
+# updating the az/el EMA — but bursts are still recorded for analysis.
+# Raising the threshold drastically reduces the number of recorded bursts (~32% fewer
+# already at 10 dB), degrading the EMA estimate due to lack of samples.
+# BARTLETT with 5 ants: PAPR max ~6 dB → must stay ≤ 8 dB when using Bartlett.
+# OUTDOOR / clean LOS (calibrated array): can raise to 12-20 dB for precision.
+# Override at runtime: python3 doa_test_868_burst.py --papr-min 8
 
 # ── Pilot tone extraction ─────────────────────────────────────────────────────
-# ⚠️  IMPORTANTE: PILOT_TONE_ENABLED va abilitato SOLO in modalità CW (tono continuo).
-# In modalità BURST (IRA) il tono pilota è a +3125 Hz nel preamble e viene gestito
-# automaticamente dal codice burst-specifico.  Abilitare PILOT_TONE_ENABLED in burst
-# mode fa estrarre una banda a 100 kHz che contiene solo rumore → SNR crolla.
+# ⚠️  IMPORTANT: PILOT_TONE_ENABLED should be enabled ONLY in CW mode (continuous tone).
+# In BURST mode (IRA) the pilot tone is at +3125 Hz in the preamble and is handled
+# automatically by the burst-specific code.  Enabling PILOT_TONE_ENABLED in burst
+# mode extracts a 100 kHz band containing only noise → SNR collapses.
 SAMPLE_RATE_HZ        = 1_024_000
-PILOT_TONE_ENABLED    = False   # ← False per BURST mode, True solo per CW mode
-PILOT_TONE_OFFSET_HZ  = 100_000 # ← Usato solo se PILOT_TONE_ENABLED=True (CW mode)
-PILOT_TONE_BW_HZ      = 15_000  # ← Usato solo se PILOT_TONE_ENABLED=True (CW mode)
+PILOT_TONE_ENABLED    = False   # ← False for BURST mode, True only for CW mode
+PILOT_TONE_OFFSET_HZ  = 100_000 # ← Used only when PILOT_TONE_ENABLED=True (CW mode)
+PILOT_TONE_BW_HZ      = 15_000  # ← Used only when PILOT_TONE_ENABLED=True (CW mode)
 
 PREAMBLE_BPF_BW_HZ = 10_000
-# Larghezza di banda del filtro BPF in burst mode.
-# Con BW=10 kHz: SNR gain ≈ 10·log10(1024000/10000) ≈ +20 dB; finestra più ampia
-# gestisce eventuali imprecisioni nella rilevazione della frequenza del tono
-# (risoluzione FFT 2000 Hz su finestra 512 camp. → incertezza ±1000 Hz).
-# Non scendere sotto 4000 Hz.
+# BPF bandwidth in burst mode.
+# With BW=10 kHz: SNR gain ≈ 10·log10(1024000/10000) ≈ +20 dB; wider window
+# handles inaccuracies in tone frequency detection
+# (FFT resolution 2000 Hz on 512-sample window → uncertainty ±1000 Hz).
+# Do not go below 4000 Hz.
 
 TONE_SEARCH_BW_HZ = 100_000
-# Finestra di ricerca della frequenza reale del tono IRA preamble [Hz].
-# TX (LibreSDR) e RX (KrakenSDR) usano oscillatori indipendenti → offset LO
-# tipico ±10–50 kHz a 868 MHz.  Il codice cerca il picco FFT in
-# [+3125 - TONE_SEARCH_BW_HZ/2 … +3125 + TONE_SEARCH_BW_HZ/2] e usa quella
-# frequenza per il BPF.  100 kHz copre ±50 kHz offset (>50 ppm a 868 MHz).
-# Se il TX è calibrato o usa stesso clock: abbassare a 20_000 per più precisione.
+# Search window for the actual IRA preamble tone frequency [Hz].
+# TX (LibreSDR) and RX (KrakenSDR) use independent oscillators → typical LO
+# offset ±10–50 kHz at 868 MHz.  The code searches the FFT peak in
+# [+3125 - TONE_SEARCH_BW_HZ/2 … +3125 + TONE_SEARCH_BW_HZ/2] and uses that
+# frequency for the BPF.  100 kHz covers ±50 kHz offset (>50 ppm at 868 MHz).
+# If TX is calibrated or shares clock: lower to 20_000 for better precision.
 
 # ── Per-channel amplitude normalisation ──────────────────────────────────────
 AMPLITUDE_NORMALIZE = True
@@ -226,30 +273,30 @@ AMPLITUDE_NORMALIZE = True
 # Disable for hardware calibration sessions.
 
 # ── Enhanced preprocessing options ────────────────────────────────────────────
-# ⚠️ ATTENZIONE: il preprocessing avanzato può CORROMPERE il segnale se non
-# configurato correttamente.  Per indoor, è generalmente meglio lasciarlo
-# disabilitato e affidarsi all'EMA temporale (COV_ALPHA) per il multipath.
+# ⚠️ WARNING: advanced preprocessing can CORRUPT the signal if not configured
+# correctly.  For indoor use, it is generally better to leave it disabled
+# and rely on the temporal EMA (COV_ALPHA) for multipath.
 ENABLE_ENHANCED_PREPROCESSING = False
-# Abilita tecniche avanzate di preprocessing basate sui paper scientifici:
-# - Spatial smoothing per decorrelare segnali coerenti (riflessioni indoor)
-# - Modified Forward-Backward Averaging (MFBA) per UCA
-# - Adaptive filtering per sopprimere interferenze
-# - Outlier rejection per statistica robusta
+# Enables advanced preprocessing techniques based on research papers:
+# - Spatial smoothing to decorrelate coherent signals (indoor reflections)
+# - Modified Forward-Backward Averaging (MFBA) for UCA
+# - Adaptive filtering to suppress interference
+# - Outlier rejection for robust statistics
 
 APPLY_SPATIAL_SMOOTHING = False
-# Applica spatial smoothing per decorrelare segnali coerenti.
-# INDOOR: può essere utile ma richiede tuning.  Inizia con False.
+# Applies spatial smoothing to decorrelate coherent signals.
+# INDOOR: can be useful but requires tuning.  Start with False.
 
 APPLY_MFBA = False
-# Applica Modified Forward-Backward Averaging per migliorare la stima della covarianza.
+# Applies Modified Forward-Backward Averaging to improve covariance estimation.
 
 APPLY_ADAPTIVE_FILTERING = False
-# ⚠️ PERICOLOSO: il filtraggio adattivo sottrae la media degli altri canali,
-# annullando completamente un segnale coerente su tutti i canali (come il nostro
-# burst IRA).  Lascia sempre False per questa applicazione.
+# ⚠️ DANGEROUS: adaptive filtering subtracts the mean of the other channels,
+# completely cancelling a signal coherent across all channels (such as our
+# IRA burst).  Always leave False for this application.
 
 APPLY_OUTLIER_REJECTION = False
-# Applica reiezione statistica di outlier.  Utile solo per rumore impulsivo forte.
+# Applies statistical outlier rejection.  Useful only with strong impulsive noise.
 
 # ── SNR-adaptive algorithm switching ──────────────────────────────────────────
 SNR_ADAPTIVE_ENABLED = True
@@ -262,30 +309,32 @@ SNR_LOW_DB  = 4.0
 # Set SNR_ADAPTIVE_ENABLED = False to always use DOA_ALGORITHM.
 
 # ── Phase coherence gating ──────────────────────────────────────────────────
-PHASE_COHERENCE_ENABLED = True
-PHASE_COHERENCE_MAX_JUMP_DEG = 60.0
-# Reject a frame if ANY inter-channel phase difference jumps by more
-# than this from the running circular median.  Indoor multipath causes
-# sudden phase flips on individual bursts → this gates them out.
-# 60° works well for stationary TX; widen to 90° for moving TX.
+PHASE_COHERENCE_ENABLED = False
+PHASE_COHERENCE_MAX_JUMP_DEG = 120.0
+# DISABLED (2026-05-04): the gate compares phase_diffs_inst (from R_inst,
+# single burst, std≈90° in indoor multipath) against the phase_hist median
+# (now populated only by stable multi-burst R_avg). The mismatch causes false
+# rejection of valid bursts → "very few bursts accepted".
+# Re-enable only when bursts are consistently high quality (outdoor/LOS).
 
 # ── Circular azimuth outlier rejection ───────────────────────────────────────
 AZ_OUTLIER_ENABLED = True
 AZ_OUTLIER_MAX_DEV_DEG = 45.0
 # Reject an az estimate that deviates more than this from the
-# running circular median.  This catches the wild 200° jumps
+# running circular median.  Catches the wild 200° jumps
 # observed in indoor multipath (az_std ≈ 80° without gating).
 # 45° is conservative; tighten to 30° once array is calibrated.
 AZ_OUTLIER_MIN_HISTORY = 5
 # Minimum number of accepted estimates before outlier rejection kicks in.
 
 # ── Multi-burst / multi-frame accumulation ──────────────────────────────────
-MULTI_BURST_N = 3
+MULTI_BURST_N = 1
 # Number of valid bursts to accumulate before running DoA.
-# Ora che il BPF preambolo è attivo (+22 dB SNR), ogni singolo burst è molto
-# più stabile: 3 burst bilanciano stabilità (4.8 dB extra) e latenza (~270 ms).
-# OUTDOOR: 1-2 per reattività. INDOOR pesante multipath: 4-5.
-# Set to 1 to disable (per-burst DoA as before).
+# With BPF active (+22 dB SNR), every single burst is already excellent quality.
+# LOWERED from 3 to 1 (2026-05-05): with N=3, just 2 failed bursts out of 3 can
+# stall the DoA output for several seconds. With BPF, N=1 is sufficient.
+# Increase to 2-3 in heavy-multipath environments (deep indoor) to gain
+# ~4-5 dB extra averaging at the cost of additional latency.
 USE_EMA_FOR_DOA_BELOW_SNR = 6.0
 # When instantaneous SNR is below this, use the EMA covariance R for
 # DoA instead of the single-frame R_inst.  R_EMA has much lower noise
@@ -308,14 +357,14 @@ HIGH_EL_ALGO = "BARTLETT"
 # CAPON:    intermediate; better resolution than Bartlett, less stable than MUSIC.
 
 # ── Covariance decorrelation (anti-multipath) ─────────────────────────────────
-# NOTA: MUSIC_DECORR è definito anche sopra (sezione "2D DoA algorithm").
-# Il valore qui sotto era "none" e sovrascriveva silenziosamente il valore "fb"
-# definito sopra, perché Python usa l'ultima assegnazione.  Bug rimosso.
-# Il valore effettivo è ora quello in cima alla sezione DoA: "fb".
+# NOTE: MUSIC_DECORR is also defined above (section "2D DoA algorithm").
+# The value below was "none" and silently overrode the "fb" value defined
+# above, because Python uses the last assignment.  Bug removed.
+# The effective value is now the one at the top of the DoA section: "fb".
 # ─────────────────────────────────────────────────────────────────────────────
-# AVVERTENZA su circulant smoothing: 'circulant' forza R a essere ciclicamente
-# simmetrica → autovettori = DFT → pattern a stella N-fold → PAPR≈0 dB su UCA.
-# NON usare 'circulant' o 'both' su UCA.  'fb' è SICURO (non circulant).
+# WARNING on circulant smoothing: 'circulant' forces R to be cyclically
+# symmetric → eigenvectors = DFT → N-fold star pattern → PAPR≈0 dB on UCA.
+# Do NOT use 'circulant' or 'both' on UCA.  'fb' is SAFE (non-circulant).
 CAPNT_DECORR = "none"
 # Same restriction applies to Capon: circulant forces N-fold symmetry
 # in R^{-1} → Capon degrades to Bartlett on a circulant covariance.

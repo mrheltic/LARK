@@ -159,10 +159,21 @@ def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
         phase_hist = [collections.deque(maxlen=C.HISTORY_LEN) for _ in range(4)],
         energy_hist= collections.deque(maxlen=C.HISTORY_LEN),
         az_phasor  = np.exp(0j),  # circular EMA phasor for az smoothing
+        el_ema     = (C.EL_MIN_DEG + C.EL_MAX_DEG) / 2.0,  # linear EMA for elevation (init: grid midpoint)
         no_signal  = True,
         no_doa     = True,
         lock       = threading.Lock(),
         running    = True,
+        # ── New telemetry fields ─────────────────────────────
+        cfo_hist     = collections.deque(maxlen=C.HISTORY_LEN),   # CFO offset [Hz]
+        last_iq_env  = np.zeros(64, dtype=np.float32),             # burst envelope CH0
+        kf_az_hist   = collections.deque(maxlen=C.HISTORY_LEN),   # Kalman az estimate
+        kf_el_hist   = collections.deque(maxlen=C.HISTORY_LEN),   # Kalman el estimate
+        kf_az_x      = 0.0,    # Kalman az state (internal)
+        kf_el_x      = 30.0,   # Kalman el state (internal)
+        kf_az_var    = 200.0,  # Kalman az error variance
+        kf_el_var    = 200.0,  # Kalman el error variance
+        kf_init      = True,   # cold-start flag
         rec_enabled= True,
         rec_t       = [],
         rec_az      = [],
@@ -174,7 +185,7 @@ def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
         rec_R       = [],
         rec_has_sig = [],
         rec_X       = [],          # raw preamble IQ windows (n_ant × n_samp)
-        rec_iq_enabled = False,    # set by --save-iq CLI flag
+        rec_iq_enabled = True,    # set by --save-iq CLI flag
         burst_acc   = [],          # multi-burst covariance accumulation buffer
     )
 
@@ -226,11 +237,12 @@ def _detect_bursts(iq: np.ndarray, threshold_factor: float = 6.0) -> list[int]:
 # =============================================================================
 
 def _find_preamble_onset(
-    iq:      np.ndarray,   # channel-0 samples, 1D complex
-    b_start: int,          # energy-detector burst onset (sample index)
-    n_total: int,          # total samples in iq
-    fs:      float = _FS,
-    win:     int   = _TONE_SCAN_WIN,
+    iq:       np.ndarray,        # channel-0 samples, 1D complex
+    b_start:  int,               # energy-detector burst onset (sample index)
+    n_total:  int,               # total samples in iq
+    fs:       float = _FS,
+    win:      int   = _TONE_SCAN_WIN,
+    known_hz: float | None = None,  # if set, restrict freq search to ±2 kHz
 ) -> tuple:
     """
     Find (preamble_onset_sample, actual_tone_hz) via joint time×frequency search.
@@ -261,23 +273,32 @@ def _find_preamble_onset(
     scan_end = min(b_start + _BURST_SAMPLES // 2, n_total - win)
 
     if scan_end <= scan_sta:
-        return b_start, float(_PREAMBLE_TONE_HZ)
+        return b_start, float(known_hz if known_hz is not None else _PREAMBLE_TONE_HZ)
 
     # IMPORTANT: use full complex FFT (not rfft) because IQ data is complex.
-    # rfft on complex input silently discards the Q channel, mapping a tone at
-    # -f to +f.  extract_pilot_tone uses the full complex FFT → BPF at +f would
-    # miss a tone actually at -f → X_proc ≈ 0 → PAPR = 0 dB.
     freqs = np.fft.fftfreq(win, d=1.0 / fs)  # includes negative frequencies
+
+    # Frequency search mask: full-range on first call, ±2 kHz afterwards.
+    _FREQ_LOCK_BW = 2_000.0   # Hz half-width when known_hz is set
+    if known_hz is not None:
+        _freq_mask = np.abs(freqs - known_hz) <= _FREQ_LOCK_BW
+        _freq_mask[0] = False   # always exclude DC
+    else:
+        _freq_mask = None
 
     best_pwr  = -1.0
     best_pos  = b_start
-    best_freq = float(_PREAMBLE_TONE_HZ)
+    best_freq = float(known_hz if known_hz is not None else _PREAMBLE_TONE_HZ)
 
     for pos in range(scan_sta, scan_end, step):
         seg     = iq[pos: pos + win]
         fft_pwr = np.abs(np.fft.fft(seg)) ** 2
         fft_pwr[0] = 0.0    # zero DC bin (LO leakage)
-        pk_bin  = int(np.argmax(fft_pwr))
+        if _freq_mask is not None:
+            fft_pwr_search = fft_pwr * _freq_mask
+        else:
+            fft_pwr_search = fft_pwr
+        pk_bin  = int(np.argmax(fft_pwr_search))
         pwr     = float(fft_pwr[pk_bin])
         if pwr > best_pwr:
             best_pwr  = pwr
@@ -362,6 +383,10 @@ def _acq_loop(
     _has_cal     = any(o != 0.0 for o in _phase_offs)
     # Circular EMA alpha for per-burst az angle smoothing
     _az_alpha    = float(getattr(C, "AZ_SMOOTH_ALPHA", 0.50))
+    # Linear EMA alpha for elevation smoothing (same gate logic as az)
+    _el_alpha    = float(getattr(C, "EL_SMOOTH_ALPHA", 0.70))
+    # Pre-computed elevation grid step for floor/ceiling boundary detection
+    _el_step     = (cfg.el_max_deg - cfg.el_min_deg) / max(cfg.n_el - 1, 1)
 
     # Outlier rejection gate (AZ_OUTLIER_ENABLED in config)
     _az_outlier_enabled  = bool(getattr(C, "AZ_OUTLIER_ENABLED", True))
@@ -369,10 +394,14 @@ def _acq_loop(
     _az_outlier_min_hist = int(getattr(C, "AZ_OUTLIER_MIN_HISTORY", 5))
     _az_reject_streak    = 0      # resets EMA after N consecutive rejections
     _AZ_RESET_AFTER      = 3     # force-accept after this many consecutive rejects
+    _az_phasor_init      = True   # True until first accepted burst seeds phasor
 
     # Phase coherence gate (PHASE_COHERENCE_ENABLED in config)
     _phase_coh_enabled   = bool(getattr(C, "PHASE_COHERENCE_ENABLED", True))
     _phase_coh_max_jump  = float(getattr(C, "PHASE_COHERENCE_MAX_JUMP_DEG", 60.0))
+
+    # Signal/noise subspace gap gate (EIG_SN_GAP_MIN_DB in config)
+    _eig_sn_gap_min = float(getattr(C, "EIG_SN_GAP_MIN_DB", 0.0))
 
     # Consecutive-no-burst counter — warns user if TX is likely in CW mode
     _no_burst_streak = 0
@@ -381,6 +410,32 @@ def _acq_loop(
     _multi_n = max(1, int(getattr(C, "MULTI_BURST_N", 1)))
     _R_batch: collections.deque = collections.deque(maxlen=_multi_n)
     _papr_min = float(getattr(C, "PAPR_INST_MIN_DB", _PAPR_INST_MIN_DB))
+
+    # Tone frequency lock: None until first burst passes PAPR gate.
+    # After lock, _find_preamble_onset restricts freq search to ±2 kHz
+    # around this value so low-SNR noise spikes can't steal the onset.
+    _cfo_ema_hz: float | None = None
+
+    # Phase-diffs phasor EMA: circular-mean smoothing over accepted bursts.
+    # Only updated on has_doa=True bursts so floor/outlier reflections
+    # (which have different spatial phases) do not corrupt the display.
+    _phase_diffs_phasor: np.ndarray = np.zeros(4, dtype=complex)
+
+    # ── Gate rejection diagnostic counters ───────────────────────────────────
+    # Printed every _DIAG_INTERVAL_S seconds so the user can see which gate
+    # is most active.  Format: "DIAG: detected=N eig_spread=N papr=N sn_gap=N
+    #                                  floor=N ceil=N outlier=N accepted=N"
+    _DIAG_INTERVAL_S = 10.0
+    _diag_t0     = time.monotonic()
+    _cnt_detect  = 0   # bursts passing energy detector
+    _cnt_eig_lo  = 0   # Stage 1: eig spread too low
+    _cnt_papr    = 0   # Stage 2: PAPR too low (not a preamble)
+    _cnt_sn_gap  = 0   # Stage 2b: λ2/λ3 gap too low
+    _cnt_floor   = 0   # floor boundary reject
+    _cnt_outlier = 0   # az outlier reject
+    _cnt_accepted= 0   # bursts accepted into _R_batch (→ DoA runs after N)
+    _cnt_doa_out = 0   # full DoA outputs produced
+    _papr_hist:  list[float] = []   # PAPR of ALL computed windows (threshold calibration)
 
     # Streaming sample buffer: accumulate CPI frames until we have enough
     # for reliable burst detection (≥ 1 full SUPERFRAME).
@@ -410,7 +465,7 @@ def _acq_loop(
             preamble_tone = np.exp(2j * np.pi * _PREAMBLE_TONE_HZ / _fs * t)
 
             X = np.zeros((cfg.n_ant, N_frame), dtype=np.complex128)
-            snr_lin = 10 ** (18.0 / 10.0)   # 18 dB SNR
+            snr_lin = 10 ** (18.0 / 10.0)   # 18 dB SNR main path
             for k in range(cfg.n_ant):
                 channel_phase = tau[k] + phase_off[k]
                 # Preamble (pure tone with array phase)
@@ -418,6 +473,19 @@ def _acq_loop(
                     gain_off[k] * np.exp(1j * channel_phase)
                     * preamble_tone[burst_start: burst_start + pre_len]
                     * np.sqrt(snr_lin)
+                )
+            # Simulated multipath reflection: +30° offset, -6 dB (12 dB SNR)
+            # Inflates λ2 so EIG_SN_GAP gate behaves like real indoor conditions.
+            refl_az = demo_az + np.deg2rad(30.0)
+            refl_el = np.deg2rad(8.0)
+            tau_r = 2 * np.pi * (pos[:, 0] * np.cos(refl_el) * np.sin(refl_az)
+                                 + pos[:, 1] * np.cos(refl_el) * np.cos(refl_az))
+            snr_refl = 10 ** (12.0 / 10.0)   # -6 dB relative to main
+            for k in range(cfg.n_ant):
+                X[k, burst_start: burst_start + pre_len] += (
+                    gain_off[k] * np.exp(1j * (tau_r[k] + phase_off[k]))
+                    * preamble_tone[burst_start: burst_start + pre_len]
+                    * np.sqrt(snr_refl)
                 )
             # Add white noise everywhere
             X += ((rng.standard_normal((cfg.n_ant, N_frame))
@@ -477,6 +545,32 @@ def _acq_loop(
 
         _no_burst_streak = 0
 
+        # ── Periodic gate-rejection diagnostics ────────────────────────────
+        _cnt_detect += len(bursts)
+        _now = time.monotonic()
+        if _now - _diag_t0 >= _DIAG_INTERVAL_S:
+            _elapsed = _now - _diag_t0
+            _diag_t0 = _now
+            _ph = _papr_hist if _papr_hist else [0.0]
+            _papr_mean = float(np.mean(_ph))
+            _papr_med  = float(np.median(_ph))
+            _papr_min5 = float(np.percentile(_ph, 5))
+            print(
+                f"[DIAG] {_elapsed:.0f}s | "
+                f"detected={_cnt_detect} "
+                f"eig_lo={_cnt_eig_lo} "
+                f"papr_rej={_cnt_papr} "
+                f"(μ={_papr_mean:.1f} med={_papr_med:.1f} p5={_papr_min5:.1f} thr≥{_papr_min:.0f}dB) "
+                f"sn_gap={_cnt_sn_gap} "
+                f"floor={_cnt_floor} "
+                f"outlier={_cnt_outlier} "
+                f"accepted={_cnt_accepted} "
+                f"doa_out={_cnt_doa_out}"
+            )
+            _cnt_detect = _cnt_eig_lo = _cnt_papr = _cnt_sn_gap = 0
+            _cnt_floor  = _cnt_outlier = _cnt_accepted = _cnt_doa_out = 0
+            _papr_hist = []
+
         for b_start in bursts:
             b_end = min(b_start + _WINDOW_SAMPLES, n_total)
             if b_end - b_start < _PRE_SAMPLES:
@@ -487,7 +581,8 @@ def _acq_loop(
             # pure tone has the highest per-bin FFT power in the burst,
             # regardless of where the actual frequency lands.
             tone_start, _tone_hz = _find_preamble_onset(
-                X_stream[0], b_start, n_total
+                X_stream[0], b_start, n_total,
+                known_hz=_cfo_ema_hz,   # None on first burst → unconstrained
             )
             # Print LO offset on first successful detection (diagnostic)
             if not getattr(_acq_loop, "_offset_printed", False):
@@ -496,6 +591,11 @@ def _acq_loop(
                       f"(LO offset = {_lo_off_khz:+.1f} kHz  "
                       f"= {_lo_off_khz*1e3/868_100:.0f} ppm)")
                 _acq_loop._offset_printed = True
+                # Lock immediately so all subsequent searches are constrained.
+                # Do NOT wait for PAPR gate — first unconstrained detection is
+                # the most reliable (real signal present after energy trigger).
+                _cfo_ema_hz = _tone_hz
+                print(f"[INFO] Tone frequency locked at {_tone_hz/1e3:.2f} kHz  (auto-lock)")
             tone_end = min(tone_start + _PRE_SAMPLES, n_total)
             if tone_end - tone_start < _PRE_SAMPLES // 2:
                 continue   # not enough preamble to process
@@ -508,6 +608,7 @@ def _acq_loop(
             # Filter at the AUTO-DETECTED tone frequency (handles LO offset).
             # Gain SNR ≈ 10·log10(FS / BPF_BW) ≈ +22 dB vs raw preamble.
             # In CW mode (PILOT_TONE_ENABLED=True), filter at the configured offset.
+            _bpf_ok = True   # assume BPF captured the tone; overridden below if not
             if getattr(C, "PILOT_TONE_ENABLED", False):
                 X_proc = extract_pilot_tone(
                     X_pre, float(C.SAMPLE_RATE_HZ),
@@ -527,7 +628,8 @@ def _acq_loop(
                 # Fall back to unfiltered X_pre so DoA can still gate on PAPR.
                 _bpf_pwr = float(np.mean(np.abs(X_proc) ** 2))
                 _raw_pwr = float(np.mean(np.abs(X_pre)  ** 2)) + 1e-30
-                if _bpf_pwr / _raw_pwr < 0.05:   # < 5% of raw power → BPF missed
+                _bpf_ok  = (_bpf_pwr / _raw_pwr >= 0.05)
+                if not _bpf_ok:   # < 5% of raw power → BPF missed tone
                     X_proc = X_pre
 
             # ── Amplitude normalization ───────────────────────────────────────
@@ -569,6 +671,7 @@ def _acq_loop(
 
                 # Stage 1 fast-reject: skip MUSIC if eigenspread too low
                 if eig[0] < C.EIG_SPREAD_MIN_DB:
+                    _cnt_eig_lo += 1
                     with S.lock:
                         S.snr_db  = snr
                         S.eig_db  = eig
@@ -576,11 +679,21 @@ def _acq_loop(
                         S.no_doa    = True
                         S.energy_hist.append(pwr_db)
                         S.snr_hist.append(snr)
-                        # Still show phase diffs so the plot does not freeze
-                        for _i, _p in enumerate(phase_diffs_inst):
-                            S.phase_hist[_i].append(float(_p))
+                        # Phase NOT updated: R_inst at near-noise eigenspread is pure noise.
                         S.burst_n += 1
                     continue
+
+                # Stage 1b: ADC saturation advisory — λ1 > EIG_INST_MAX_DB.
+                # NOTE: after BPF pilot extraction the noise floor eigenvalue is
+                # near-zero, so eigenvalue SPREAD is always large (40-55+ dB).
+                # This gate is therefore WARNING-ONLY — never rejects a burst.
+                # Use raw IQ amplitude clipping to detect true ADC saturation.
+                _eig_max = float(getattr(C, "EIG_INST_MAX_DB", 50.0))
+                if eig[0] > _eig_max:
+                    if not getattr(_acq_loop, "_sat_warned", False):
+                        print(
+                            f"[INFO] λ1={eig[0]:.1f} dB (high eigenspread — normal after BPF)")
+                        _acq_loop._sat_warned = True
 
                 # Stage 2: instantaneous DoA on R_inst — per-burst DoA estimator.
                 # For a genuine preamble window (rank-1 after pilot BPF), MUSIC
@@ -606,11 +719,22 @@ def _acq_loop(
                                                    decorr=getattr(C, "MUSIC_DECORR", "none"))
                 
                 az_inst, el_inst, papr_inst = find_peak_uca_2d(spec2d_inst, cfg)
+                _papr_hist.append(float(papr_inst))   # track all, not just accepted
 
                 is_preamble = (papr_inst >= _papr_min)
 
+                if is_preamble:
+                    # Update tone frequency EMA only when the BPF actually captured
+                    # the tone (_bpf_ok). If the fallback (raw X_pre) was used the
+                    # returned _tone_hz is unreliable → skip EMA to avoid poisoning.
+                    if _bpf_ok and _cfo_ema_hz is not None:
+                        _cfo_ema_hz = 0.95 * _cfo_ema_hz + 0.05 * _tone_hz
+
                 if not is_preamble:
-                    # Non-preamble window: update EMA from existing acc, skip DoA
+                    _cnt_papr += 1
+                    # Non-preamble window: skip DoA.
+                    # Phase NOT updated: wideband data/noise window has isotropic
+                    # R_inst phases (std≈90°) → pollutes phase display.
                     with S.lock:
                         S.snr_db  = snr
                         S.eig_db  = eig
@@ -618,23 +742,44 @@ def _acq_loop(
                         S.no_doa    = True
                         S.energy_hist.append(pwr_db)
                         S.snr_hist.append(snr)
-                        # Phase diffs still shown so the plot is always live
-                        for _i, _p in enumerate(phase_diffs_inst):
-                            S.phase_hist[_i].append(float(_p))
                         S.burst_n += 1
                     continue
 
+                # ── Stage 2b: signal/noise subspace gap gate (EIG_SN_GAP_MIN_DB) ──
+                # Checks λ₂/λ₃ ratio in dB (eig[1]-eig[2]).  With NUM_SIGNALS=2,
+                # a small gap means λ₂ ≈ λ₃ → noise contaminates signal subspace →
+                # MUSIC spectrum is nearly flat → argmax returns bin 0 (az=0°).
+                # Data 20260504: az≈0° ghosts have gap=1.9 dB; true az≈54° have 9.9 dB.
+                # Bursts failing this gate are NOT added to _R_batch (skipped cleanly).
+                # NOTE: we do NOT update phase_hist here.  These bursts have low
+                # signal/noise separation → R_inst phases are pure noise.  Adding them
+                # would corrupt the phase display (turned it completely random after fix).
+                if _eig_sn_gap_min > 0.0 and len(eig) >= 3:
+                    _sn_gap = float(eig[1] - eig[2])
+                    if _sn_gap < _eig_sn_gap_min:
+                        _cnt_sn_gap += 1
+                        with S.lock:
+                            S.snr_db  = snr
+                            S.eig_db  = eig
+                            S.no_signal = True
+                            S.no_doa    = True
+                            S.energy_hist.append(pwr_db)
+                            S.snr_hist.append(snr)
+                            S.burst_n += 1
+                        continue
+
                 # ── Valid preamble burst ──────────────────────────────────────
                 # Multi-burst accumulation: average N covariance matrices before DoA
+                _cnt_accepted += 1
                 _R_batch.append(R_inst)
                 if len(_R_batch) < _multi_n:
-                    # Accumulate EMA while waiting for N bursts
+                    # Accumulate EMA while waiting for N bursts.
+                    # Phase NOT updated yet: single-burst R_inst phase is noisier
+                    # than the R_avg we'll get when the batch is full.
                     acc.update(X_cal)
                     with S.lock:
                         S.snr_db = snr; S.eig_db = eig
                         S.energy_hist.append(pwr_db); S.snr_hist.append(snr)
-                        for _i, _p in enumerate(phase_diffs_inst):
-                            S.phase_hist[_i].append(float(_p))
                         S.burst_n += 1
                     continue
                 # Average the accumulated batch → lower noise floor by ~5 dB (N=3)
@@ -654,10 +799,21 @@ def _acq_loop(
                     else:
                         spec2d_avg = doa_music_uca_2d(X_cal, cfg, R_in=R_avg,
                                                        decorr=getattr(C, "MUSIC_DECORR", "none"))
-                    az_avg, el_avg, papr_avg = find_peak_uca_2d(spec2d_avg, cfg)
-                    az_inst  = az_avg
-                    el_inst  = el_avg
+                    _,  _, papr_avg = find_peak_uca_2d(spec2d_avg, cfg)
                     spec2d_inst = spec2d_avg
+
+                # ── Marginal-then-conditional peak extraction ──────────────────
+                # A flat UCA has a coupling ridge in the 2D MUSIC spectrum: the
+                # joint 2D argmax can slide up the ridge to the el-ceiling instead
+                # of staying at the true peak.  Fix: estimate az from the 1D
+                # marginal (max over el, more robust), then estimate el from the
+                # conditional slice at that az.  papr_inst unchanged (from 2D).
+                _az_marg  = np.max(spec2d_inst, axis=0)   # (n_az,)
+                _az_bin_m = int(np.argmax(_az_marg))
+                az_inst   = float(cfg.az_range_deg()[_az_bin_m])
+                _el_slice = spec2d_inst[:, _az_bin_m]     # (n_el,) at true az
+                _el_bin_m = int(np.argmax(_el_slice))
+                el_inst   = float(cfg.el_range_deg()[_el_bin_m])
 
                 # ── Outlier gate (AZ_OUTLIER) ────────────────────────────────────────
                 # Reject az estimates that deviate too much from the running median.
@@ -665,17 +821,31 @@ def _acq_loop(
                 # Exception: after _AZ_RESET_AFTER consecutive rejects, the array has
                 # likely moved → force-accept to let the EMA re-lock (rotation support).
                 az_ph    = np.exp(1j * np.deg2rad(az_inst))
-                _accept  = True
+                _accept   = True
+                _el_clamp = False   # True when el hits ceiling (az still valid)
+
+                # Floor-boundary guard: el at bottom grid point → floor reflection.
+                # Reject entire burst: floor reflections produce wrong az too.
+                if el_inst <= cfg.el_min_deg + _el_step * 0.5:
+                    _accept = False
+                    _cnt_floor += 1
+                # Ceiling-boundary guard: el at top grid point → el unreliable.
+                # Since az is now estimated via 1D marginal (independent of el),
+                # do NOT reject the burst — just skip the el_ema update.
+                if el_inst >= cfg.el_max_deg - _el_step * 0.5:
+                    _el_clamp = True
                 if _az_outlier_enabled and len(S.az_hist) >= _az_outlier_min_hist:
                     _med = _circ_median(np.array(S.az_hist))
                     _dev = float(abs(((az_inst - _med + 180) % 360) - 180))
                     if _dev > _az_outlier_max_dev:
                         _az_reject_streak += 1
                         if _az_reject_streak >= _AZ_RESET_AFTER:
-                            # Likely array rotation — reset EMA and accept
+                            # Likely array rotation — force re-init phasor to new direction
                             _az_reject_streak = 0
+                            _az_phasor_init = True   # next accept seeds phasor cold
                         else:
                             _accept = False
+                            _cnt_outlier += 1
 
                 # ── Phase coherence gate ─────────────────────────────────────────────
                 # Reject if ANY channel's phase diff jumps by more than the threshold.
@@ -696,9 +866,19 @@ def _acq_loop(
 
                 if _accept:
                     _az_reject_streak = 0
-                    S.az_phasor = _az_alpha * S.az_phasor + (1.0 - _az_alpha) * az_ph
+                    if _az_phasor_init:
+                        # Cold start: seed phasor directly from first valid estimate.
+                        # Avoids blending with the 0° initial value which would
+                        # keep az_deg near 0° for several bursts before converging.
+                        S.az_phasor = az_ph
+                        _az_phasor_init = False
+                    else:
+                        S.az_phasor = _az_alpha * S.az_phasor + (1.0 - _az_alpha) * az_ph
+                    # El linear EMA — only updated from non-ceiling, non-boundary estimates
+                    if not _el_clamp:
+                        S.el_ema = _el_alpha * S.el_ema + (1.0 - _el_alpha) * el_inst
                 az        = float(np.degrees(np.angle(S.az_phasor)) % 360.0)
-                el_est    = el_inst
+                el_est    = S.el_ema   # always valid (initialised to grid midpoint)
                 spec2d    = spec2d_inst
                 az_spec   = np.max(spec2d, axis=0)
                 papr      = papr_inst
@@ -711,31 +891,45 @@ def _acq_loop(
                 continue
 
             # has_signal = valid preamble detected (papr_inst ≥ threshold)
-            # has_doa    = same (az_inst is already the DoA result)
+            # has_doa    = preamble passed all gates (boundary + outlier)
             has_signal = True
-            has_doa    = True
+            has_doa    = _accept    # False for boundary/outlier-rejected bursts
+            _cnt_doa_out += 1
+
+            # Phasor EMA for phase display: only update on has_doa bursts.
+            # Floor/outlier-rejected bursts have different spatial phases
+            # (multipath, reflections) → must not pollute the live display.
+            _PHASE_EMA = 0.15   # ~6 burst smoothing window
+            if has_doa:
+                _ph_new = np.exp(1j * np.deg2rad(phase_diffs))
+                if np.all(_phase_diffs_phasor == 0):
+                    _phase_diffs_phasor = _ph_new
+                else:
+                    _phase_diffs_phasor = (1 - _PHASE_EMA) * _phase_diffs_phasor + _PHASE_EMA * _ph_new
+                _phase_diffs_smooth = np.degrees(np.angle(_phase_diffs_phasor))
 
             with S.lock:
                 S.az_spec     = (1 - _SPEC_EMA) * S.az_spec + _SPEC_EMA * az_spec
                 S.spec2d      = (1 - _SPEC_EMA) * S.spec2d  + _SPEC_EMA * spec2d
                 S.az_deg      = az
-                S.el_deg      = el_est
-                S.phase_diffs = phase_diffs
+                S.el_deg      = el_est   # smoothed EMA (or raw on first burst)
                 S.papr_db     = papr
                 S.snr_db      = snr
                 S.eig_db      = eig
                 S.no_signal   = False
-                S.no_doa      = False
+                S.no_doa      = not has_doa   # DIR? when boundary/outlier rejected
                 S.energy_hist.append(pwr_db)
-                S.el_hist.append(el_est)
+                S.el_hist.append(el_inst)  # raw per-burst for scatter display
                 S.snr_hist.append(snr)
-                for _i, _p in enumerate(phase_diffs):
-                    S.phase_hist[_i].append(float(_p))
-                S.az_hist.append(az_inst)  # raw MUSIC peak → gate usa median reattiva
-                if len(S.az_hist) >= 3:
-                    S.az_median = _circ_median(np.array(S.az_hist))
-                else:
-                    S.az_median = az
+                if has_doa:
+                    S.phase_diffs = _phase_diffs_smooth   # EMA-smoothed, has_doa only
+                    for _i, _p in enumerate(phase_diffs):
+                        S.phase_hist[_i].append(float(_p))
+                    S.az_hist.append(az_inst)  # raw MUSIC peak → gate usa median reattiva
+                    if len(S.az_hist) >= 3:
+                        S.az_median = _circ_median(np.array(S.az_hist))
+                    else:
+                        S.az_median = az
                 if S.rec_enabled:
                     S.rec_t.append(time.time())
                     S.rec_az.append(float(az))
@@ -748,6 +942,33 @@ def _acq_loop(
                     S.rec_has_sig.append(True)
                     if S.rec_iq_enabled:
                         S.rec_X.append(X_pre.copy())
+                # ── CFO tracking ─────────────────────────────────────────────
+                S.cfo_hist.append(float(_tone_hz - _PREAMBLE_TONE_HZ))
+                # ── IQ burst envelope (CH0, down-sampled to 64 pts) ──────────
+                _env = np.abs(X_pre[0])
+                _ds  = max(1, len(_env) // 64)
+                _smp = _env[::_ds][:64].astype(np.float32)
+                _pk  = float(np.max(_smp)) + 1e-12
+                S.last_iq_env = _smp / _pk        # normalise 0..1
+                # ── Scalar Kalman smoother  (az circular, el linear) ─────────
+                if S.kf_init:
+                    S.kf_az_x   = float(az_inst)
+                    S.kf_el_x   = float(el_inst)
+                    S.kf_az_var = 200.0
+                    S.kf_el_var = 200.0
+                    S.kf_init   = False
+                else:
+                    _Q_az = 5.0;  _R_kf_az = 20.0
+                    _K_az = S.kf_az_var / (S.kf_az_var + _R_kf_az)
+                    _innov_az = float(((az_inst - S.kf_az_x + 180) % 360) - 180)
+                    S.kf_az_x   = (S.kf_az_x + _K_az * _innov_az) % 360.0
+                    S.kf_az_var = (1.0 - _K_az) * S.kf_az_var + _Q_az
+                    _Q_el = 2.0;  _R_kf_el = 8.0
+                    _K_el = S.kf_el_var / (S.kf_el_var + _R_kf_el)
+                    S.kf_el_x   = S.kf_el_x + _K_el * float(el_inst - S.kf_el_x)
+                    S.kf_el_var = (1.0 - _K_el) * S.kf_el_var + _Q_el
+                S.kf_az_hist.append(float(S.kf_az_x))
+                S.kf_el_hist.append(float(S.kf_el_x))
                 S.burst_n += 1
 
 
@@ -831,10 +1052,12 @@ def _save_recording(
 def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
                       algo: str, freq_hz: int) -> None:
     el_min  = cfg.el_min_deg
-    el_max  = 90.0
+    el_max  = cfg.el_max_deg          # use actual grid max (not hardcoded 90)
     az_rad  = np.deg2rad(cfg.az_range_deg())
     n_az    = cfg.n_az
     n_el    = len(cfg.el_range_deg())
+    n_ant   = cfg.n_ant
+    n_sig   = cfg.num_expected_signals
     H       = C.HISTORY_LEN
 
     fig = plt.figure(figsize=(17, 9), facecolor=BG)
@@ -845,43 +1068,54 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
                            height_ratios=[1.4, 1.0],
                            left=0.05, right=0.97,
                            top=0.93, bottom=0.07,
-                           hspace=0.42, wspace=0.33)
+                           hspace=0.45, wspace=0.35)
 
-    # ── [0,0]  Polar azimuth compass ─────────────────────────────────────────
-    ax_pol = fig.add_subplot(gs[0, 0], projection="polar", facecolor=BG2)
-    ax_pol.set_theta_zero_location("N")
-    ax_pol.set_theta_direction(-1)
-    ax_pol.set_ylim(0, 1)
-    ax_pol.set_yticks([])
-    ax_pol.tick_params(colors=C_MUT, labelsize=7)
-    ax_pol.set_facecolor(BG2)
-    for sp in ax_pol.spines.values():
+    # ── [0,0]  Skyplot  (az × el polar, zenith = centre, horizon = edge) ────
+    ax_sky = fig.add_subplot(gs[0, 0], projection="polar", facecolor=BG2)
+    ax_sky.set_theta_zero_location("N")
+    ax_sky.set_theta_direction(-1)
+    ax_sky.set_ylim(0, 90)           # r = 90 − el_deg  (0 → zenith, 90 → horizon)
+    ax_sky.set_yticks([15, 30, 45, 60, 75])
+    ax_sky.set_yticklabels(["75°", "60°", "45°", "30°", "15°"], fontsize=6, color=C_MUT)
+    ax_sky.tick_params(colors=C_MUT, labelsize=7)
+    ax_sky.set_facecolor(BG2)
+    for sp in ax_sky.spines.values():
         sp.set_edgecolor(C_BDR)
-    ax_pol.set_title("Azimuth DoA  (burst)", color=C_TEXT, fontsize=9, pad=10)
-
-    _z = np.zeros(n_az + 1)
-    spec_line, = ax_pol.plot(np.r_[az_rad, az_rad[0]], _z,
-                              "-", color=C_TEAL, lw=1.2, alpha=0.7)
-    ax_pol.fill(np.r_[az_rad, az_rad[0]], _z, color=C_TEAL, alpha=0.12)
-    arrow_line, = ax_pol.plot([0, 0], [0, 0.92], "-", color=C_LIME, lw=2.5)
-    arrow_dot,  = ax_pol.plot([0], [0.92], "o",  color=C_LIME, ms=8, zorder=6)
-    inst_line,  = ax_pol.plot([0, 0], [0, 0.78], "-", color=C_AMBER,
-                               lw=1.2, alpha=0.55, zorder=4)
-    txt_az = ax_pol.text(0, 0, "—°", ha="center", va="center",
-                          color=C_LIME, fontsize=15, fontweight="bold")
-    txt_nosig = ax_pol.text(
-        0.5, 0.5, "NO BURST", transform=ax_pol.transAxes,
+    ax_sky.set_title("Skyplot  (N↑ CW,  centre = zenith)", color=C_TEXT, fontsize=9, pad=10)
+    ax_sky.grid(color=C_BDR, lw=0.5, alpha=0.35)
+    # MUSIC spectrum lobes (Az 1-D marginal, max over el) — radar style
+    _az_ext = np.r_[az_rad, az_rad[0]]
+    _lobe_init = np.zeros(n_az + 1)
+    sky_spec_line, = ax_sky.plot(_az_ext, _lobe_init,
+                                  "-", color=C_TEAL, lw=1.0, alpha=0.65, zorder=2)
+    sky_spec_fill  = ax_sky.fill(_az_ext, _lobe_init,
+                                  color=C_TEAL, alpha=0.12, zorder=1)[0]
+    # History scatter (recency-coloured)
+    sky_scat = ax_sky.scatter([], [], c=[], cmap="plasma",
+                               vmin=0.0, vmax=1.0, s=14, alpha=0.55, zorder=3)
+    # Kalman track
+    sky_kf_line, = ax_sky.plot([], [], "-", color=C_LIME, lw=1.8, alpha=0.65, zorder=4)
+    # EMA estimate — radial spoke + dot
+    sky_arrow, = ax_sky.plot([0, 0], [0, 45], "-", color=C_LIME, lw=2.2, zorder=5)
+    sky_dot,   = ax_sky.plot([0], [45], "o",  color=C_LIME, ms=9, zorder=6) 
+    txt_sky_az = ax_sky.text(0, 0, "—°", ha="center", va="center",
+                              color=C_LIME, fontsize=14, fontweight="bold")
+    txt_sky_nosig = ax_sky.text(
+        0.5, 0.5, "NO BURST", transform=ax_sky.transAxes,
         ha="center", va="center", fontsize=13, fontweight="bold",
         color=C_ROSE, alpha=0.0,
         bbox=dict(boxstyle="round,pad=0.3", facecolor=BG, edgecolor=C_ROSE, alpha=0.0),
         zorder=10)
+    txt_sky_el = ax_sky.text(
+        0.5, 0.02, "El: —°", transform=ax_sky.transAxes,
+        ha="center", va="bottom", color=C_TEAL, fontsize=9)
 
-    # ── [0,1]  2D az × el map ─────────────────────────────────────────────────
+    # ── [0,1]  2D az × el spectrum ────────────────────────────────────────────
     ax_2d = fig.add_subplot(gs[0, 1], facecolor=BG2)
     ax_2d.set_facecolor(BG2)
     ax_2d.set_xlabel("Azimuth [°]", color=C_MUT, fontsize=8)
     ax_2d.set_ylabel("Elevation [°]", color=C_MUT, fontsize=8)
-    ax_2d.set_title("2D spectrum  az × el  (preamble gate)", color=C_TEXT, fontsize=9)
+    ax_2d.set_title("2D MUSIC spectrum  az × el", color=C_TEXT, fontsize=9)
     ax_2d.tick_params(colors=C_MUT, labelsize=7)
     for sp in ax_2d.spines.values():
         sp.set_edgecolor(C_BDR)
@@ -895,62 +1129,100 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
     xh_h, = ax_2d.plot([0, 360], [el_min, el_min], "--", color=C_LIME, lw=0.9, alpha=0.7)
     peak_dot, = ax_2d.plot([0], [el_min], "o", color=C_LIME, ms=6, zorder=6)
 
-    # ── [0,2]  Eigenvalues + quality ─────────────────────────────────────────
-    ax_q = fig.add_subplot(gs[0, 2], facecolor=BG2)
-    ax_q.set_facecolor(BG2)
-    ax_q.set_title("Eigenvalues + quality", color=C_TEXT, fontsize=9)
-    ax_q.set_xlabel("Channel", color=C_MUT, fontsize=8)
-    ax_q.set_ylabel("Spread [dB]", color=C_MUT, fontsize=8)
-    ax_q.set_xlim(-0.5, 4.5); ax_q.set_xticks(range(5))
-    ax_q.set_ylim(-3, 35)
-    ax_q.tick_params(colors=C_MUT, labelsize=7)
-    for sp in ax_q.spines.values():
+    # ── [0,2]  IQ burst oscilloscope  (CH0 envelope of last valid burst) ─────
+    _IQ_PTS = 64
+    ax_iq = fig.add_subplot(gs[0, 2], facecolor=BG2)
+    ax_iq.set_facecolor(BG2)
+    ax_iq.set_xlabel("Time  [sample index, downsampled]", color=C_MUT, fontsize=8)
+    ax_iq.set_ylabel("Amplitude  [normalised]", color=C_MUT, fontsize=8)
+    ax_iq.set_title("Last burst — IQ envelope  (CH0)", color=C_TEXT, fontsize=9)
+    ax_iq.set_xlim(0, _IQ_PTS - 1)
+    ax_iq.set_ylim(0, 1.05)
+    ax_iq.tick_params(colors=C_MUT, labelsize=7)
+    for sp in ax_iq.spines.values():
         sp.set_edgecolor(C_BDR)
-    bars = ax_q.bar(range(5), np.zeros(5),
-                    color=[C_BLUE, C_TEAL, C_AMBER, C_VIO, C_ROSE],
-                    edgecolor=BG2, linewidth=0.5, zorder=3)
-    ax_q.axhline(0, color=C_BDR, lw=0.8, zorder=2)
-    ax_q.grid(axis="y", color=C_BDR, lw=0.5, alpha=0.4, zorder=1)
-    txt_snr   = ax_q.text(2, 32, "SNR: — dB",       ha="center", va="top", color=C_TEXT,  fontsize=9)
-    txt_papr  = ax_q.text(2, 29, "PAPR: — dB",      ha="center", va="top", color=C_AMBER, fontsize=9)
-    txt_el_q  = ax_q.text(2, 26, "El:  — °",        ha="center", va="top", color=C_TEAL,  fontsize=9)
-    txt_burst = ax_q.text(2, 23, "bursts: 0",       ha="center", va="top", color=C_LIME,  fontsize=8)
-    txt_frame = ax_q.text(2, 20, "frames: 0",       ha="center", va="top", color=C_MUT,   fontsize=8)
-    txt_rec   = ax_q.text(2, 17, "rec: 0",          ha="center", va="top", color=C_ROSE,  fontsize=8)
+    ax_iq.grid(color=C_BDR, lw=0.4, alpha=0.35)
+    _iq_xs = np.arange(_IQ_PTS)
+    iq_line, = ax_iq.plot(_iq_xs, np.zeros(_IQ_PTS), "-",
+                           color=C_TEAL, lw=1.4, alpha=0.9, zorder=3)
+    iq_fill_ref = [ax_iq.fill_between(_iq_xs, np.zeros(_IQ_PTS),
+                                       color=C_TEAL, alpha=0.10, zorder=2)]
+    txt_iq_snr  = ax_iq.text(0.97, 0.94, "SNR: — dB",  transform=ax_iq.transAxes,
+                               ha="right", va="top", color=C_TEXT,  fontsize=9)
+    txt_iq_papr = ax_iq.text(0.97, 0.80, "PAPR: — dB", transform=ax_iq.transAxes,
+                               ha="right", va="top", color=C_AMBER, fontsize=9)
+    txt_iq_az   = ax_iq.text(0.97, 0.66, "Az: —°",     transform=ax_iq.transAxes,
+                               ha="right", va="top", color=C_LIME,  fontsize=9)
+    txt_iq_cfo  = ax_iq.text(0.97, 0.52, "CFO: — Hz",  transform=ax_iq.transAxes,
+                               ha="right", va="top", color=C_VIO,   fontsize=9)
 
-    # ── [1,0]  Azimuth history ────────────────────────────────────────────────
+    # ── [1,0]  Az + El joint history  (twin y-axis) ──────────────────────────
     ax_az = fig.add_subplot(gs[1, 0], facecolor=BG2)
     ax_az.set_facecolor(BG2)
-    ax_az.set_title("Azimuth history  (per burst)", color=C_TEXT, fontsize=9)
-    ax_az.set_xlabel("Recent bursts →", color=C_MUT, fontsize=8)
-    ax_az.set_ylabel("Az [°]", color=C_MUT, fontsize=8)
+    ax_az.set_title("Az  +  El  history  (per valid burst)", color=C_TEXT, fontsize=9)
+    ax_az.set_xlabel("Recent valid bursts →", color=C_MUT, fontsize=8)
+    ax_az.set_ylabel("Az [°]", color=C_LIME, fontsize=8)
     ax_az.set_xlim(0, H); ax_az.set_ylim(0, 360)
     ax_az.set_yticks([0, 90, 180, 270, 360])
-    ax_az.tick_params(colors=C_MUT, labelsize=7)
+    ax_az.tick_params(axis="y", colors=C_LIME, labelsize=7)
+    ax_az.tick_params(axis="x", colors=C_MUT,  labelsize=7)
     for sp in ax_az.spines.values():
         sp.set_edgecolor(C_BDR)
-    ax_az.grid(color=C_BDR, lw=0.4, alpha=0.4)
-    az_line,     = ax_az.plot([], [], "-",  color=C_LIME, lw=1.4)
-    az_med_line, = ax_az.plot([], [], "--", color=C_LIME, lw=0.8, alpha=0.45)
+    ax_az.grid(color=C_BDR, lw=0.4, alpha=0.4, zorder=1)
+    az_line,     = ax_az.plot([], [], "-",  color=C_LIME, lw=1.0, alpha=0.45, zorder=3, label="az")
+    az_med_line, = ax_az.plot([], [], "--", color=C_LIME, lw=0.8, alpha=0.35, zorder=2)
+    kf_az_line,  = ax_az.plot([], [], "-",  color=C_LIME, lw=2.2, alpha=0.90, zorder=5, label="kf_az")
+    ax_el_tw = ax_az.twinx()
+    ax_el_tw.set_facecolor(BG2)
+    ax_el_tw.set_ylim(el_min, el_max)
+    ax_el_tw.set_ylabel("El [°]", color=C_TEAL, fontsize=8)
+    ax_el_tw.tick_params(axis="y", colors=C_TEAL, labelsize=7)
+    ax_el_tw.spines["right"].set_edgecolor(C_TEAL)
+    el_line,     = ax_el_tw.plot([], [], "-",  color=C_TEAL, lw=1.0, alpha=0.45, zorder=3, label="el")
+    el_ema_line, = ax_el_tw.plot([], [], "--", color=C_TEAL, lw=0.8, alpha=0.35, zorder=2)
+    kf_el_line,  = ax_el_tw.plot([], [], "-",  color=C_TEAL, lw=2.0, alpha=0.90, zorder=5, label="kf_el")
 
-    # ── [1,1]  Burst energy history ───────────────────────────────────────────
-    ax_en = fig.add_subplot(gs[1, 1], facecolor=BG2)
-    ax_en.set_facecolor(BG2)
-    ax_en.set_title("Preamble power history", color=C_TEXT, fontsize=9)
-    ax_en.set_xlabel("Recent bursts →", color=C_MUT, fontsize=8)
-    ax_en.set_ylabel("Power [dBFS]", color=C_MUT, fontsize=8)
-    ax_en.set_xlim(0, H); ax_en.set_ylim(-80, 0)
-    ax_en.tick_params(colors=C_MUT, labelsize=7)
-    for sp in ax_en.spines.values():
+    # ── [1,1]  Eigenvalue profile  (signal ↔ noise subspace) ─────────────────
+    ax_eig = fig.add_subplot(gs[1, 1], facecolor=BG2)
+    ax_eig.set_facecolor(BG2)
+    ax_eig.set_title("Eigenvalue profile  (signal ↔ noise subspace)", color=C_TEXT, fontsize=9)
+    ax_eig.set_xlabel("Rank  (λ₁ ≥ λ₂ ≥ … ≥ λ_N)", color=C_MUT, fontsize=8)
+    ax_eig.set_ylabel("Spread above noise floor [dB]", color=C_MUT, fontsize=8)
+    ax_eig.set_xlim(-0.5, n_ant - 0.5)
+    ax_eig.set_xticks(range(n_ant))
+    ax_eig.set_xticklabels([f"λ{i+1}" for i in range(n_ant)], fontsize=8, color=C_MUT)
+    ax_eig.set_ylim(-3, 42)
+    ax_eig.tick_params(colors=C_MUT, labelsize=7)
+    for sp in ax_eig.spines.values():
         sp.set_edgecolor(C_BDR)
-    ax_en.grid(color=C_BDR, lw=0.4, alpha=0.4)
-    en_line, = ax_en.plot([], [], "-", color=C_AMBER, lw=1.4)
+    ax_eig.grid(axis="y", color=C_BDR, lw=0.5, alpha=0.4, zorder=1)
+    ax_eig.axhline(0, color=C_MUT, lw=0.8, ls="--", alpha=0.5, zorder=2)
+    # vertical line separating signal (first n_sig) from noise subspace
+    if 0 < n_sig < n_ant:
+        ax_eig.axvline(n_sig - 0.5, color=C_ROSE, lw=1.0, ls=":", alpha=0.75, zorder=3)
+        ax_eig.text(n_sig - 0.5, 39, f"D={n_sig}",
+                    ha="center", va="top", color=C_ROSE, fontsize=7)
+    eig_cols = [C_AMBER if i < n_sig else "#5a618a" for i in range(n_ant)]
+    eig_bars = ax_eig.bar(range(n_ant), np.zeros(n_ant),
+                           color=eig_cols, edgecolor=BG2, linewidth=0.6, zorder=3)
+    txt_snr_eig  = ax_eig.text(n_ant / 2, 39, "SNR: — dB",
+                                ha="center", va="top", color=C_TEXT,  fontsize=9)
+    txt_papr_eig = ax_eig.text(n_ant / 2, 33, "PAPR: — dB",
+                                ha="center", va="top", color=C_AMBER, fontsize=9)
+    txt_el_eig   = ax_eig.text(n_ant / 2, 27, "El: —°",
+                                ha="center", va="top", color=C_TEAL,  fontsize=9)
+    txt_burst    = ax_eig.text(n_ant / 2, 21, "bursts: 0",
+                                ha="center", va="top", color=C_LIME,  fontsize=8)
+    txt_frame    = ax_eig.text(n_ant / 2, 15, "frames: 0",
+                                ha="center", va="top", color=C_MUT,   fontsize=8)
+    txt_rec      = ax_eig.text(n_ant / 2,  9, "rec: 0",
+                                ha="center", va="top", color=C_ROSE,  fontsize=8)
 
-    # ── [1,2]  Inter-channel phase differences ────────────────────────────────
+    # ── [1,2]  Inter-channel phase differences + CFO tracker ─────────────────
     ax_ph = fig.add_subplot(gs[1, 2], facecolor=BG2)
     ax_ph.set_facecolor(BG2)
-    ax_ph.set_title("ΔΦ  CH1..4 – CH0  (from covariance matrix)", color=C_TEXT, fontsize=9)
-    ax_ph.set_xlabel("Recent bursts →", color=C_MUT, fontsize=8)
+    ax_ph.set_title("ΔΦ  CH1..4 – CH0  +  CFO tracker", color=C_TEXT, fontsize=9)
+    ax_ph.set_xlabel("Recent valid bursts →", color=C_MUT, fontsize=8)
     ax_ph.set_ylabel("ΔΦ [°]", color=C_MUT, fontsize=8)
     ax_ph.set_xlim(0, H); ax_ph.set_ylim(-185, 185)
     ax_ph.axhline(0, color=C_BDR, lw=0.6)
@@ -962,13 +1234,21 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
     _ph_colors = [C_BLUE, C_TEAL, C_AMBER, C_VIO]
     ph_lines = [ax_ph.plot([], [], "-", color=_ph_colors[i], lw=1.2,
                             label=f"ΔΦ CH{i+1}−CH0")[0] for i in range(4)]
-    ax_ph.legend(loc="upper right", fontsize=6, facecolor=BG3,
+    ax_ph.legend(loc="upper left", fontsize=6, facecolor=BG3,
                   edgecolor=C_BDR, labelcolor=C_TEXT)
+    # CFO twin-axis
+    ax_cfo = ax_ph.twinx()
+    ax_cfo.set_ylim(-3000, 3000)
+    ax_cfo.set_ylabel("CFO [Hz]", color=C_VIO, fontsize=8)
+    ax_cfo.tick_params(axis="y", colors=C_VIO, labelsize=7)
+    ax_cfo.spines["right"].set_edgecolor(C_VIO)
+    ax_cfo.axhline(0, color=C_VIO, lw=0.5, ls="--", alpha=0.30, zorder=1)
+    cfo_line, = ax_cfo.plot([], [], "-", color=C_VIO, lw=1.5, alpha=0.80, zorder=5)
 
     fig.suptitle(
-        f"KrakenSDR UCA 5-ant  —  BURST {algo.upper()}  @  {freq_hz/1e6:.3f} MHz  "
-        f"(r={cfg.radius_lambda:.4f}λ  ant0={cfg.ant0_offset_deg:.0f}°  "
-        f"preamble tone +{_PREAMBLE_TONE_HZ} Hz  SF={int(_SUPERFRAME_S*1000)} ms)",
+        f"KrakenSDR UCA {n_ant}-ant  —  {algo.upper()}  @  {freq_hz/1e6:.3f} MHz  "
+        f"(r={cfg.radius_lambda:.4f}λ  el=[{el_min:.0f}°,{el_max:.0f}°]  "
+        f"preamble +{_PREAMBLE_TONE_HZ} Hz  D={n_sig})",
         color=C_TEXT, fontsize=8, y=0.98,
     )
 
@@ -989,76 +1269,128 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
             fn      = S.frame_n
             n_rec   = len(S.rec_t)
             az_h    = list(S.az_hist)
-            en_h    = list(S.energy_hist)
+            el_h    = list(S.el_hist)
             ph_h    = [list(q) for q in S.phase_hist]
+            kf_az_h = list(S.kf_az_hist)
+            kf_el_h = list(S.kf_el_hist)
+            cfo_h   = list(S.cfo_hist)
+            iq_env  = S.last_iq_env.copy()
 
-        # Polar compass
-        lin = 10 ** (np.clip(az_s, -40, 0) / 10.0)
-        lin /= (lin.max() + 1e-12)
-        spec_line.set_data(np.r_[az_rad, az_rad[0]], np.r_[lin, lin[0]])
-        th_med = np.deg2rad(az_med)
-        arrow_line.set_data([th_med, th_med], [0, 0.92])
-        arrow_dot.set_data([th_med], [0.92])
-        txt_az.set_text(f"{az_med:.0f}°")
-        th_inst = np.deg2rad(az)
-        inst_line.set_data([th_inst, th_inst], [0, 0.78])
+        # ── Skyplot MUSIC lobes ────────────────────────────────────────────────
+        _lin_s = 10 ** (np.clip(az_s, -40, 0) / 10.0)
+        _lin_s /= (_lin_s.max() + 1e-12)
+        _lobe_r = _lin_s * 80.0                     # scale to 80° radius
+        _az_ext = np.r_[az_rad, az_rad[0]]
+        _r_ext  = np.r_[_lobe_r, _lobe_r[0]]
+        sky_spec_line.set_data(_az_ext, _r_ext)
+        sky_spec_fill.set_xy(np.column_stack([_az_ext, _r_ext]))
 
-        # 2D heatmap
+        # ── Skyplot ────────────────────────────────────────────────────────────
+        sky_r     = float(np.clip(90.0 - el, 0.0, 90.0))
+        sky_theta = np.deg2rad(az)
+        sky_arrow.set_data([sky_theta, sky_theta], [0.0, sky_r])
+        sky_dot.set_data([sky_theta], [sky_r])
+        txt_sky_az.set_text(f"{az_med:.0f}°")
+        txt_sky_el.set_text(f"El: {el:.1f}°")
+        n_pts = min(len(az_h), len(el_h))
+        if n_pts > 0:
+            pts_th = np.deg2rad(np.array(az_h[-n_pts:], dtype=float))
+            pts_r  = np.clip(90.0 - np.array(el_h[-n_pts:], dtype=float), 0.0, 90.0)
+            cols   = np.linspace(0.0, 1.0, n_pts)
+            sky_scat.set_offsets(np.c_[pts_th, pts_r])
+            sky_scat.set_array(cols)
+        n_kf = min(len(kf_az_h), len(kf_el_h))
+        if n_kf > 0:
+            kf_th = np.deg2rad(np.array(kf_az_h[-n_kf:], dtype=float))
+            kf_r  = np.clip(90.0 - np.array(kf_el_h[-n_kf:], dtype=float), 0.0, 90.0)
+            sky_kf_line.set_data(kf_th, kf_r)
+        else:
+            sky_kf_line.set_data([], [])
+        # NO-SIGNAL overlay on skyplot
+        if no_sig:
+            txt_sky_nosig.set_text("NO BURST"); txt_sky_nosig.set_color(C_ROSE)
+            txt_sky_nosig.get_bbox_patch().set_edgecolor(C_ROSE); _a = 0.85
+        elif no_doa:
+            txt_sky_nosig.set_text("DIR ?"); txt_sky_nosig.set_color(C_AMBER)
+            txt_sky_nosig.get_bbox_patch().set_edgecolor(C_AMBER); _a = 0.75
+        else:
+            _a = 0.0
+        txt_sky_nosig.set_alpha(_a)
+        txt_sky_nosig.get_bbox_patch().set_alpha(_a * 0.6)
+        sky_arrow.set_alpha(0.15 if no_sig else (0.55 if no_doa else 1.0))
+        sky_dot.set_alpha(0.15 if no_sig else (0.55 if no_doa else 1.0))
+
+        # ── 2D heatmap ─────────────────────────────────────────────────────────
         lin2 = 10 ** (np.clip(s2d, -40, 0) / 10.0)
         lin2 /= (lin2.max() + 1e-12)
         im_2d.set_data(lin2)
         xh_v.set_xdata([az, az]);  xh_h.set_ydata([el, el])
         peak_dot.set_data([az], [el])
 
-        # Quality panel
-        for bar, v in zip(bars, eig):
-            bar.set_height(float(v))
-        txt_snr.set_text(f"SNR:  {snr:+.1f} dB")
-        txt_papr.set_text(f"PAPR: {papr:.1f} dB")
-        txt_el_q.set_text(f"El:   {el:.0f}°")
-        txt_burst.set_text(f"bursts: {bn}")
-        txt_frame.set_text(f"frames: {fn}")
-        txt_rec.set_text(f"rec: {n_rec}")
+        # ── IQ burst oscilloscope ──────────────────────────────────────────────
+        if len(iq_env) == _IQ_PTS:
+            iq_line.set_ydata(iq_env)
+            iq_fill_ref[0].remove()
+            iq_fill_ref[0] = ax_iq.fill_between(_iq_xs, iq_env,
+                                                  color=C_TEAL, alpha=0.10, zorder=2)
+        txt_iq_snr.set_text(f"SNR:  {snr:+.1f} dB")
+        txt_iq_papr.set_text(f"PAPR: {papr:.1f} dB")
+        txt_iq_az.set_text(f"Az:   {az_med:.0f}°")
+        _last_cfo = cfo_h[-1] if cfo_h else float("nan")
+        txt_iq_cfo.set_text(f"CFO:  {_last_cfo:+.0f} Hz" if np.isfinite(_last_cfo) else "CFO: — Hz")
 
-        if no_sig:
-            txt_nosig.set_text("NO BURST"); txt_nosig.set_color(C_ROSE)
-            txt_nosig.get_bbox_patch().set_edgecolor(C_ROSE); a = 0.85
-        elif no_doa:
-            txt_nosig.set_text("DIR ?"); txt_nosig.set_color(C_AMBER)
-            txt_nosig.get_bbox_patch().set_edgecolor(C_AMBER); a = 0.75
-        else:
-            a = 0.0
-        txt_nosig.set_alpha(a)
-        txt_nosig.get_bbox_patch().set_alpha(a * 0.6)
-        arrow_line.set_alpha(0.15 if no_sig else (0.55 if no_doa else 1.0))
-        arrow_dot.set_alpha(0.15 if no_sig else (0.55 if no_doa else 1.0))
-
-        # Azimuth history
+        # ── Az + El history (twin y-axis) + Kalman ─────────────────────────────
         if az_h:
             xs = np.arange(len(az_h))
             az_line.set_data(xs, az_h)
             az_med_line.set_data([0, H], [az_med, az_med])
         else:
             az_line.set_data([], []); az_med_line.set_data([], [])
-
-        # Energy history
-        if en_h:
-            xs = np.arange(len(en_h))
-            en_line.set_data(xs, en_h)
+        if el_h:
+            xs_el = np.arange(len(el_h))
+            el_line.set_data(xs_el, el_h)
+            el_ema_line.set_data([0, H], [el, el])
         else:
-            en_line.set_data([], [])
+            el_line.set_data([], []); el_ema_line.set_data([], [])
+        if kf_az_h:
+            kf_az_line.set_data(np.arange(len(kf_az_h)), kf_az_h)
+        else:
+            kf_az_line.set_data([], [])
+        if kf_el_h:
+            kf_el_line.set_data(np.arange(len(kf_el_h)), kf_el_h)
+        else:
+            kf_el_line.set_data([], [])
 
-        # Phase history
+        # ── Eigenvalue profile ─────────────────────────────────────────────────
+        for bar, v in zip(eig_bars, eig):
+            bar.set_height(float(max(v, 0.0)))
+        txt_snr_eig.set_text(f"SNR:  {snr:+.1f} dB")
+        txt_papr_eig.set_text(f"PAPR: {papr:.1f} dB")
+        txt_el_eig.set_text(f"El:   {el:.1f}°")
+        txt_burst.set_text(f"bursts: {bn}")
+        txt_frame.set_text(f"frames: {fn}")
+        txt_rec.set_text(f"rec: {n_rec}")
+
+        # ── Phase history + CFO ────────────────────────────────────────────────
         for line, ph_data in zip(ph_lines, ph_h):
             if ph_data:
                 line.set_data(np.arange(len(ph_data)), ph_data)
             else:
                 line.set_data([], [])
+        if cfo_h:
+            cfo_line.set_data(np.arange(len(cfo_h)), cfo_h)
+        else:
+            cfo_line.set_data([], [])
 
-        return (spec_line, arrow_line, arrow_dot, inst_line, txt_az, txt_nosig,
+        return (sky_spec_line, sky_spec_fill,
+                sky_scat, sky_kf_line, sky_arrow, sky_dot,
+                txt_sky_az, txt_sky_nosig, txt_sky_el,
                 im_2d, xh_v, xh_h, peak_dot,
-                *bars, txt_snr, txt_papr, txt_el_q, txt_burst, txt_frame, txt_rec,
-                az_line, az_med_line, en_line, *ph_lines)
+                iq_line, txt_iq_snr, txt_iq_papr, txt_iq_az, txt_iq_cfo,
+                az_line, az_med_line, kf_az_line, el_line, el_ema_line, kf_el_line,
+                *eig_bars, txt_snr_eig, txt_papr_eig, txt_el_eig,
+                txt_burst, txt_frame, txt_rec,
+                *ph_lines, cfo_line)
 
     ani = animation.FuncAnimation(   # noqa: F841
         fig, _update,
