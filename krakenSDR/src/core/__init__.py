@@ -136,6 +136,48 @@ from .burst_pipeline import (
     BurstPipeline,
 )
 
+# ── New LEGO modular API ──────────────────────────────────────────────────────
+
+# Tracking filters (Kalman, EMA)
+from .tracking import (
+    CircularEMA,
+    ScalarEMA,
+    KalmanScalar,
+    KalmanAngular,
+    circular_ema_batch,
+    scalar_ema_batch,
+)
+
+# Tone extraction and narrowband BPF
+from .tone_extraction import (
+    find_preamble_onset,
+    find_tone_onset,
+    extract_pilot_tone as extract_pilot_tone_core,
+    narrowband_filter_fft,
+)
+
+# Acceptance gates
+from .gates import (
+    GateVerdict,
+    circ_median_deg,
+    PAGGate,
+    EigenGate,
+    BoundaryGate,
+    OutlierGate,
+    GatePipeline,
+)
+
+# Typed configuration hierarchy
+from .config_base import (
+    HardwareConfig,
+    ArrayConfig as HardwareArrayConfig,
+    DoAConfig,
+    BurstConfig,
+    UIConfig,
+    DisplayConfig,
+    load_config,
+)
+
 # Iridium demodulator
 from .iridium_demod import (
     IridiumDemod,
@@ -148,76 +190,6 @@ from .iridium_demod import (
     UW_UPLINK,
     PREAMBLE_LENGTH,
 )
-
-# Smart API (LEGO-like, intuitive)
-from .smart_api import (
-    # Factory functions
-    create_array,
-    create_doa_estimator,
-    create_iridium_pipeline,
-    create_calibrator,
-    estimate_doa,
-    # Result classes
-    DoAResult,
-    BurstResult as SmartBurstResult,
-    CalibrationResult,
-    # Convenience functions
-    quick_doa,
-    quick_burst_detect,
-    auto_configure,
-)
-
-# =============================================================================
-# Legacy compatibility exports
-# =============================================================================
-
-# These maintain backward compatibility with existing code
-from .doa_algorithms import (
-    ArrayConfig as _ArrayConfig,
-    Geometry as _Geometry,
-    steering as _steering,
-    doa_music as _doa_music,
-    doa_capon as _doa_capon,
-    doa_ml as _doa_ml,
-    doa_root_music as _doa_root_music,
-    doa_esprit as _doa_esprit,
-    apply_phase_correction as _apply_phase_correction,
-    snr_from_covariance as _snr_from_covariance,
-    papr_db as _papr_db_legacy,
-    eigenvalue_spread_db as _eigenvalue_spread_db,
-    CovarianceAccumulator as _CovarianceAccumulatorLegacy,
-    coherence_matrix as _coherence_matrix,
-)
-
-from .doa_algorithms_3d import (
-    CrossArrayConfig as _CrossArrayConfig,
-    doa_music_2d as _doa_music_2d_legacy,
-    doa_capon_2d as _doa_capon_2d_legacy,
-    doa_bartlett_2d as _doa_bartlett_2d,
-    find_peak_2d as _find_peak_2d,
-    SatellitePassAccumulator as _SatellitePassAccumulator,
-)
-
-# Re-export with original names for compatibility
-ArrayConfig = _ArrayConfig
-Geometry = _Geometry
-doa_music = _doa_music
-doa_capon = _doa_capon
-doa_ml = _doa_ml
-doa_root_music = _doa_root_music
-doa_esprit = _doa_esprit
-apply_phase_correction = _apply_phase_correction
-snr_from_covariance = _snr_from_covariance
-eigenvalue_spread_db = _eigenvalue_spread_db
-coherence_matrix = _coherence_matrix
-
-# 3D/2D DoA exports from doa_algorithms_3d
-CrossArrayConfig = _CrossArrayConfig
-doa_music_2d = _doa_music_2d_legacy
-doa_capon_2d = _doa_capon_2d_legacy
-doa_bartlett_2d = _doa_bartlett_2d
-find_peak_2d = _find_peak_2d
-SatellitePassAccumulator = _SatellitePassAccumulator
 
 # Aliases for naming consistency
 papr_db = compute_papr
@@ -310,6 +282,34 @@ __all__ = [
     # Burst pipeline
     "PipelineResult",
     "BurstPipeline",
+    # Tracking filters
+    "CircularEMA",
+    "ScalarEMA",
+    "KalmanScalar",
+    "KalmanAngular",
+    "circular_ema_batch",
+    "scalar_ema_batch",
+    # Tone extraction
+    "find_preamble_onset",
+    "find_tone_onset",
+    "extract_pilot_tone_core",
+    "narrowband_filter_fft",
+    # Acceptance gates
+    "GateVerdict",
+    "circ_median_deg",
+    "PAGGate",
+    "EigenGate",
+    "BoundaryGate",
+    "OutlierGate",
+    "GatePipeline",
+    # Typed configuration
+    "HardwareConfig",
+    "HardwareArrayConfig",
+    "DoAConfig",
+    "BurstConfig",
+    "UIConfig",
+    "DisplayConfig",
+    "load_config",
     # Iridium demodulator
     "IridiumDemod",
     "DemodDebug",
@@ -320,35 +320,4 @@ __all__ = [
     "UW_DOWNLINK",
     "UW_UPLINK",
     "PREAMBLE_LENGTH",
-    # Smart API (LEGO-like, intuitive)
-    "create_array",
-    "create_doa_estimator",
-    "create_iridium_pipeline",
-    "create_calibrator",
-    "estimate_doa",
-    "DoAResult",
-    "SmartBurstResult",
-    "CalibrationResult",
-    "quick_doa",
-    "quick_burst_detect",
-    "auto_configure",
-    # === Legacy Compatibility API ===
-    "ArrayConfig",
-    "Geometry",
-    "doa_music",
-    "doa_capon",
-    "doa_ml",
-    "doa_root_music",
-    "doa_esprit",
-    "apply_phase_correction",
-    "snr_from_covariance",
-    "papr_db",
-    "eigenvalue_spread_db",
-    "coherence_matrix",
-    "CrossArrayConfig",
-    "doa_music_2d",
-    "doa_capon_2d",
-    "doa_bartlett_2d",
-    "find_peak_2d",
-    "SatellitePassAccumulator",
 ]

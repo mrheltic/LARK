@@ -68,6 +68,13 @@ from core.doa_uca_2d import (
     enhanced_preprocessing as enhanced_preprocessing_doa,
 )
 from core.doa_algorithms import apply_phase_correction as _apply_phase_correction
+# ── Modular LEGO components ───────────────────────────────────────────────────
+from core.tracking import KalmanAngular, KalmanScalar
+from core.gates import circ_median_deg
+from core.tone_extraction import (
+    find_preamble_onset as _fpo_core,
+    find_tone_onset as _fto_core,
+)
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 BG    = "#1a1d27"; BG2 = "#21253a"; BG3 = "#2a2f47"
@@ -130,14 +137,8 @@ def _check_heimdall(host: str, port: int) -> bool:
         return False
 
 
-def _circ_median(angles_deg: np.ndarray) -> float:
-    """Circular median of azimuth values in [0..360°]."""
-    if len(angles_deg) == 0:
-        return 0.0
-    a = np.deg2rad(angles_deg)
-    mean_ang = np.angle(np.mean(np.exp(1j * a)))
-    centred   = np.degrees(np.angle(np.exp(1j * (a - mean_ang))))
-    return float((np.median(centred) + np.degrees(mean_ang)) % 360)
+# Circular median for azimuth — implementation lives in core.gates.
+_circ_median = circ_median_deg
 
 
 def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
@@ -169,11 +170,9 @@ def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
         last_iq_env  = np.zeros(64, dtype=np.float32),             # burst envelope CH0
         kf_az_hist   = collections.deque(maxlen=C.HISTORY_LEN),   # Kalman az estimate
         kf_el_hist   = collections.deque(maxlen=C.HISTORY_LEN),   # Kalman el estimate
-        kf_az_x      = 0.0,    # Kalman az state (internal)
-        kf_el_x      = 30.0,   # Kalman el state (internal)
-        kf_az_var    = 200.0,  # Kalman az error variance
-        kf_el_var    = 200.0,  # Kalman el error variance
-        kf_init      = True,   # cold-start flag
+        # ── Kalman filters (core.tracking) ───────────────────
+        az_kf        = KalmanAngular(q=5.0, r=20.0),              # azimuth circular KF
+        el_kf        = KalmanScalar(q=2.0,  r=8.0),               # elevation linear KF
         rec_enabled= True,
         rec_t       = [],
         rec_az      = [],
@@ -233,131 +232,46 @@ def _detect_bursts(iq: np.ndarray, threshold_factor: float = 6.0) -> list[int]:
 
 
 # =============================================================================
-# Preamble-tone onset localisation  (joint time × frequency search)
+# Preamble-tone onset localisation  — thin wrappers around core.tone_extraction
 # =============================================================================
+# The core algorithms are in core/tone_extraction.py (general-purpose, fully
+# parametric).  These local wrappers bind the IRA-specific module-level constants
+# (_BURST_SAMPLES, _PRE_SAMPLES, _PREAMBLE_TONE_HZ) so _acq_loop keeps the same
+# compact call signature.
 
 def _find_preamble_onset(
-    iq:       np.ndarray,        # channel-0 samples, 1D complex
-    b_start:  int,               # energy-detector burst onset (sample index)
-    n_total:  int,               # total samples in iq
+    iq:       np.ndarray,
+    b_start:  int,
+    n_total:  int,
     fs:       float = _FS,
     win:      int   = _TONE_SCAN_WIN,
-    known_hz: float | None = None,  # if set, restrict freq search to ±2 kHz
+    known_hz: float | None = None,
 ) -> tuple:
-    """
-    Find (preamble_onset_sample, actual_tone_hz) via joint time×frequency search.
-
-    Why joint search:
-      The IRA preamble is a PURE TONE (all-zero dibits → constant +π/4 rotation
-      → sinusoid at carrier + Rs/8). In a win-sample FFT window the preamble
-      concentrates ≈100 × more power into a single bin than the wideband
-      data symbols (+20 dB), regardless of what frequency the actual LO offset
-      places the tone at.
-
-    Algorithm:
-      Sweep 50%-overlap windows over
-          [b_start − _BURST_SAMPLES … b_start + _BURST_SAMPLES/2]
-      For EACH window: compute rfft, find the max-power bin (excluding DC).
-      The global maximum over all windows identifies the preamble window AND
-      the actual tone frequency — no knowledge of LO offset needed.
-
-    Returns
-    -------
-    (onset, tone_hz) : (int, float)
-        onset    — sample index of the preamble start
-        tone_hz  — detected tone centre frequency [Hz]
-    """
-    step     = win // 2
-    scan_sta = max(0, b_start - _BURST_SAMPLES)
-    # Search forward too (½ burst) so we don’t miss late-firing energy triggers
-    scan_end = min(b_start + _BURST_SAMPLES // 2, n_total - win)
-
-    if scan_end <= scan_sta:
-        return b_start, float(known_hz if known_hz is not None else _PREAMBLE_TONE_HZ)
-
-    # IMPORTANT: use full complex FFT (not rfft) because IQ data is complex.
-    freqs = np.fft.fftfreq(win, d=1.0 / fs)  # includes negative frequencies
-
-    # Frequency search mask: full-range on first call, ±2 kHz afterwards.
-    _FREQ_LOCK_BW = 2_000.0   # Hz half-width when known_hz is set
-    if known_hz is not None:
-        _freq_mask = np.abs(freqs - known_hz) <= _FREQ_LOCK_BW
-        _freq_mask[0] = False   # always exclude DC
-    else:
-        _freq_mask = None
-
-    best_pwr  = -1.0
-    best_pos  = b_start
-    best_freq = float(known_hz if known_hz is not None else _PREAMBLE_TONE_HZ)
-
-    for pos in range(scan_sta, scan_end, step):
-        seg     = iq[pos: pos + win]
-        fft_pwr = np.abs(np.fft.fft(seg)) ** 2
-        fft_pwr[0] = 0.0    # zero DC bin (LO leakage)
-        if _freq_mask is not None:
-            fft_pwr_search = fft_pwr * _freq_mask
-        else:
-            fft_pwr_search = fft_pwr
-        pk_bin  = int(np.argmax(fft_pwr_search))
-        pwr     = float(fft_pwr[pk_bin])
-        if pwr > best_pwr:
-            best_pwr  = pwr
-            best_pos  = pos
-            best_freq = float(freqs[pk_bin])
-
-    # Shift back slightly so the full preamble run-up is included
-    onset = max(scan_sta, best_pos - win // 4)
-    return onset, best_freq
+    """Find (onset_sample, tone_hz).  See core.tone_extraction.find_preamble_onset."""
+    return _fpo_core(
+        iq, b_start, n_total,
+        fs=fs, win=win, known_hz=known_hz,
+        burst_samples=_BURST_SAMPLES,
+        preamble_tone_hz=float(_PREAMBLE_TONE_HZ),
+    )
 
 
 def _find_tone_onset(
-    iq:      np.ndarray,     # channel-0 samples, 1D complex
-    b_start: int,            # energy-detector burst onset (sample index)
-    n_total: int,            # total samples available in iq
+    iq:      np.ndarray,
+    b_start: int,
+    n_total: int,
     tone_hz: float = float(_PREAMBLE_TONE_HZ),
     fs:      float = _FS,
     win:     int   = _TONE_SCAN_WIN,
 ) -> int:
-    """
-    Scan a neighbourhood around the energy-detector onset and return the
-    sample position with the highest FFT power at ``tone_hz``.
-
-    Why: the IRA slot is  Guard(silence) → Preamble(tone@3125 Hz) → Data(wideband).
-    The wideband energy detector can fire at ANY point in the active slot.  If
-    it fires on the DATA portion the fixed extraction ``X[:, :_PRE_SAMPLES]``
-    captures wideband signal → near-flat MUSIC spectrum → low PAPR → rejected.
-
-    This function searches [b_start − _BURST_SAMPLES, b_start + _PRE_SAMPLES]
-    (≈ one full IRA slot backwards + one preamble forwards) so the preamble is
-    found regardless of when the detector fired.  The 3125 Hz tone power in a
-    512-sample FFT block is ~17 dB above wideband data floor, making the
-    distinction reliable even at SNR ≈ 0 dB.
-    """
-    # Matched-filter template: optimally detects a pure sinusoid at tone_hz
-    # regardless of FFT bin alignment.  At 1.024 MHz, 3125 Hz falls between
-    # bins 1 (2000 Hz) and 2 (4000 Hz) for win=512 → the closest bin holds
-    # only ~56% of the tone energy.  The matched filter captures 100%.
-    t_arr    = np.arange(win, dtype=np.float64)
-    template = np.exp(2j * np.pi * tone_hz / fs * t_arr)
-
-    step     = win // 2                              # 50 % overlap
-    scan_sta = max(0, b_start - _BURST_SAMPLES)      # look back up to one full burst
-    scan_end = min(b_start + _PRE_SAMPLES, n_total - win)
-
-    if scan_end <= scan_sta:
-        return b_start   # not enough context — fall back to raw onset
-
-    best_pwr = -1.0
-    best_pos =  b_start
-    for pos in range(scan_sta, scan_end, step):
-        seg = iq[pos: pos + win]
-        pwr = float(abs(np.dot(np.conj(seg), template)) ** 2)
-        if pwr > best_pwr:
-            best_pwr = pwr
-            best_pos = pos
-
-    # Shift slightly back so the full preamble run-up is included.
-    return max(scan_sta, best_pos - win // 4)
+    """Find onset sample with highest coherent power at tone_hz.
+    See core.tone_extraction.find_tone_onset."""
+    return _fto_core(
+        iq, b_start, n_total,
+        tone_hz=tone_hz, fs=fs, win=win,
+        burst_samples=_BURST_SAMPLES,
+        preamble_samples=_PRE_SAMPLES,
+    )
 
 
 # =============================================================================
@@ -958,24 +872,12 @@ def _acq_loop(
                 _pk  = float(np.max(_smp)) + 1e-12
                 S.last_iq_env = _smp / _pk        # normalise 0..1
                 # ── Scalar Kalman smoother  (az circular, el linear) ─────────
-                if S.kf_init:
-                    S.kf_az_x   = float(az_inst)
-                    S.kf_el_x   = float(el_inst)
-                    S.kf_az_var = 200.0
-                    S.kf_el_var = 200.0
-                    S.kf_init   = False
-                else:
-                    _Q_az = 5.0;  _R_kf_az = 20.0
-                    _K_az = S.kf_az_var / (S.kf_az_var + _R_kf_az)
-                    _innov_az = float(((az_inst - S.kf_az_x + 180) % 360) - 180)
-                    S.kf_az_x   = (S.kf_az_x + _K_az * _innov_az) % 360.0
-                    S.kf_az_var = (1.0 - _K_az) * S.kf_az_var + _Q_az
-                    _Q_el = 2.0;  _R_kf_el = 8.0
-                    _K_el = S.kf_el_var / (S.kf_el_var + _R_kf_el)
-                    S.kf_el_x   = S.kf_el_x + _K_el * float(el_inst - S.kf_el_x)
-                    S.kf_el_var = (1.0 - _K_el) * S.kf_el_var + _Q_el
-                S.kf_az_hist.append(float(S.kf_az_x))
-                S.kf_el_hist.append(float(S.kf_el_x))
+                # KalmanAngular / KalmanScalar from core.tracking — handle
+                # cold-start, angular wrap, and Q/R noise configuration.
+                _kf_az = S.az_kf.update(az_inst)
+                _kf_el = S.el_kf.update(el_inst)
+                S.kf_az_hist.append(_kf_az)
+                S.kf_el_hist.append(_kf_el)
                 S.burst_n += 1
 
 

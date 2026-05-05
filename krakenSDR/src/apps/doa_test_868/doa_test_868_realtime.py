@@ -61,6 +61,7 @@ from core.doa_uca_2d import (
     extract_pilot_tone, amplitude_normalize_channels,
     enhanced_preprocessing as enhanced_preprocessing_doa,
 )
+from core.gates import circ_median_deg
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 BG    = "#1a1d27"; BG2 = "#21253a"; BG3 = "#2a2f47"
@@ -72,15 +73,8 @@ _PAPR_MIN_DB  = 4.0   # below this threshold with low eigenvalue: direction unre
 _PAPR_FLAT_DB = 3.0   # below this threshold MUSIC is flat → auto-fallback to Bartlett
 _SPEC_EMA     = 0.10  # display spectrum temporal smoothing (lower = more stable)
 
-
-def _circ_median(angles_deg: np.ndarray) -> float:
-    """Circular median of azimuth values [0..360°]."""
-    if len(angles_deg) == 0:
-        return 0.0
-    a  = np.deg2rad(angles_deg)
-    mu = float(np.angle(np.mean(np.exp(1j * a))))
-    residui = np.angle(np.exp(1j * (a - mu)))
-    return float(np.degrees(mu + np.median(residui)) % 360.0)
+# Circular median — implementation lives in core.gates.
+_circ_median = circ_median_deg
 
 
 def _circ_distance(a_deg: float, b_deg: float) -> float:
@@ -235,7 +229,11 @@ def _acq_loop(src, cfg: UcaConfig, algo: str,
         try:
             # ── Pilot tone extraction ─────────────────────────────────────────
             if C.PILOT_TONE_ENABLED:
-                X_proc = extract_pilot_tone(X, cfg, fs=C.SAMPLE_RATE_HZ)
+                X_proc = extract_pilot_tone(
+                    X, float(C.SAMPLE_RATE_HZ),
+                    tone_hz=float(C.PILOT_TONE_OFFSET_HZ),
+                    bw_hz=float(getattr(C, 'PILOT_TONE_BW_HZ', 10_000.0)),
+                )
             else:
                 X_proc = X
 

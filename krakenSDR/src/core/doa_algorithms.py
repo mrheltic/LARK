@@ -19,6 +19,32 @@ from enum import Enum
 
 import numpy as np
 
+# ── Re-export from canonical modules (no duplicate implementations) ────────
+from .covariance import (           # noqa: F401
+    covariance,
+    forward_backward_avg,
+    toeplitzify,
+    fb_toeplitz,
+    apply_decorrelation,
+    CovarianceAccumulator,
+)
+from .signal_quality import (       # noqa: F401
+    eigenvalue_spread_db,
+    snr_from_covariance,
+    coherence_matrix,
+)
+from .doa_estimators import compute_papr as _compute_papr  # noqa: F401
+
+
+def papr_db(spectrum_db: np.ndarray) -> float:
+    """
+    Peak-to-Average Power Ratio of the DoA spectrum [dB].
+    High PAPR → sharp MUSIC peak → reliable estimate.
+    Rule of thumb: PAPR > 6 dB acceptable, > 12 dB good.
+    Delegates to doa_estimators.compute_papr.
+    """
+    return _compute_papr(spectrum_db)
+
 
 # =============================================================================
 # Array config
@@ -126,73 +152,6 @@ def steering(cfg: ArrayConfig, theta: float) -> np.ndarray:
                 np.cos(phi) * np.cos(theta) + np.sin(phi) * np.sin(theta)
             )
         )
-
-
-# =============================================================================
-# Covariance
-# =============================================================================
-
-def covariance(X: np.ndarray) -> np.ndarray:
-    """Normalised sample covariance matrix R = X·X^H / N."""
-    return (X @ X.conj().T) / X.shape[1]
-
-
-# =============================================================================
-# Covariance decorrelation
-# =============================================================================
-
-def forward_backward_avg(R: np.ndarray) -> np.ndarray:
-    """
-    Forward-Backward Averaging (FBA).
-
-    Doubles effective snapshots and decorrelates coherent (multipath) sources.
-    R_fb = (R + J·R*·J) / 2  where J is the exchange matrix.
-
-    Ref: Pillai & Kwon, IEEE Trans. ASSP 37(4), 1989.
-    """
-    M = R.shape[0]
-    J = np.fliplr(np.eye(M))
-    return (R + J @ R.conj() @ J) / 2.0
-
-
-def toeplitzify(R: np.ndarray) -> np.ndarray:
-    """
-    Toeplitz Rectification: averages R along each diagonal.
-
-    Exploits shift-invariant structure of ULA/UCA for coherence rejection.
-
-    Ref: Vallet & Loubaton, ICASSP 2014.
-    """
-    import scipy.linalg
-    M = R.shape[0]
-    c = [np.trace(R, -m) / float(M - m) for m in range(M)]
-    return scipy.linalg.toeplitz(c, np.conj(c))
-
-
-def fb_toeplitz(R: np.ndarray) -> np.ndarray:
-    """
-    FB + Toeplitz Reconstruction — recommended for indoor UCA with multipath.
-
-    Builds complementary Toeplitz forward/backward matrices, then averages
-    them with conjugate FB symmetry.
-
-    Ref: Shubair et al., MMS 2016; McDonald & van Wyk, PrimeAsia 2019.
-    """
-    import scipy.linalg
-    R_f = scipy.linalg.toeplitz(R[:, 0], R[0, :])
-    R_b = scipy.linalg.toeplitz(np.flip(R[:, -1]), np.flip(R[-1, :]))
-    return 0.5 * (R_f + R_b.conj())
-
-
-def apply_decorrelation(R: np.ndarray, method: str) -> np.ndarray:
-    """Apply one of: 'Off', 'FBA', 'TOEP', 'FBTOEP'."""
-    if method == "FBA":
-        return forward_backward_avg(R)
-    elif method == "TOEP":
-        return toeplitzify(R)
-    elif method == "FBTOEP":
-        return fb_toeplitz(R)
-    return R
 
 
 # =============================================================================
@@ -654,90 +613,10 @@ def measure_power_db(X: np.ndarray) -> float:
     return float(10.0 * np.log10(np.mean(np.abs(X) ** 2) + 1e-20))
 
 
-def snr_from_covariance(R: np.ndarray) -> float:
-    """
-    SNR estimate [dB] from eigenvalue spread.
-    λ_max ≈ signal+noise, λ_min ≈ noise floor.
-
-    Ref: krakensdr_doa signal_processor.py — SNR().
-    """
-    ev    = np.sort(np.abs(np.linalg.eigvalsh(R)))
-    ratio = (ev[-1] - ev[0]) / (ev[0] + 1e-20)
-    return float(10.0 * np.log10(max(ratio, 1e-10)))
-
-
-def papr_db(spectrum_db: np.ndarray) -> float:
-    """
-    Peak-to-Average Power Ratio of the DoA spectrum [dB].
-
-    High PAPR → sharp MUSIC peak → reliable estimate.
-    Rule of thumb: PAPR > 6 dB acceptable, > 12 dB good.
-
-    Ref: krakensdr_doa — calculate_doa_papr().
-    """
-    s_lin = 10.0 ** (np.clip(spectrum_db, -200, 0) / 10.0)
-    mean_v = np.mean(s_lin)
-    if mean_v < 1e-15:
-        return 0.0
-    return float(10.0 * np.log10(np.max(s_lin) / mean_v))
-
-
 def condition_number(R: np.ndarray) -> float:
     """λ_max / λ_min of R — high value indicates strong, detectable signal."""
     ev = np.sort(np.abs(np.linalg.eigvalsh(R)))
     return float(ev[-1] / (ev[0] + 1e-20))
 
 
-def eigenvalue_spread_db(R: np.ndarray) -> np.ndarray:
-    """Eigenvalues of R in dB, sorted descending (index 0 = signal subspace)."""
-    ev = np.sort(np.abs(np.linalg.eigvalsh(R)))[::-1]
-    return 10.0 * np.log10(ev / (ev[-1] + 1e-20) + 1e-20)
 
-
-# =============================================================================
-# Temporal covariance averaging
-# =============================================================================
-
-class CovarianceAccumulator:
-    """
-    Exponential moving average (EMA) of R across frames.
-
-    R_new = α·R_old + (1−α)·R_frame
-
-    Reduces variance of R estimate; critical for N=3 arrays where a single
-    frame provides only ~512–2048 snapshots.
-
-    α = 0.0  → no memory (single frame only)
-    α = 0.92 → ~12-frame time constant (~1.3 s at 12 fps)
-    """
-
-    def __init__(self, alpha: float = 0.3):
-        self.alpha = float(alpha)
-        self._R: np.ndarray | None = None
-
-    def update(self, R: np.ndarray) -> np.ndarray:
-        if self._R is None or self._R.shape != R.shape:
-            self._R = R.copy()
-        else:
-            self._R = self.alpha * self._R + (1.0 - self.alpha) * R
-        return self._R
-
-    def reset(self) -> None:
-        self._R = None
-
-
-# =============================================================================
-# Coherence metric (inter-channel correlation coefficient)
-# =============================================================================
-
-def coherence_matrix(R: np.ndarray) -> np.ndarray:
-    """
-    Normalised coherence matrix: Γ[i,j] = |R[i,j]| / sqrt(R[i,i]·R[j,j]).
-
-    Values close to 1 indicate high inter-channel coherence (desired for
-    a single-source scenario). Values near 0 indicate low SNR or saturated
-    hardware.
-    """
-    d    = np.sqrt(np.abs(np.diag(R)) + 1e-20)
-    norm = np.outer(d, d)
-    return np.abs(R) / norm
