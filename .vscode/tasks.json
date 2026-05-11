@@ -449,6 +449,21 @@
             }
         },
         {
+            "label": "LibreSDR: TX 868 MHz — dry-run (print config, no TX)",
+            "detail": "Stampa la configurazione TX (frequenza, gain, offset pilota) ed esce senza trasmettere. Utile per verificare i parametri prima di accendere il TX.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx_868_libresdr.py --dry-run",
+            "options": {
+                "cwd": "${workspaceFolder}/libreSDR/src"
+            },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": "$python"
+        },
+        {
             "label": "LibreSDR: TX 868 MHz — Headless IRA burst (no GUI)",
             "detail": "Transmits authentic Iridium IRA π/4-DQPSK bursts at 868 MHz via AD9363. No display required — use over SSH. Loops forever until Ctrl+C. Pair with 'DoA BURST' task. Requires hardware AD9363.",
             "type": "shell",
@@ -544,6 +559,52 @@
             "presentation": {
                 "reveal": "always",
                 "panel": "new"
+            },
+            "problemMatcher": "$python"
+        },
+        {
+            "label": "LibreSDR: TX Iridium realsim — cyclic 1626.270 MHz (-40 dB, lab)",
+            "detail": "Simula un pass Iridium NEXT a 1626.270 MHz (frequenza reale L-band). Genera burst IRA π/4-DQPSK con Doppler, variazione di elevazione e SNR realistici. Gain -40 dB → portata <1 m su cavo coax + attenuatore 30 dB (NO antenna, NO aria). Ctrl+C per fermare.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx_iridium_realsim.py --freq 1626.270 --cyclic --gain -40 --n-sats 2 --snr 18 --elev 45",
+            "options": {
+                "cwd": "${workspaceFolder}/libreSDR/src"
+            },
+            "group": "test",
+            "isBackground": true,
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": false
+            },
+            "problemMatcher": {
+                "pattern": {
+                    "regexp": "^(.*)$",
+                    "message": 1
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "TX IRIDIUM PASS SIMULATOR",
+                    "endsPattern": "\\[TX\\] Cyclic|Done\\."
+                }
+            }
+        },
+        {
+            "label": "KrakenSDR: Iridium DoA burst — 1626.270 MHz (multi-satellite)",
+            "detail": "DoA burst su frequenza reale Iridium L-band 1626.270 MHz. Scansione Doppler ±45 kHz per isolare fino a 2 satelliti simultanei, tracker indipendente per ognuno, skyplot colorato. Richiede Heimdall configurato su 1626.270 MHz e LibreSDR TX attivo.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_iridium/doa_iridium_burst.py --freq 1626.270 --max-sats 2",
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
+            "group": "test",
+            "dependsOn": [
+                "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
+                "LibreSDR: TX Iridium realsim — cyclic 1626.270 MHz (-40 dB, lab)"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
             },
             "problemMatcher": "$python"
         }

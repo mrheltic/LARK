@@ -43,6 +43,8 @@ __all__ = [
     "doa_capon_uca_2d",
     "eigenvalue_spread_uca_db",
     "snr_uca_db",
+    "crb_azimuth_deg",
+    "estimate_signal_count_mdl",
     "CovarianceAccumulatorUca",
     "doa_root_music_uca_2d",
     "doa_unitary_esprit_uca_2d",
@@ -557,11 +559,96 @@ def eigenvalue_spread_uca_db(R: np.ndarray) -> np.ndarray:
     return 10.0 * np.log10(ev / (ev[-1] + 1e-20) + 1e-20)
 
 
-def snr_uca_db(R: np.ndarray) -> float:
-    """Stima SNR [dB] dal rapporto autovalore max/min di R."""
-    ev    = np.sort(np.maximum(np.linalg.eigvalsh(R), 0.0))
-    ratio = (ev[-1] - ev[0]) / (ev[0] + 1e-20)
-    return float(10.0 * np.log10(max(ratio, 1e-10)))
+def snr_uca_db(R: np.ndarray, n_sources: int = 1) -> float:
+    """Signal-to-noise ratio estimate [dB] from the covariance eigenvalue spectrum.
+
+    Uses the signal/noise eigenvalue partition (Wax & Kailath 1985, Salama 2025 §4.2):
+
+        σ²_noise = mean(λ_{n_sources+1}, …, λ_M)   (averaged noise eigenvalues)
+        SNR      = (λ_1 – σ²_noise) / σ²_noise
+
+    More accurate than the simple λmax/λmin ratio when M > 2, because averaging
+    over all noise-subspace eigenvalues suppresses finite-sample estimation noise.
+
+    Parameters
+    ----------
+    R         : (M, M) sample covariance matrix
+    n_sources : assumed number of sources (default 1 for a single Iridium IRA)
+
+    Returns
+    -------
+    snr_db : estimated SNR in dB (can be negative when source is below noise floor)
+    """
+    ev = np.sort(np.maximum(np.linalg.eigvalsh(R), 0.0))[::-1]  # descending
+    M  = len(ev)
+    K  = max(1, min(n_sources, M - 1))
+    sigma2_noise = float(np.mean(ev[K:]))
+    snr_lin      = (float(ev[0]) - sigma2_noise) / max(sigma2_noise, 1e-30)
+    return float(10.0 * np.log10(max(snr_lin, 1e-10)))
+
+
+def crb_azimuth_deg(
+    snr_db:      float,
+    n_snapshots: int,
+    cfg:         UcaConfig,
+    el_deg:      float = 45.0,
+) -> float:
+    """Cramér-Rao Bound for azimuth estimation on a UCA (Stoica & Nehorai 1990).
+
+    For a single narrowband source at elevation *el_deg* observed with an
+    M-element UCA of radius r_λ wavelengths and N temporal snapshots at a
+    per-snapshot SNR (linear), the theoretical lower bound on the standard
+    deviation of any unbiased azimuth estimator is:
+
+        CRB_φ = (180/π) / [2π · r_λ · cos(el) · √(M · N · SNR_lin)]  [degrees]
+
+    Derivation (Salama 2025 §8.2.1; Van Trees 2002 §8.3)
+    ------------------------------------------------------
+    Starting from the Fisher Information element for azimuth φ:
+
+        J_φφ = 2N · SNR · Re{ (∂a/∂φ)^H · P_a^⊥ · (∂a/∂φ) }
+
+    where P_a^⊥ = I – a·a^H/M is the projection orthogonal to the steering
+    vector a.  For a UCA with φ_k = 2πk/M:
+
+        ∂a_k/∂φ = –j · 2π·r·cos(el)·sin(φ–φ_k) · a_k
+
+        ‖∂a/∂φ‖² = (2π·r·cos(el))² · Σ_k sin²(φ–φ_k) = (2π·r·cos(el))² · M/2
+
+        a^H·(∂a/∂φ) = –j·2π·r·cos(el)·Σ_k sin(φ–2πk/M) = 0   (full-period sum)
+
+    Therefore J_φφ = N · M · SNR · (2π · r_λ · cos(el))²  and  CRB = 1/J_φφ.
+
+    Notes
+    -----
+    - MUSIC and ESPRIT converge to the CRB asymptotically at high SNR
+      (Stoica-Nehorai asymptotic efficiency).
+    - At low SNR a "threshold effect" causes all subspace estimators to deviate
+      sharply above the CRB; for M=5, N=2600 the threshold is near –5 dB SNR.
+    - The formula assumes K=1 source, spatially white noise, and perfect
+      array calibration (no gain/phase imbalance).
+
+    Parameters
+    ----------
+    snr_db      : **per-element** signal-to-noise ratio [dB],
+                  i.e. P_source / σ²_noise at a single antenna.
+                  If you have the array-gain SNR from snr_uca_db() (which
+                  returns M × per-element SNR), subtract 10·log10(M) first.
+    n_snapshots : number of IQ samples used to estimate R (= X.shape[1])
+    cfg         : UcaConfig — supplies n_ant (M) and radius_lambda (r_λ)
+    el_deg      : source elevation [°], 0 = horizon, 90 = zenith  (default 45°)
+
+    Returns
+    -------
+    crb_deg : CRB standard deviation for azimuth [°]  (always ≥ 0)
+    """
+    snr_lin = 10.0 ** (snr_db / 10.0)
+    el_rad  = np.deg2rad(el_deg)
+    M = float(cfg.n_ant)
+    r = cfg.radius_lambda
+    # Fisher Information: J = N · M · SNR · (2π · r_λ · cos(el))²
+    J = n_snapshots * M * snr_lin * (2.0 * np.pi * r * np.cos(el_rad)) ** 2
+    return float(np.degrees(1.0 / np.sqrt(max(J, 1e-30))))
 
 
 # =============================================================================
@@ -654,6 +741,39 @@ def _estimate_signal_count_mdl(
             best_k    = k
 
     return best_k
+
+
+# Public alias — allows external callers to use MDL source enumeration directly
+# without reaching into the internal namespace.
+def estimate_signal_count_mdl(
+    R:           np.ndarray,
+    n_snapshots: int,
+    max_signals: int = 4,
+) -> int:
+    """MDL source-count estimator — public wrapper around _estimate_signal_count_mdl.
+
+    Uses the Minimum Description Length criterion (Wax & Kailath 1985,
+    Salama 2025 §4.2.4) to determine the number of sources K present in
+    the observed covariance matrix R.
+
+    The MDL cost for K sources is:
+
+        MDL(K) = –N·(M–K)·log(g_K / a_K) + 0.5·K·(2M–K)·log(N)
+
+    where g_K and a_K are the geometric and arithmetic means of the
+    M–K smallest eigenvalues of R.  The estimate K̂ = argmin_K MDL(K).
+
+    Parameters
+    ----------
+    R           : (M, M) sample covariance matrix (Hermitian positive semidefinite)
+    n_snapshots : number of IQ snapshots used to estimate R  (= X.shape[1])
+    max_signals : maximum K to consider; must be < M  (default 4 for M=5 UCA)
+
+    Returns
+    -------
+    K_hat : estimated number of sources in [0, max_signals]
+    """
+    return _estimate_signal_count_mdl(R, n_snapshots, max_signals)
 
 
 # =============================================================================

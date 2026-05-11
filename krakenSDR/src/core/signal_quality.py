@@ -34,27 +34,26 @@ from .doa_estimators import compute_papr as _compute_papr
 
 def eigenvalue_spread_db(R: np.ndarray) -> np.ndarray:
     """
-    Eigenvalue spread of covariance matrix in dB.
-    
+    Eigenvalues of the covariance matrix in dB, sorted descending.
+
+    Normalised against the smallest eigenvalue (noise floor = 0 dB).
+    Returns a non-increasing array: spreads[0] is the largest
+    signal-to-noise ratio, spreads[-1] = 0 dB (noise floor reference).
+    A large gap between index 0 and the rest indicates a strong source.
+
     Parameters
     ----------
     R : (M, M) array
         Covariance matrix
-    
+
     Returns
     -------
     spreads : (M,) array
-        Cumulative eigenvalue spreads in dB
+        Eigenvalue spreads relative to noise floor [dB], descending
     """
-    ev = np.linalg.eigvalsh(R)
-    ev = np.sort(ev)[::-1]  # descending
-    ev_pos = np.maximum(ev, 1e-30)
-    
-    spreads = np.empty_like(ev)
-    for i in range(len(ev)):
-        spreads[i] = 10.0 * np.log10(ev_pos[0] / ev_pos[i])
-    
-    return spreads
+    ev = np.sort(np.maximum(np.linalg.eigvalsh(R), 0.0))[::-1]  # descending
+    noise_floor = ev[-1] + 1e-20
+    return 10.0 * np.log10(ev / noise_floor + 1e-20)
 
 
 def snr_from_covariance(R: np.ndarray) -> float:
