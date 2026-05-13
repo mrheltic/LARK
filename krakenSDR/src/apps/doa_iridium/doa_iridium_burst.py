@@ -277,6 +277,13 @@ def _make_sat_tracker(
         az_deg      = 0.0,
         el_deg      = el_mid,
         no_doa      = True,
+        # Doppler zero-crossing: when cfo_hz changes sign the satellite is at
+        # maximum elevation (radial velocity = 0). We track the previous CFO
+        # sign and record the DoA elevation at the crossing as an independent
+        # estimate of the actual peak-elevation geometry.
+        cfo_prev_sign = 0,          # sign of last CFO: +1, -1, or 0 (unknown)
+        el_at_zero_crossing = None, # DoA elevation [°] observed at zero-crossing
+        t_zero_crossing     = None, # monotonic time of last zero-crossing
     )
 
 
@@ -349,6 +356,27 @@ def _update_tracker(
     trk.el_hist.append(trk.el_ema)
     trk.snr_hist.append(snr_db)
     trk.cfo_hist.append(cfo_hz)
+
+    # Doppler zero-crossing detection.
+    # For a LEO satellite on a direct-visibility pass, the radial Doppler
+    # shift is: fd = (v/c) · f_carrier · cos(angle_from_velocity_vector).
+    # It is positive while the satellite approaches and negative while it
+    # recedes; the sign change occurs at the moment of closest approach
+    # (maximum elevation for a ground observer directly under the trajectory).
+    # At that instant DoA elevation ≈ true peak elevation, independent of
+    # the DoA algorithm — useful as a quick geometry sanity-check.
+    new_sign = int(np.sign(cfo_hz)) if abs(cfo_hz) > 200.0 else 0  # 200 Hz dead-band
+    if trk.cfo_prev_sign != 0 and new_sign != 0 and new_sign != trk.cfo_prev_sign:
+        trk.el_at_zero_crossing = el_doa
+        trk.t_zero_crossing     = time.monotonic()
+        print(
+            f"[DOPPLER-XZ] Sat {trk.sat_id}: Doppler zero-crossing detected. "
+            f"fd: {trk.cfo_hz:+.0f} → {cfo_hz:+.0f} Hz  "
+            f"DoA el at crossing = {el_doa:.1f}°  (≈ true peak elevation)"
+        )
+    if new_sign != 0:
+        trk.cfo_prev_sign = new_sign
+
     trk.cfo_hz  = 0.85 * trk.cfo_hz + 0.15 * cfo_hz
     trk.spec2d  = spec2d
     trk.papr_db = papr_db
@@ -525,7 +553,15 @@ def _acq_loop(
     _min_sep         = float(getattr(C, "SAT_MIN_SEP_HZ",        5_000))
     _sat_timeout     = float(getattr(C, "SAT_TIMEOUT_S",          8.0))
     _max_sats        = int(getattr(C, "MAX_SATELLITES",            3))
-    _bpf_bw          = float(getattr(C, "PREAMBLE_BPF_BW_HZ",  15_000))
+    # Narrow BPF centred on the detected (Doppler-corrected) tone.
+    # tone_hz from _scan_doppler_peaks already tracks the per-satellite CFO
+    # to ~62 Hz resolution (nfft=8192 at 1.024 MSPS), so a 8 kHz window
+    # comfortably captures the tone while rejecting out-of-band DQPSK energy.
+    # SNR gain vs. full band: 10·log10(1 024 000 / 8 000) ≈ +21.1 dB.
+    _bpf_bw          = float(getattr(C, "PREAMBLE_BPF_BW_HZ",   8_000))
+    # Guard samples to skip the FFT rectangular-window ringing at the
+    # start of the IFFT output (sinc impulse-response width ≈ Fs / BW).
+    _bpf_guard       = max(64, int(np.ceil(_FS / _bpf_bw)))
     _hist_len        = int(getattr(C, "HISTORY_LEN",              100))
 
     _buf: list[np.ndarray] = []
@@ -623,8 +659,17 @@ def _acq_loop(
             for tone_hz, peak_snr_db in peaks:
                 cfo_hz = tone_hz - _PREAMBLE_TONE_HZ
 
-                # ── BPF stretto intorno a questo tono ─────────────────────────
-                X_bpf = extract_pilot_tone(X_win, _fs, tone_hz=tone_hz, bw_hz=_bpf_bw)
+                # ── BPF on the preamble region only ────────────────────────────
+                # Apply the narrowband filter only over the first PRE_SAMPLES of
+                # X_win. The energy detector fires within ±_ENERGY_WIN/2 = ±128
+                # samples of the actual burst onset, so X_win[:,0:PRE_SAMPLES]
+                # always contains the full preamble CW region.  Limiting the
+                # input to PRE_SAMPLES avoids IFFT circular-convolution from the
+                # DQPSK data region bleeding back into the preamble filter output.
+                if X_win.shape[1] < _PRE_SAMPLES:
+                    continue
+                X_bpf = extract_pilot_tone(X_win[:, :_PRE_SAMPLES], _fs,
+                                           tone_hz=tone_hz, bw_hz=_bpf_bw)
                 X_bpf = amplitude_normalize_channels(X_bpf)
 
                 if _has_cal:
@@ -632,11 +677,40 @@ def _acq_loop(
                 else:
                     X_cal = X_bpf
 
-                # ── Covarianza istantanea + gate eigenvalue ────────────────────
+                # ── Preamble-only sample covariance + matched-filter ───────────
+                # Skip _bpf_guard samples to avoid sinc-ringing at the start of
+                # the IFFT output (impulse-response width ≈ Fs/BW = 128 samples).
+                # The remaining N_pre samples are pure CW → high λ1/σ² gap.
+                _n_pre = _PRE_SAMPLES - _bpf_guard
+                if _n_pre < 128:
+                    continue
+                X_pre = X_cal[:, _bpf_guard : _bpf_guard + _n_pre]
+
+                # Matched-filter covariance (rank-1, optimal SNR for CW sources).
+                # Project each antenna onto conj(known tone), then form outer product:
+                #
+                #   y_k = (1/N) Σ_n  x_k[n] · exp(-j·2π·f_tone/Fs·n)
+                #   R_mf = y · y^H   →  rank-1, λ1 = |y|²·M, λ2..M = σ²·I
+                #
+                # This is the optimal single-frequency estimator: zero contribution
+                # from DQPSK data and no averaging over incoherent symbols.
+                # Fallback to sample covariance when MF output is too weak (no signal).
+                t_vec = np.arange(_n_pre, dtype=np.float64)
+                ref   = np.exp(-2j * np.pi * tone_hz / _fs * t_vec)  # (N,) matched filter
+                y_mf  = (X_pre @ ref) / _n_pre                        # (M,) per-antenna output
+                R_mf  = np.outer(y_mf, y_mf.conj())                   # (M, M) rank-1
+                # Use rank-1 MF covariance when signal is detectable; fall back to
+                # sample covariance in low-SNR regime where MF is numerically fragile.
+                mf_power = float(np.real(np.trace(R_mf)))
+                sample_power = float(np.real(np.trace(
+                    (X_pre @ X_pre.conj().T) / _n_pre)))
+                if mf_power > 0.01 * sample_power:   # MF captures ≥1% total power
+                    R_inst = R_mf
+                else:
+                    R_inst = (X_pre @ X_pre.conj().T) / _n_pre
                 try:
-                    R_inst = (X_cal @ X_cal.conj().T) / X_cal.shape[1]
-                    eig    = eigenvalue_spread_uca_db(R_inst)
-                    snr    = snr_uca_db(R_inst)
+                    eig = eigenvalue_spread_uca_db(R_inst)
+                    snr = snr_uca_db(R_inst)
                 except Exception:
                     continue
 
@@ -686,11 +760,11 @@ def _acq_loop(
                 phase_diffs = np.degrees(np.angle(R_avg[1:, 0]))
 
                 # CRB for azimuth (Salama 2025 §8.2.1; Stoica & Nehorai 1990).
-                # Uses the DoA-averaged covariance SNR and the number of IQ
-                # samples in the BPF output window as the snapshot count.
+                # n_snaps is the preamble-only snapshot count used for R_inst;
+                # this is the effective N that determines the Fisher information.
                 # crb_azimuth_deg expects per-element SNR; snr_uca_db returns
                 # the array-gain SNR = M × per-element, so subtract 10·log10(M).
-                n_snaps  = X_cal.shape[1]
+                n_snaps  = X_pre.shape[1]
                 snr_per_element_db = snr - 10.0 * np.log10(float(cfg.n_ant))
                 crb_deg_ = crb_azimuth_deg(snr_per_element_db, n_snaps, cfg,
                                            el_deg=el_doa)
