@@ -80,11 +80,6 @@ class Ad9363:
         for attempt in range(retries):
             try:
                 sdr = adi.Pluto(uri)
-                # Destroy any stale buffer left by a previous session
-                try:
-                    sdr.tx_destroy_buffer()
-                except Exception:
-                    pass
                 print("OK")
                 return cls(sdr, uri)
             except OSError as exc:
@@ -126,6 +121,11 @@ class Ad9363:
         self._sdr.tx_rf_bandwidth       = int(rf_bw)
         self._sdr.tx_lo                 = int(freq_hz)
         self._sdr.tx_hardwaregain_chan0 = float(gain_db)
+        # Store for potential reconnect inside transmit_cyclic()
+        self._last_tx_cfg = dict(
+            freq_hz=int(freq_hz), gain_db=float(gain_db),
+            sample_rate=int(sample_rate), rf_bw=int(rf_bw),
+        )
 
         print(f"  TX:  {freq_hz / 1e6:.3f} MHz  |  {sample_rate / 1e6:.1f} MSPS  "
               f"|  gain {gain_db:+.1f} dB  |  RF BW {rf_bw / 1e3:.0f} kHz")
@@ -248,6 +248,39 @@ class Ad9363:
             if n > 1:
                 print(f"  TX  {i + 1}/{n}")
 
+    @staticmethod
+    def _try_restart_iiod(uri: str, password: str = "analog") -> bool:
+        """
+        SSH to the LibreSDR and restart iiod to release a stuck DMA buffer.
+
+        Called automatically when EBUSY persists after reconnect attempts.
+        Only works for IP URIs with a reachable host and known SSH credentials.
+        Default PlutoSDR/LibreSDR password is 'analog'.
+
+        Returns True if iiod was successfully restarted.
+        """
+        if not uri.startswith("ip:"):
+            return False
+        host = uri.split(":", 1)[1]
+        try:
+            import pexpect
+            cmd = (f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "
+                   f"root@{host} "
+                   f"\"killall iiod 2>/dev/null; sleep 1; iiod -D; echo IIOD_OK\"")
+            child = pexpect.spawn(cmd, timeout=18)
+            i = child.expect([r"password:", r"IIOD_OK", pexpect.TIMEOUT, pexpect.EOF])
+            if i == 0:
+                child.sendline(password)
+                j = child.expect([r"IIOD_OK", pexpect.TIMEOUT, pexpect.EOF], timeout=14)
+                ok = (j == 0)
+            else:
+                ok = (i == 1)
+            if ok:
+                print(f"  [RECOVER] iiod restarted on {host} via SSH.")
+            return ok
+        except Exception:
+            return False
+
     def transmit_cyclic(self, samples: np.ndarray) -> None:
         """
         Transmit `samples` in a continuous hardware loop until Ctrl+C.
@@ -257,7 +290,21 @@ class Ad9363:
         the Ethernet IIO DMA pipeline limit.
 
         samples is automatically truncated to HW_BUF_MAX if larger.
+
+        EBUSY recovery
+        --------------
+        A previous crash may have left the IIO DMA buffer locked in the iiod
+        server.  The recovery sequence is:
+          1. tx_destroy_buffer() + reconnect (new IIO context + 3 s wait)   × 2
+          2. SSH restart of iiod on the device (releases the kernel DMA lock) × 1
+          3. Reconnect + tx() → should succeed after iiod restart
         """
+        import gc
+        try:
+            import adi as _adi
+        except ImportError:
+            _adi = None
+
         sdr = self._sdr
         try:
             sdr.tx_destroy_buffer()
@@ -270,21 +317,47 @@ class Ad9363:
             samples = samples[:HW_BUF_MAX]
 
         sdr.tx_cyclic_buffer = True
-        # Retry on EBUSY: a previous crash may have left the IIO buffer locked.
         for _attempt in range(4):
             try:
                 sdr.tx(samples)
+                self._sdr = sdr   # commit new sdr if we reconnected
                 break
             except OSError as exc:
-                if exc.errno == 16 and _attempt < 3:  # EBUSY
-                    print(f"  [WARN] TX buffer busy, retrying in 3 s ... ({_attempt + 1}/3)")
+                if exc.errno != 16 or _attempt >= 3:   # not EBUSY or all retries done
+                    raise
+                # On the second failed attempt, try the nuclear option: SSH iiod restart
+                if _attempt == 1:
+                    print("  [WARN] TX DMA buffer stuck — attempting iiod restart via SSH ...")
+                    restarted = self._try_restart_iiod(self._uri)
+                    if restarted:
+                        time.sleep(3)   # let iiod initialise
+                else:
+                    print(f"  [WARN] TX buffer busy — reconnecting IIO ({_attempt}/2) ...")
+                try:
+                    sdr.tx_destroy_buffer()
+                except Exception:
+                    pass
+                del sdr
+                gc.collect()
+                time.sleep(2)
+                if _adi is None:
+                    raise
+                try:
+                    sdr = _adi.Pluto(self._uri)
                     try:
                         sdr.tx_destroy_buffer()
                     except Exception:
                         pass
-                    time.sleep(3)
-                else:
-                    raise
+                    if hasattr(self, '_last_tx_cfg'):
+                        c = self._last_tx_cfg
+                        sdr.sample_rate            = c['sample_rate']
+                        sdr.tx_rf_bandwidth        = c['rf_bw']
+                        sdr.tx_lo                  = c['freq_hz']
+                        sdr.tx_hardwaregain_chan0   = c['gain_db']
+                    sdr.tx_cyclic_buffer = True
+                except Exception as _e:
+                    print(f"  [WARN] Reconnect failed: {_e}")
+                    sdr = self._sdr
         print("  Cyclic TX active. Press Ctrl+C to stop.")
         try:
             while True:
@@ -293,7 +366,7 @@ class Ad9363:
             print("\n  Stopping ...")
         finally:
             try:
-                sdr.tx_destroy_buffer()
+                self._sdr.tx_destroy_buffer()
             except Exception:
                 pass
             print("  TX buffer destroyed.")

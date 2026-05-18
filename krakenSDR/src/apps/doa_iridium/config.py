@@ -237,10 +237,11 @@ AZ_OUTLIER_MAX_DEV_DEG  = 45.0   # reject burst if az differs > 45° from recent
 AZ_OUTLIER_MIN_HISTORY  = 5      # minimum bursts before outlier gate activates
 
 PHASE_COHERENCE_ENABLED     = True
-PHASE_COHERENCE_MAX_JUMP_DEG = 60.0
-# Phase coherence gate: reject burst if phase diffs jump > 60° from previous accepted burst.
-# 60° is generous (accounts for Doppler phase ramp between superframes).
-# Tighten to 30° for careful indoor calibration runs.
+PHASE_COHERENCE_MAX_JUMP_DEG = 120.0
+# Phase coherence gate: reject burst if inter-channel phase diffs jump > threshold
+# from the previous accepted burst. ONLY active on calibrated hardware (_has_cal True).
+# Without calibration, phase diffs are dominated by noise at SNR 5-15 dB (indoor) and
+# would reject most bursts.  Once calibrated, tighten to 30-60° for best rejection.
 
 # ── Multi-burst accumulation ──────────────────────────────────────────────────
 MULTI_BURST_N = 3

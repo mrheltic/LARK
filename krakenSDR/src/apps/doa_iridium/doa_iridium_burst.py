@@ -285,6 +285,10 @@ def _make_sat_tracker(
         cfo_prev_sign = 0,          # sign of last CFO: +1, -1, or 0 (unknown)
         el_at_zero_crossing = None, # DoA elevation [°] observed at zero-crossing
         t_zero_crossing     = None, # monotonic time of last zero-crossing
+        # Phase-coherence gate: inter-channel phase diffs at the last accepted burst.
+        # Updated only when a burst passes all quality gates (so it tracks the
+        # "good" phase baseline, not spurious jumps).
+        last_phase_diffs    = None, # np.ndarray(4,) [°]  or None before first burst
     )
 
 
@@ -305,9 +309,11 @@ def _find_or_create_tracker(
             best_dist, best_id = d, sid
 
     if best_id is not None and best_dist < min_sep_hz * 2.0:
-        trk = satellites[best_id]
-        trk.cfo_hz = 0.90 * trk.cfo_hz + 0.10 * cfo_hz  # EMA
-        return trk
+        # Match found: return the existing tracker without updating CFO here.
+        # CFO EMA is applied once per burst in _update_tracker, avoiding a
+        # double-update that would make the effective EMA weight ~0.24 instead
+        # of the intended 0.15.
+        return satellites[best_id]
 
     if len(satellites) >= max_sats:
         return None   # max satellites reached, ignore this peak
@@ -573,6 +579,16 @@ def _acq_loop(
     _no_burst_streak = 0
     _diag_t0   = time.monotonic()
     _cnt_det = _cnt_eig = _cnt_papr = _cnt_acc = 0
+    # Pre-load gate config (constant for the lifetime of _acq_loop).
+    # AZ outlier gate is only valid on calibrated hardware: on uncalibrated
+    # arrays MUSIC azimuths can span ±180°, so the circular median of the
+    # first few estimates is an unreliable reference and the gate rejects
+    # almost everything.  Disable automatically when _has_cal is False.
+    _az_outlier_en  = bool(getattr(C,  "AZ_OUTLIER_ENABLED",         True)) and _has_cal
+    _az_outlier_min = int(getattr(C,   "AZ_OUTLIER_MIN_HISTORY",        5))
+    _az_outlier_dev = float(getattr(C, "AZ_OUTLIER_MAX_DEV_DEG",     45.0))
+    _ph_coh_en      = bool(getattr(C,  "PHASE_COHERENCE_ENABLED",     True)) and _has_cal
+    _ph_coh_dev     = float(getattr(C, "PHASE_COHERENCE_MAX_JUMP_DEG", 60.0))
 
     _tone_known: dict[int, float] = {}   # sat_id → last known tone_hz
 
@@ -615,7 +631,7 @@ def _acq_loop(
                 print(
                     "[WARN] 10 consecutive frames without an IRA burst detected.\n"
                     "  Indoor:  check that LibreSDR TX is active\n"
-                    "           (python3 tx/indoor_1626.py --gain -60 --cyclic)\n"
+                    "           (python3 tx/indoor_1626.py --gain -40 --cyclic)\n"
                     "  Outdoor: wait for an Iridium pass (check TLE)\n"
                     "  Testing: add --demo to simulate the signal."
                 )
@@ -765,10 +781,38 @@ def _acq_loop(
                 # if papr_doa < _papr_min:
                 #     continue
 
+                # Phase diffs computed here (before gates; also used in recording)
+                phase_diffs = np.degrees(np.angle(R_avg[1:, 0]))
+
+                # ── AZ outlier gate ───────────────────────────────────────────
+                # Reject bursts that deviate from the tracker's recent circular
+                # median by more than AZ_OUTLIER_MAX_DEV_DEG.  Inactive until
+                # at least AZ_OUTLIER_MIN_HISTORY DoA estimates have been
+                # accumulated — before that every estimate seeds the history.
+                # This suppresses multi-modal MUSIC scatter on uncalibrated HW.
+                if (_az_outlier_en and not trk.no_doa
+                        and len(trk.az_hist) >= _az_outlier_min):
+                    med = _circ_median(list(trk.az_hist))
+                    d   = abs(az_doa - med) % 360.0
+                    dev = min(d, 360.0 - d)
+                    if dev > _az_outlier_dev:
+                        continue   # outlier azimuth — discard
+
+                # ── Phase coherence gate ──────────────────────────────────────
+                # Reject bursts where inter-channel phase diffs jump more than
+                # PHASE_COHERENCE_MAX_JUMP_DEG from the last accepted burst.
+                # A real signal has slowly varying phase (Doppler ramp between
+                # 90 ms superframes is typically < 10°); a phantom peak from a
+                # spurious multipath or DoA ambiguity produces a large jump.
+                if (_ph_coh_en and not trk.no_doa
+                        and trk.last_phase_diffs is not None):
+                    ph_delta = np.abs(((phase_diffs - trk.last_phase_diffs + 180.0)
+                                       % 360.0) - 180.0)
+                    if float(np.max(ph_delta)) > _ph_coh_dev:
+                        continue   # phase discontinuity — discard
+
                 _cnt_acc += 1
                 acc.update(R_avg)   # per calibrazione
-
-                phase_diffs = np.degrees(np.angle(R_avg[1:, 0]))
 
                 # CRB for azimuth (Salama 2025 §8.2.1; Stoica & Nehorai 1990).
                 # n_snaps is the preamble-only snapshot count used for R_inst;
@@ -792,6 +836,9 @@ def _acq_loop(
                         cfo_hz, spec2d, _az_alpha, _el_alpha,
                         cfg.el_min_deg, cfg.el_max_deg,
                     )
+                    # Store phase baseline for the coherence gate (only updated
+                    # after a burst passes every quality check)
+                    trk.last_phase_diffs = phase_diffs.copy()
                     S.no_signal = False
                     S.burst_n  += 1
                     S.energy_hist.append(pwr_db)
