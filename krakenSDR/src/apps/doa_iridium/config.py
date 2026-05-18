@@ -115,11 +115,17 @@ DOA_ALGORITHM  = "MUSIC"
 #                    (natural RHCP polarisation + LEO geometry → strong single source).
 # "UNITARY-ESPRIT" — real-valued, fast, excellent for high-elevation short passes.
 
-MUSIC_DECORR   = "fb"
+MUSIC_DECORR   = "none"
 # 'none' / 'fb' / 'circulant'.
-# 'fb'  (Forward-Backward averaging): RECOMMENDED for Iridium.
-#   Iridium uses π/4-DQPSK → signal is quasi-ergodic → FBA stabilises R.
-#   Also helps when TX (LibreSDR) is on the floor or nearby wall.
+# 'none' is REQUIRED for burst-gated DoA with matched-filter covariance.
+#   The MF covariance R_mf = y_mf * y_mf^H is rank-1.  Applying FB
+#   averaging (R_fb = (R + J R^* J) / 2) inflates the apparent rank to 2.
+#   With n_sig=1, the FB-image eigenvector leaks into the MUSIC noise
+#   subspace, preventing a spatial null at the source direction and
+#   collapsing PAPR to 2-4 dB (effectively rejecting 98% of valid bursts).
+#   decorr='none' preserves the rank-1 structure → PAPR >> 20 dB.
+# 'fb' is appropriate only for continuous non-gated IQ with sample
+#   covariance (full-rank R from many snapshots) — NOT for burst mode.
 
 NUM_SIGNALS = 1
 # Sorgenti attese PER SATELLITE per l'algoritmo MUSIC (split sottospazio S/N).
@@ -191,16 +197,30 @@ SQUELCH_THRESHOLD_DB = -60.0
 # For LibreSDR indoor: -55 dBW as with the 868 test.
 
 EIG_SPREAD_MIN_DB = 0.5
-# Very permissive: let PAPR gate do the final selection.
+# Very permissive: let SNR gate do the final selection.
 # Raise to 2.5 in clean outdoor LOS conditions.
 
 EIG_SN_GAP_MIN_DB = 0.0
 # Disabled post-BPF (same rationale as 868 burst mode — see comments there).
 
-PAPR_INST_MIN_DB = 8.0
-# Minimum MUSIC PAPR [dB] to accept a preamble as valid.
-# 8 dB minimum: valid preamble (rank-1 after BPF) gives 12–30 dB; noise < 8 dB.
-# OUTDOOR clean LOS: raise to 12–15 dB for precision.
+SNR_INST_MIN_DB = 5.0
+# Minimum per-element SNR [dB] from the covariance eigenvalue ratio to accept
+# a preamble burst as containing a real signal.
+# The SNR check is calibration-agnostic (depends only on eigenvalues, not on
+# the steering manifold), so it works correctly on uncalibrated hardware where
+# MUSIC PAPR would fail due to inter-channel phase offsets.
+# 5 dB: rank-1 R_mf from IRA preamble gives SNR >> 20 dB; a noise-only R
+# (from energy-detector false alarm) gives SNR < 0 dB.
+# Lower threshold (1–3 dB) for very weak outdoor signals; raise to 10+ dB
+# to tighten false-alarm rate after hardware calibration.
+# Override at runtime: --snr-min <value>
+
+PAPR_INST_MIN_DB = 3.0
+# Minimum MUSIC PAPR [dB] to accept a multi-burst averaged DoA result.
+# Used only for the final multi-burst stage (instant gate now uses SNR_INST_MIN_DB).
+# 3 dB is permissive enough for uncalibrated hardware where inter-channel phase
+# offsets shift y_mf off the UCA steering manifold, degrading MUSIC PAPR.
+# After running --calibrate, raise back to 8–12 dB for stricter quality control.
 # Override at runtime: --papr-min <value>
 
 # ── Pilot tone / preamble ─────────────────────────────────────────────────────

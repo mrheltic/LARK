@@ -70,7 +70,7 @@
                 "reveal": "always",
                 "panel": "dedicated"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: Iridium — receiver → parser (pipe)",
@@ -85,7 +85,7 @@
                 "reveal": "always",
                 "panel": "dedicated"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: Iridium — DoA L-band (multi-channel)",
@@ -101,7 +101,7 @@
                 "reveal": "always",
                 "panel": "dedicated"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: Run test suite",
@@ -119,7 +119,7 @@
                 "reveal": "always",
                 "panel": "shared"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "LibreSDR: Check AD9363 connection",
@@ -134,37 +134,7 @@
                 "reveal": "always",
                 "panel": "shared"
             },
-            "problemMatcher": "$python"
-        },
-        {
-            "label": "LibreSDR: TX Iridium bursts (4 x IRA, single pass)",
-            "detail": "Generates 4 IRA DQPSK bursts and transmits them once at 1626.270 MHz via AD9363.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 iridium_tx_libresdr.py",
-            "options": {
-                "cwd": "${workspaceFolder}/libreSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": "$python"
-        },
-        {
-            "label": "LibreSDR: TX cyclic (continuous loop, 1626.270 MHz)",
-            "detail": "Transmits IRA DQPSK bursts in a continuous cyclic DMA loop via AD9363.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 iridium_tx_libresdr.py --cyclic",
-            "options": {
-                "cwd": "${workspaceFolder}/libreSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "iridium-toolkit: Parse .bits file",
@@ -179,7 +149,7 @@
                 "reveal": "always",
                 "panel": "shared"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: Space DoA — Collect bursts",
@@ -194,7 +164,7 @@
                 "reveal": "always",
                 "panel": "dedicated"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: Space DoA — Real-time (2D-MUSIC)",
@@ -209,7 +179,7 @@
                 "reveal": "always",
                 "panel": "dedicated"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: Space DoA — Playback (offline)",
@@ -224,7 +194,7 @@
                 "reveal": "always",
                 "panel": "dedicated"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: Iridium Pass Predict — compare DoA vs TLE",
@@ -239,7 +209,7 @@
                 "reveal": "always",
                 "panel": "dedicated"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: Iridium — visible satellites NOW",
@@ -254,7 +224,7 @@
                 "reveal": "always",
                 "panel": "shared"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: Iridium — predict passes (next 2h)",
@@ -269,7 +239,7 @@
                 "reveal": "always",
                 "panel": "shared"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: 868 MHz UCA — DoA 2D real-time (MUSIC)",
@@ -284,7 +254,7 @@
                 "reveal": "always",
                 "panel": "dedicated"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: 868 MHz UCA — DoA 2D real-time (Capon)",
@@ -299,7 +269,7 @@
                 "reveal": "always",
                 "panel": "dedicated"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: 868 MHz UCA — DoA 2D real-time + record (MUSIC)",
@@ -314,13 +284,13 @@
                 "reveal": "always",
                 "panel": "dedicated"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "LibreSDR: TX 868 MHz — pilot-tone beacon (+100 kHz, -15 dB)",
             "detail": "Transmits a CW pilot tone at LO+100 kHz (868.1+0.1 MHz) at -15 dB via AD9363. Matches KrakenSDR PILOT_TONE_OFFSET_HZ=100000. Stop with Ctrl+C.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx_868_libresdr.py --pilot-offset 100000 --gain -15",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx/cw.py --freq 868100000 --pilot-offset 100000 --gain -15",
             "options": {
                 "cwd": "${workspaceFolder}/libreSDR/src"
             },
@@ -356,7 +326,7 @@
                 "reveal": "always",
                 "panel": "dedicated"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: 868 MHz UCA — DoA BURST demo (no hardware)",
@@ -371,13 +341,13 @@
                 "reveal": "always",
                 "panel": "dedicated"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "LibreSDR: TX 868 MHz — GUI BURST (IRA π/4-DQPSK)",
             "detail": "Apre la GUI LibreSDR in modalità BURST IRA. Trasmette slot IRA π/4-DQPSK (preamble+dati) ogni 90 ms. Usare con 'DoA BURST'. Richiede hardware AD9363.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx_868_gui.py --mode ira",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx/gui.py --mode ira",
             "options": {
                 "cwd": "${workspaceFolder}/libreSDR/src"
             },
@@ -401,7 +371,7 @@
             "label": "LibreSDR: TX 868 MHz — GUI BURST demo (no hardware)",
             "detail": "GUI loopback sintetica in modalità IRA — nessun hardware richiesto. Utile per testare la catena TX+DoA senza AD9363.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx_868_gui.py --demo --mode ira",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx/gui.py --demo --mode ira",
             "options": {
                 "cwd": "${workspaceFolder}/libreSDR/src"
             },
@@ -425,7 +395,7 @@
             "label": "LibreSDR: TX 868 MHz — CW cyclic (DoA beacon)",
             "detail": "Transmits a continuous pure carrier tone at 868.1 MHz via AD9363 DMA loop. Use as reference beacon for UCA DoA testing. Stop with Ctrl+C.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx_868_libresdr.py",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx/cw.py --freq 868100000",
             "options": {
                 "cwd": "${workspaceFolder}/libreSDR/src"
             },
@@ -449,25 +419,10 @@
             }
         },
         {
-            "label": "LibreSDR: TX 868 MHz — dry-run (print config, no TX)",
-            "detail": "Stampa la configurazione TX (frequenza, gain, offset pilota) ed esce senza trasmettere. Utile per verificare i parametri prima di accendere il TX.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx_868_libresdr.py --dry-run",
-            "options": {
-                "cwd": "${workspaceFolder}/libreSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            },
-            "problemMatcher": "$python"
-        },
-        {
             "label": "LibreSDR: TX 868 MHz — Headless IRA burst (no GUI)",
             "detail": "Transmits authentic Iridium IRA π/4-DQPSK bursts at 868 MHz via AD9363. No display required — use over SSH. Loops forever until Ctrl+C. Pair with 'DoA BURST' task. Requires hardware AD9363.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx_868_ira.py --cyclic",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx/ira.py --freq 868100000 --cyclic",
             "options": {
                 "cwd": "${workspaceFolder}/libreSDR/src"
             },
@@ -500,7 +455,7 @@
                 "reveal": "always",
                 "panel": "new"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: Calibration — collect dataset",
@@ -515,7 +470,7 @@
                 "reveal": "always",
                 "panel": "shared"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: Calibration — train model",
@@ -530,22 +485,7 @@
                 "reveal": "always",
                 "panel": "new"
             },
-            "problemMatcher": "$python"
-        },
-        {
-            "label": "KrakenSDR: Calibration — train model",
-            "detail": "Train MLP on a collected calibration dataset.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py train ${input:calibDataset}",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "new"
-            },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "KrakenSDR: Calibration — phase offsets (direct MUSIC fix)",
@@ -560,13 +500,29 @@
                 "reveal": "always",
                 "panel": "new"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         },
         {
             "label": "LibreSDR: TX Iridium realsim — cyclic 1626.270 MHz (-40 dB, lab)",
             "detail": "Simula un pass Iridium NEXT a 1626.270 MHz (frequenza reale L-band). Genera burst IRA π/4-DQPSK con Doppler, variazione di elevazione e SNR realistici. Gain -40 dB → portata <1 m su cavo coax + attenuatore 30 dB (NO antenna, NO aria). Ctrl+C per fermare.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx_iridium_realsim.py --freq 1626.270 --cyclic --gain -40 --n-sats 2 --snr 18 --elev 45",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx/pass_sim.py --freq 1626270000 --cyclic --gain -40 --snr 18 --elev 45",
+            "options": {
+                "cwd": "${workspaceFolder}/libreSDR/src"
+            },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": false
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "LibreSDR: Indoor 1626 MHz — TX IRA burst (lab DoA)",
+            "detail": "Transmits IRA π/4-DQPSK bursts at 1626.270 MHz at −40 dB. Near-field indoor test: TX antenna 1–3 m from KrakenSDR UCA. Safety guard rejects gain > −20 dB. Ctrl+C to stop.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx/indoor_1626.py --gain -40 --cyclic",
             "options": {
                 "cwd": "${workspaceFolder}/libreSDR/src"
             },
@@ -578,35 +534,29 @@
                 "focus": false
             },
             "problemMatcher": {
-                "pattern": {
-                    "regexp": "^(.*)$",
-                    "message": 1
-                },
+                "pattern": { "regexp": "^(.*)$", "message": 1 },
                 "background": {
                     "activeOnStart": true,
-                    "beginsPattern": "TX IRIDIUM PASS SIMULATOR",
-                    "endsPattern": "\\[TX\\] Cyclic|Done\\."
+                    "beginsPattern": "LibreSDR — INDOOR 1626",
+                    "endsPattern": "TX active|Stop requested|Done\\."
                 }
             }
         },
         {
             "label": "KrakenSDR: Iridium DoA burst — 1626.270 MHz (multi-satellite)",
-            "detail": "DoA burst su frequenza reale Iridium L-band 1626.270 MHz. Scansione Doppler ±45 kHz per isolare fino a 2 satelliti simultanei, tracker indipendente per ognuno, skyplot colorato. Richiede Heimdall configurato su 1626.270 MHz e LibreSDR TX attivo.",
+            "detail": "Burst-gated 2D-MUSIC DoA at real Iridium L-band 1626.270 MHz. Doppler scan ±45 kHz isolates up to 2 simultaneous satellites, each with an independent tracker and coloured sky plot. Requires Heimdall configured at 1626.270 MHz and LibreSDR TX active.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_iridium/doa_iridium_burst.py --freq 1626.270 --max-sats 2",
             "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
+                "cwd": "${workspaceFolder}/krakenSDR/src",
+                "env": { "DISPLAY": ":0" }
             },
             "group": "test",
-            "dependsOn": [
-                "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
-                "LibreSDR: TX Iridium realsim — cyclic 1626.270 MHz (-40 dB, lab)"
-            ],
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated"
             },
-            "problemMatcher": "$python"
+            "problemMatcher": []
         }
     ],
 

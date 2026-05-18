@@ -800,7 +800,7 @@ def plot_analysis(iq: np.ndarray, burst_log: list, doppler_model: IridiumLEODopp
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 8. TRANSMISSION VIA LIBRESDR (pyadi-iio)
+# 8. UTILITY
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _resample_to_hw(iq: np.ndarray, target_sps: int = 1_000_000) -> np.ndarray:
@@ -810,6 +810,9 @@ def _resample_to_hw(iq: np.ndarray, target_sps: int = 1_000_000) -> np.ndarray:
     up, down = target_sps // g, SAMPLE_RATE // g
     return sp_signal.resample_poly(iq, up, down).astype(np.complex64)
 
+
+# NOTE: hardware TX has been moved to libreSDR/src/hw/ad9363.py and
+#       libreSDR/src/tx/.  Use  python3 tx/pass_sim.py  to transmit.
 
 def transmit_via_libresdr(iq: np.ndarray, uri: str, center_freq_hz: int,
                            tx_gain_db: float = -60.0, cyclic: bool = False):
@@ -1077,14 +1080,24 @@ Examples:
 
     # ── Transmission via LibreSDR ─────────────────────────────────────────
     if not args.no_tx:
-        print(f"\n  Transmitting via LibreSDR ({args.tx_uri})")
-        print(f"  FREQ: {args.tx_freq/1e6:.4f} MHz  |  GAIN: {args.tx_gain:+.0f} dB")
-        transmit_via_libresdr(
-            iq             = iq,
-            uri            = args.tx_uri,
-            center_freq_hz = int(args.tx_freq),
-            tx_gain_db     = args.tx_gain,
-            cyclic         = args.cyclic,
+        # TX is now handled by tx/pass_sim.py (uses hw/ad9363.py).
+        # Import lazily to avoid coupling the DSP library to hardware drivers.
+        import sys as _sys
+        import os as _os
+        _tx_src = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        if _tx_src not in _sys.path:
+            _sys.path.insert(0, _tx_src)
+        from tx import transmit_pass
+        transmit_pass(
+            freq_hz=int(args.tx_freq),
+            gain_db=args.tx_gain,
+            max_elev_deg=args.elev,
+            pass_dur_s=args.pass_dur,
+            snr_db=args.snr,
+            sat_id=args.sat_id,
+            beam_id=args.beam_id,
+            cyclic=args.cyclic,
+            uri=args.tx_uri,
         )
 
     print("\nDone!")

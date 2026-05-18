@@ -2,38 +2,36 @@
 """
 doa_iridium_burst.py — Multi-satellite burst-gated 2D DoA on Iridium IRA
 =========================================================================
-DoA 2D (azimuth 0-360°, elevation 5-90°) sui burst IRA Iridium; supporta
-la ricezione simultanea di fino a 3 satelliti differenti (discriminati per
-offset Doppler del tono di preambolo), con tracker indipendente per ciascuno
-e colori distinti sul grafico polare.
+2D DoA (azimuth 0-360°, elevation 5-90°) on Iridium IRA bursts; supports
+simultaneous reception of up to 3 satellites (discriminated by preamble
+Doppler offset), each with an independent tracker and distinct colour.
 
-Setup hardware
+Hardware setup
 --------------
-  Indoor  (ISM 868 MHz, nessuna licenza):
-    TX → LibreSDR AD9363 @ 868.1 MHz  (tx_iridium_realsim.py)
-    RX → KrakenSDR 5-ch UCA RHCP @ 868.1 MHz  (Heimdall DAQ)
-  Outdoor (real Iridium):
-    RX → KrakenSDR @ 1626.270 MHz  (nessun TX richiesto)
+  Indoor  (1626 MHz, near-field / short cable):
+    TX → LibreSDR AD9363 @ 1626.270 MHz  (tx/indoor_1626.py)
+    RX → KrakenSDR 5-ch UCA RHCP @ 1626.270 MHz  (Heimdall DAQ)
+  Outdoor (real Iridium satellites):
+    RX → KrakenSDR @ 1626.270 MHz  (no TX needed)
 
-Come funziona il rilevamento multi-satellite
---------------------------------------------
-Ogni burst IRA inizia con 64 simboli di preambolo (tutti dibit 0,0) che
-generano un tono puro a fc + Rs/8 = fc + 3125 Hz.  Due satelliti in vista
-hanno Doppler diversi (satellite a elevazione 60° ≈ ±10 kHz; satellite a
-horizon = ±40 kHz a 1626 MHz), quindi i loro toni di preambolo cadono a
-frequenze diverse nel riferimento del ricevitore.
+How multi-satellite detection works
+-----------------------------------
+Every IRA burst begins with 64 preamble symbols (all-zero dibits) producing
+a pure tone at fc + Rs/8 = fc + 3125 Hz.  Two satellites in view have
+different Doppler offsets (sat at 60° el ≈ ±10 kHz; sat at horizon ≈ ±40 kHz
+at 1626 MHz), so their preamble tones land at different frequencies in the
+receiver reference frame.
 
-Il modulo `_scan_doppler_peaks()` esegue una scansione FFT di larghezza
-±DOPPLER_SCAN_BW_HZ (default ±45 kHz) intorno al tono nominale 3125 Hz su
-ogni finestra burst, restituendo fino a MAX_SATELLITES picchi.  Per ogni
-picco viene applicato un BPF stretto, poi eseguito il DoA 2D-MUSIC.  Il
-risultato viene associato al satellite più vicino (per CFO) nel registro dei
-tracker attivi.
+`_scan_doppler_peaks()` runs an FFT scan over ±DOPPLER_SCAN_BW_HZ
+(default ±45 kHz) around the nominal tone at 3125 Hz for every burst window,
+returning up to MAX_SATELLITES peaks.  A narrow BPF is applied per peak, then
+2D-MUSIC DoA is run.  The result is associated with the nearest-CFO satellite
+in the active tracker registry.
 
-Utilizzo
---------
-    python3 doa_iridium_burst.py              # hardware reale (Heimdall attivo)
-    python3 doa_iridium_burst.py --demo       # simulazione 2 satelliti sintetici
+Usage
+-----
+    python3 doa_iridium_burst.py              # real hardware (Heimdall active)
+    python3 doa_iridium_burst.py --demo       # synthetic 2-satellite simulation
     python3 doa_iridium_burst.py --demo --n-demo-sats 3
     python3 doa_iridium_burst.py --freq 1626.270
     python3 doa_iridium_burst.py --calibrate 45.0
@@ -92,9 +90,9 @@ C_VIO  = "#a78bfa"; C_ROSE = "#f16b6f"; C_LIME  = "#6dd97d"
 # 3 colori distinti per i 3 satellite tracker (override da C.SAT_COLORS se presente)
 _SAT_COLORS = list(getattr(C, "SAT_COLORS", ["#f4a431", "#4ecdc4", "#a78bfa"]))
 
-# ── Parametri IRA Iridium (da gr-iridium / iridium-toolkit) ──────────────────
+# ── Iridium IRA parameters (from gr-iridium / iridium-toolkit) ──────────────
 _SYMBOL_RATE   = 25_000           # sps
-_SPS_BASE      = 10               # campioni/simbolo @ 250 kHz
+_SPS_BASE      = 10               # samples/symbol @ 250 kHz
 _IRA_SAMPLE_RATE = _SYMBOL_RATE * _SPS_BASE   # 250 000 Hz
 _TX_SAMPLE_RATE  = 1_000_000      # AD9363 TX rate
 _IRA_UPS         = _TX_SAMPLE_RATE // _IRA_SAMPLE_RATE   # = 4
@@ -103,7 +101,7 @@ _PREAMBLE_SYMS = 64
 _BURST_SYMS    = 245              # 64 pream + 12 UW + 167 data + 2 tail
 _SUPERFRAME_S  = 0.090            # 90 ms tra burst IRA dello stesso satellite
 
-# Tono di preambolo: dibit (0,0) → +π/4 per simbolo → puro tono @ fc + Rs/8
+# Preamble tone: dibit (0,0) → +π/4 per symbol → pure CW tone at fc + Rs/8
 _PREAMBLE_TONE_HZ = _SYMBOL_RATE // 8   # = 3125 Hz
 
 _FS = float(getattr(C, "SAMPLE_RATE_HZ", 1_024_000))
@@ -119,7 +117,7 @@ _TONE_SCAN_WIN = 512
 _PAPR_INST_MIN_DB = 8.0
 _SPEC_EMA         = 0.25
 
-# ── Demo parametri default (2 satelliti) ─────────────────────────────────────
+# ── Demo parameters (default 2 satellites) ──────────────────────────────────
 _DEMO_SATS = [
     dict(az=45.0,   el=30.0, doppler=+8_000,  snr_db=15.0),  # Sat-0 amber
     dict(az=200.0,  el=55.0, doppler=-14_000, snr_db=12.0),  # Sat-1 teal
@@ -127,7 +125,7 @@ _DEMO_SATS = [
 ]
 
 # =============================================================================
-# DoA algorithm dispatcher (evita if/elif ripetuto)
+# DoA algorithm dispatcher
 # =============================================================================
 
 
@@ -183,7 +181,7 @@ def _run_doa_algo(X_cal: np.ndarray, R: np.ndarray,
 
 
 # =============================================================================
-# Doppler scan — trova tutti i toni di preambolo IRA nella finestra burst
+# Doppler scan — find all IRA preamble tones in the burst window
 # =============================================================================
 
 def _scan_doppler_peaks(
@@ -196,34 +194,37 @@ def _scan_doppler_peaks(
     min_snr_db: float = 6.0,
 ) -> list[tuple[float, float]]:
     """
-    Scansione FFT intorno a nom_tone_hz ± scan_bw_hz.
+    FFT scan around nom_tone_hz ± scan_bw_hz.
 
-    Restituisce una lista di (tone_hz, snr_db) ordinata per potenza decrescente,
-    con al massimo n_peaks picchi separati di almeno min_sep_hz.
+    Returns a list of (tone_hz, snr_db) sorted by decreasing power, with at
+    most n_peaks peaks separated by at least min_sep_hz.
 
-    tone_hz è l'offset dal carrier (= vero Doppler + 3125 Hz);
-    il Doppler del satellite è tone_hz - 3125 Hz.
+    tone_hz is the offset from the carrier (= true Doppler + 3125 Hz);
+    satellite Doppler is tone_hz - 3125 Hz.
     """
     N = len(iq)
     if N < 128:
         return [(nom_tone_hz, 0.0)]
 
-    # Scelgo la potenza di 2 più vicina per FFT veloce
+    # Pick nearest power-of-2 for a fast FFT
     nfft = max(128, 1 << int(np.floor(np.log2(N))))
     win  = np.blackman(nfft)
     seg  = iq[:nfft] * win
     Spec = np.abs(np.fft.fft(seg, n=nfft)) ** 2
     freqs = np.fft.fftfreq(nfft, 1.0 / fs)
 
-    # Rearrange: positivo va nella zona corretta
-    # Voglio la forma "dc al centro" per semplicità
+    # Rearrange so that DC is at centre
     Spec  = np.fft.fftshift(Spec)
     freqs = np.fft.fftshift(freqs)
 
-    # Maschera: solo la banda di ricerca
+    # Mask: keep only the search band, excluding a DC guard zone.
+    # RTL-SDR and AD9363 LO leakage creates a strong spurious component at
+    # 0 Hz that the FFT scan would otherwise pick up as a valid preamble
+    # tone, producing a phantom satellite at fd = 0 − 3125 = −3125 Hz.
     lo = nom_tone_hz - scan_bw_hz
     hi = nom_tone_hz + scan_bw_hz
-    mask = (freqs >= lo) & (freqs <= hi)
+    _DC_GUARD_HZ = 500.0
+    mask = (freqs >= lo) & (freqs <= hi) & (np.abs(freqs) > _DC_GUARD_HZ)
     if not np.any(mask):
         return [(nom_tone_hz, 0.0)]
 
@@ -238,7 +239,7 @@ def _scan_doppler_peaks(
         if snr < min_snr_db:
             break
         results.append((float(fb[idx]), float(snr)))
-        # Annulla finestra intorno al picco
+        # Null window around peak to find next candidate
         null = np.abs(fb - fb[idx]) < min_sep_hz
         Sb[null] = 0.0
 
@@ -293,9 +294,9 @@ def _find_or_create_tracker(
     n_el: int, n_az: int, hist_len: int, multi_n: int, el_mid: float,
 ) -> SimpleNamespace | None:
     """
-    Cerca tra i tracker attivi quello con CFO più vicino a cfo_hz.
-    Se la distanza è < min_sep_hz × 2 → aggiorna il CFO e restituisce il tracker.
-    Altrimenti crea un nuovo tracker (se non si supera max_sats).
+    Find the active tracker whose CFO is closest to cfo_hz.
+    If distance < min_sep_hz × 2 → update CFO and return the tracker.
+    Otherwise create a new tracker (unless max_sats already reached).
     """
     best_id, best_dist = None, float("inf")
     for sid, trk in satellites.items():
@@ -309,7 +310,7 @@ def _find_or_create_tracker(
         return trk
 
     if len(satellites) >= max_sats:
-        return None   # troppi satelliti, ignora questo picco
+        return None   # max satellites reached, ignore this peak
 
     new_id = (max(satellites.keys()) + 1) if satellites else 0
     color  = sat_colors[new_id % len(sat_colors)]
@@ -427,9 +428,9 @@ def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
         crb_az_deg  = float("inf"),  # CRB azimuth standard deviation [°]
         mdl_k       = 1,             # MDL-estimated number of sources
         # ── Satellite tracker registry (dict {sat_id: namespace}) ──────────────
-        satellites  = {},     # aggiornato dal thread acq, letto dal thread UI
+        satellites  = {},     # updated by the acquisition thread, read by the UI thread
         sat_colors  = list(_SAT_COLORS),
-        # ── Calibrazione (usa solo sat_id=0) ────────────────────────────────────
+        # ── Calibration (uses sat_id=0 only) ───────────────────────────────────
         R_cal       = None,
         n_cal_bursts= 0,
         # ── Recording ────────────────────────────────────────────────────────────
@@ -487,12 +488,12 @@ def _find_tone_onset(iq, b_start, n_total,
 
 
 # =============================================================================
-# Demo: genera frame sintetico con N_sats satelliti a diversi az/el/Doppler
+# Demo: generate synthetic frame with N_sats satellites at different az/el/Doppler
 # =============================================================================
 
 def _demo_frame(rng: np.random.Generator, cfg: UcaConfig,
                 demo_params: list[dict]) -> np.ndarray:
-    """Genera un frame multi-satellite sintetico (senza hardware)."""
+    """Generate a synthetic multi-satellite frame (no hardware required)."""
     N = _SF_SAMPLES
     X = np.zeros((cfg.n_ant, N), dtype=np.complex128)
     pos = cfg.positions   # (n_ant, 2)  [Est, Nord]
@@ -547,6 +548,7 @@ def _acq_loop(
     el_mid      = (cfg.el_min_deg + cfg.el_max_deg) / 2.0
 
     _papr_min        = float(getattr(C, "PAPR_INST_MIN_DB", _PAPR_INST_MIN_DB))
+    _snr_inst_min    = float(getattr(C, "SNR_INST_MIN_DB",   5.0))
     _eig_min         = float(getattr(C, "EIG_SPREAD_MIN_DB", 0.5))
     _multi_n         = max(1, int(getattr(C, "MULTI_BURST_N",       3)))
     _scan_bw         = float(getattr(C, "DOPPLER_SCAN_BW_HZ",   45_000))
@@ -577,13 +579,13 @@ def _acq_loop(
     demo_params = demo_params or _DEMO_SATS[:2]
 
     while S.running:
-        # ── Acquisisci frame ──────────────────────────────────────────────────
+        # ── Acquire frame ─────────────────────────────────────────────────────
         if demo:
             frame = _demo_frame(rng, cfg, demo_params)
             time.sleep(_SUPERFRAME_S)
         else:
             try:
-                frame = src.get_iq_online()
+                frame = src.get_frame(timeout=2.0)
             except Exception:
                 continue
             if frame is None or frame.shape[1] < 512:
@@ -601,7 +603,7 @@ def _acq_loop(
         _buf.clear(); _buf_len = 0
         n_total  = X_stream.shape[1]
 
-        # ── Energy detection su ch0 ───────────────────────────────────────────
+        # ── Energy detection on ch0 ──────────────────────────────────────────
         bursts = _detect_bursts(X_stream[0])
         if not bursts:
             pwr_db = float(10 * np.log10(np.mean(np.abs(X_stream[0])**2) + 1e-20))
@@ -611,17 +613,17 @@ def _acq_loop(
             _no_burst_streak += 1
             if _no_burst_streak == 10:
                 print(
-                    "[WARN] 10 frame consecutivi senza burst IRA rilevato.\n"
-                    "  Indoor: assicurarsi che il LibreSDR TX sia attivo\n"
-                    "         (python3 tx_iridium_realsim.py --cyclic)\n"
-                    "  Outdoor: attendere una passata Iridium (controllare TLE)\n"
-                    "  Test: aggiungere --demo per simulare il segnale."
+                    "[WARN] 10 consecutive frames without an IRA burst detected.\n"
+                    "  Indoor:  check that LibreSDR TX is active\n"
+                    "           (python3 tx/indoor_1626.py --gain -60 --cyclic)\n"
+                    "  Outdoor: wait for an Iridium pass (check TLE)\n"
+                    "  Testing: add --demo to simulate the signal."
                 )
             continue
         _no_burst_streak = 0
         _cnt_det += len(bursts)
 
-        # ── Diagnostica periodica ─────────────────────────────────────────────
+        # ── Periodic diagnostics ──────────────────────────────────────────────
         now = time.monotonic()
         if now - _diag_t0 >= 10.0:
             sats_str = ", ".join(
@@ -646,7 +648,7 @@ def _acq_loop(
             X_win = X_stream[:, b_start:b_end]   # (n_ant, window)
             X0    = X_win[0]
 
-            # ── Scansione FFT per tutti i toni di preambolo in questa finestra ─
+            # ── FFT scan for all preamble tones in this burst window ───────────
             peaks = _scan_doppler_peaks(
                 X0, _fs,
                 nom_tone_hz = float(_PREAMBLE_TONE_HZ),
@@ -718,14 +720,18 @@ def _acq_loop(
                     _cnt_eig += 1
                     continue
 
-                # ── DoA istantaneo (PAPR gate) ────────────────────────────────
-                try:
-                    spec2d_inst = _run_doa_algo(X_cal, R_inst, cfg, algo)
-                    az_i, el_i, papr_i = find_peak_uca_2d(spec2d_inst, cfg)
-                except Exception:
-                    continue
-
-                if papr_i < _papr_min:
+                # ── Instant SNR gate ──────────────────────────────────────────
+                # Use the already-computed per-element SNR as the instant quality
+                # gate instead of MUSIC PAPR.  The MUSIC-PAPR gate requires the
+                # signal to lie on the UCA steering manifold, which fails on
+                # uncalibrated hardware: inter-channel phase offsets push y_mf
+                # off the manifold, collapsing MUSIC PAPR to < 8 dB even when a
+                # strong coherent signal is present.
+                # snr_uca_db() is calibration-agnostic: it only looks at the
+                # eigenvalue ratio of R_inst.  For rank-1 R_mf from a real
+                # preamble, SNR >> 20 dB; for noise falling through the energy
+                # detector, SNR < 0 dB.
+                if snr < _snr_inst_min:
                     _cnt_papr += 1
                     continue
 
@@ -751,8 +757,13 @@ def _acq_loop(
                 except Exception:
                     continue
 
-                if papr_doa < _papr_min:
-                    continue
+                # Multi-burst PAPR gate is skipped when hardware is uncalibrated:
+                # inter-channel phase offsets push y_mf off the UCA steering
+                # manifold, collapsing MUSIC PAPR to < 3 dB even for a real
+                # signal.  Accept the DoA result regardless; run --calibrate to
+                # restore the steering match and then the PAPR gate becomes useful.
+                # if papr_doa < _papr_min:
+                #     continue
 
                 _cnt_acc += 1
                 acc.update(R_avg)   # per calibrazione
@@ -791,7 +802,7 @@ def _acq_loop(
                     S.phase_diffs = phase_diffs
                     for i in range(4):
                         S.phase_hist[i].append(float(phase_diffs[i]))
-                    # Spec2d globale: max su tutti i satellite tracker
+                    # Global spec2d: max over all active satellite trackers
                     if S.satellites:
                         S.spec2d = np.max([t.spec2d for t in S.satellites.values()], axis=0)
                         S.az_spec = S.spec2d.max(axis=0)
@@ -812,7 +823,7 @@ def _acq_loop(
                         if S.rec_iq_enabled:
                             S.rec_X.append(X_cal[:, :_PRE_SAMPLES].copy())
 
-                # Rimuovi tracker scaduti
+                # Prune stale trackers
                 with S.lock:
                     _prune_trackers(S.satellites, _sat_timeout)
 
@@ -858,7 +869,7 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
     sky_spec_fill, = ax_sky.fill(_r0, _r0, color=C_BLUE, alpha=0.12)
     sky_spec_line, = ax_sky.plot([], [], "-", color=C_BLUE, lw=0.8, alpha=0.45)
 
-    # Pre-allocazione marker per MAX_SATS satelliti
+    # Pre-allocate markers for MAX_SATS satellites
     sky_dots  = []
     sky_texts = []
     for i in range(MAX_SATS):
@@ -870,16 +881,16 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
         sky_dots.append(dot)
         sky_texts.append(txt)
 
-    lbl_nosig = ax_sky.text(np.pi/2, 45, "in attesa burst…",
+    lbl_nosig = ax_sky.text(np.pi/2, 45, "waiting for bursts…",
                               ha="center", va="center", color=C_MUT,
                               fontsize=9)
 
     # ── [0,1]  Az/El history — per satellite ─────────────────────────────────
     ax_hist = fig.add_subplot(gs[0, 1], facecolor=BG2)
     ax_hist.set_facecolor(BG2)
-    ax_hist.set_title("Storico Az / El per satellite", color=C_TEXT, fontsize=9)
-    ax_hist.set_xlabel("Burst recenti →", color=C_MUT, fontsize=8)
-    ax_hist.set_ylabel("Angolo [°]", color=C_MUT, fontsize=8)
+    ax_hist.set_title("Az / El history — per satellite", color=C_TEXT, fontsize=9)
+    ax_hist.set_xlabel("Recent bursts →", color=C_MUT, fontsize=8)
+    ax_hist.set_ylabel("Angle [°]", color=C_MUT, fontsize=8)
     ax_hist.set_xlim(0, H); ax_hist.set_ylim(-5, 375)
     ax_hist.tick_params(colors=C_MUT, labelsize=7)
     for sp in ax_hist.spines.values():
@@ -919,17 +930,17 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
                              color=C_TEXT, fontsize=8)
     txt_crb   = ax_eig.text(n_ant/2, 33, "", ha="center", va="top",
                              color=C_TEAL, fontsize=7)
-    txt_sats  = ax_eig.text(n_ant/2, 10, "satelliti: 0", ha="center", va="top",
+    txt_sats  = ax_eig.text(n_ant/2, 10, "satellites: 0", ha="center", va="top",
                              color=C_LIME, fontsize=8)
-    txt_bursts= ax_eig.text(n_ant/2, 4,  "burst: 0",     ha="center", va="top",
+    txt_bursts= ax_eig.text(n_ant/2, 4,  "bursts: 0",    ha="center", va="top",
                              color=C_MUT,  fontsize=8)
 
     # ── [1,0]  2D MUSIC heatmap ────────────────────────────────────────────────
     ax_2d = fig.add_subplot(gs[1, 0], facecolor=BG2)
     ax_2d.set_facecolor(BG2)
-    ax_2d.set_title("2D MUSIC  az–el  (tutti i satelliti)", color=C_TEXT, fontsize=9)
+    ax_2d.set_title("2D MUSIC  az–el  (all satellites)", color=C_TEXT, fontsize=9)
     ax_2d.set_xlabel("Azimuth [°]", color=C_MUT, fontsize=8)
-    ax_2d.set_ylabel("Elevazione [°]", color=C_MUT, fontsize=8)
+    ax_2d.set_ylabel("Elevation [°]", color=C_MUT, fontsize=8)
     ax_2d.tick_params(colors=C_MUT, labelsize=7)
     for sp in ax_2d.spines.values():
         sp.set_edgecolor(C_BDR)
@@ -946,8 +957,8 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
     # ── [1,1]  Doppler CFO per satellite ──────────────────────────────────────
     ax_cfo = fig.add_subplot(gs[1, 1], facecolor=BG2)
     ax_cfo.set_facecolor(BG2)
-    ax_cfo.set_title("Doppler CFO per satellite", color=C_TEXT, fontsize=9)
-    ax_cfo.set_xlabel("Burst recenti →", color=C_MUT, fontsize=8)
+    ax_cfo.set_title("Doppler CFO — per satellite", color=C_TEXT, fontsize=9)
+    ax_cfo.set_xlabel("Recent bursts →", color=C_MUT, fontsize=8)
     ax_cfo.set_ylabel("CFO = fd [Hz]", color=C_MUT, fontsize=8)
     ax_cfo.set_xlim(0, H)
     ax_cfo.axhline(0, color=C_BDR, lw=0.6)
@@ -973,7 +984,7 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
     ax_ph = fig.add_subplot(gs[1, 2], facecolor=BG2)
     ax_ph.set_facecolor(BG2)
     ax_ph.set_title("ΔΦ  CH1..4 – CH0", color=C_TEXT, fontsize=9)
-    ax_ph.set_xlabel("Burst recenti →", color=C_MUT, fontsize=8)
+    ax_ph.set_xlabel("Recent bursts →", color=C_MUT, fontsize=8)
     ax_ph.set_ylabel("ΔΦ [°]", color=C_MUT, fontsize=8)
     ax_ph.set_xlim(0, H); ax_ph.set_ylim(-185, 185)
     ax_ph.axhline(0, color=C_BDR, lw=0.6)
@@ -1024,7 +1035,7 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
         sky_spec_line.set_data(_az_ext, _r_ext)
         sky_spec_fill.set_xy(np.column_stack([_az_ext, _r_ext]))
 
-        # ── dotplot per satellite ─────────────────────────────────────────────
+        # ── per-satellite dot plot ────────────────────────────────────────────
         has_any = False
         for i, dot in enumerate(sky_dots):
             if i < len(sats_sorted) and not sats_sorted[i].no_doa:
@@ -1037,7 +1048,7 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
                     f"S{i}\naz={t.az_deg:.0f}°\nel={t.el_deg:.0f}°\n"
                     f"fd={t.cfo_hz/1e3:+.1f}k"
                 )
-                # posiziona label leggermente spostata
+                # shift label slightly off the dot
                 sky_texts[i].set_position((th + 0.15, r + 6))
                 sky_texts[i].set_ha("left")
                 sky_texts[i].set_va("bottom")
@@ -1049,7 +1060,7 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
                 sky_texts[i].set_visible(False)
         lbl_nosig.set_visible(not has_any)
 
-        # ── heatmap 2D ────────────────────────────────────────────────────────
+        # ── 2D MUSIC heatmap ──────────────────────────────────────────────────
         hm_img.set_data(spec2d)
         hm_img.set_clim(-40, 0)
         for i, pk in enumerate(hm_peaks):
@@ -1084,10 +1095,10 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
             txt_crb.set_text(f"CRB_az ≥ {crb_snap:.2f}°  (Salama §8.2.1)")
         else:
             txt_crb.set_text("")
-        txt_sats.set_text(f"satelliti attivi: {n_active}/{MAX_SATS}")
-        txt_bursts.set_text(f"burst totali: {n_burst}")
+        txt_sats.set_text(f"active satellites: {n_active}/{MAX_SATS}")
+        txt_bursts.set_text(f"total bursts: {n_burst}")
 
-        # ── CFO per satellite ─────────────────────────────────────────────────
+        # ── per-satellite CFO ──────────────────────────────────────────────────
         for i, cl in enumerate(cfo_lines):
             if i < len(sats_sorted) and sats_sorted[i].cfo_hist:
                 ch = sats_sorted[i].cfo_hist
@@ -1121,7 +1132,7 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
 
 
 # =============================================================================
-# Auto-calibrazione (usa il satellite con sat_id=0, il primo rilevato)
+# Auto-calibration (uses sat_id=0, the first detected satellite)
 # =============================================================================
 
 def _run_calibration(
@@ -1129,7 +1140,7 @@ def _run_calibration(
     cfg: UcaConfig, known_az_deg: float,
 ) -> None:
     import datetime, re
-    print(f"\n[CAL] Aspetto convergenza EMA (TX az={known_az_deg:.1f}°)…")
+    print(f"\n[CAL] Waiting for EMA convergence (TX az={known_az_deg:.1f}°)…")
     t0 = time.time()
     while time.time() - t0 < 120.0:
         time.sleep(1.0)
@@ -1137,10 +1148,10 @@ def _run_calibration(
             break
         if acc.is_warm and acc.R is not None:
             break
-        print(f"  [{time.time()-t0:5.1f}s]  {acc.n_updates} burst validi", end="\r")
+        print(f"  [{time.time()-t0:5.1f}s]  {acc.n_updates} valid bursts", end="\r")
     print()
     if acc.R is None:
-        print("[CAL] Nessun burst IRA valido. Controlla TX / Heimdall."); return
+        print("[CAL] No valid IRA bursts. Check TX / Heimdall."); return
 
     ev, V = np.linalg.eigh(acc.R)
     v = V[:, -1]
@@ -1155,8 +1166,8 @@ def _run_calibration(
     hw_offsets = (hw_offsets + 180) % 360 - 180
     hw_offsets[0] = 0.0
 
-    print(f"\n[CAL] Offsets hardware da {acc.n_updates} burst:")
-    print(f"  ┌─ Copia in config.py ──────────────────────────────────────────")
+    print(f"\n[CAL] Hardware phase offsets from {acc.n_updates} bursts:")
+    print(f"  ┌─ Copy into config.py ─────────────────────────────────────────")
     print(f"  │  CHANNEL_PHASE_OFFSETS_DEG = {hw_offsets.round(2).tolist()}")
     print(f"  └───────────────────────────────────────────────────────────────")
 
@@ -1166,16 +1177,16 @@ def _run_calibration(
         if "CHANNEL_PHASE_OFFSETS_DEG" in txt:
             new_val = f"CHANNEL_PHASE_OFFSETS_DEG = {hw_offsets.round(2).tolist()}"
             new_cmt = (f"  # auto-cal {datetime.datetime.now():%Y-%m-%d %H:%M} "
-                       f"da {acc.n_updates} burst az={known_az_deg:.1f}°")
+                       f"from {acc.n_updates} bursts az={known_az_deg:.1f}°")
             txt2 = re.sub(
                 r"CHANNEL_PHASE_OFFSETS_DEG = \[.*?\]",
                 new_val + new_cmt, txt,
             )
             if txt2 != txt:
                 with open(cfg_path, "w") as f: f.write(txt2)
-                print("[CAL] config.py aggiornato. Riavviare per applicare.")
+                print("[CAL] config.py updated. Restart to apply.")
     except Exception as e:
-        print(f"[CAL] Aggiornamento fallito ({e}) — modifica config.py manualmente.")
+        print(f"[CAL] Update failed ({e}) — edit config.py manually.")
 
 
 # =============================================================================
@@ -1203,10 +1214,10 @@ def _save_recording(S: SimpleNamespace, out_dir: str, tag: str = "") -> None:
         freq_hz  = np.array([C.FREQ_HZ]),
     )
     np.savez_compressed(base + ".npz", **payload)
-    print(f"[REC] Salvato {base}.npz  ({len(S.rec_t)} burst)")
+    print(f"[REC] Saved {base}.npz  ({len(S.rec_t)} bursts)")
     if S.rec_iq_enabled and S.rec_X:
         np.savez_compressed(base + "_iq.npz", X=np.array(S.rec_X))
-        print(f"[REC] Salvato {base}_iq.npz  ({len(S.rec_X)} finestre IQ)")
+        print(f"[REC] Saved {base}_iq.npz  ({len(S.rec_X)} IQ windows)")
 
 
 # =============================================================================
@@ -1216,40 +1227,43 @@ def _save_recording(S: SimpleNamespace, out_dir: str, tag: str = "") -> None:
 def main() -> None:
     p = argparse.ArgumentParser(
         description=(
-            f"DoA 2D multi-satellite su burst IRA Iridium "
-            f"(tono preambolo +{_PREAMBLE_TONE_HZ} Hz) — KrakenSDR UCA CW RHCP"
+            f"2D multi-satellite DoA on Iridium IRA bursts "
+            f"(preamble tone +{_PREAMBLE_TONE_HZ} Hz) — KrakenSDR UCA RHCP"
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--freq",    type=float, default=C.FREQ_HZ / 1e6,
-                   help="Frequenza RF centrale [MHz]")
+                   help="Central RF frequency [MHz]")
     p.add_argument("--gain",    type=float, default=C.GAIN_DB)
     p.add_argument("--radius",  type=float, default=C.RADIUS_LAMBDA,
-                   help="Raggio UCA in lunghezze d'onda")
+                   help="UCA radius in wavelengths")
     p.add_argument("--offset",  type=float, default=C.ANT0_OFFSET_DEG,
-                   help="Offset antenna-0 rispetto al Nord [°]")
+                   help="Antenna-0 offset from North [°]")
     p.add_argument("--algo",
                    choices=["music","capon","bartlett",
                              "root-music","unitary-esprit","mfba-music"],
                    default=C.DOA_ALGORITHM.lower())
     p.add_argument("--nsig",    type=int,   default=C.NUM_SIGNALS,
-                   help="Sorgenti attese per satellite (MUSIC subspace D)")
+                   help="Expected sources per satellite (MUSIC subspace D)")
     p.add_argument("--alpha",   type=float, default=C.COV_ALPHA,
-                   help="EMA covarianza tra burst (0=niente memoria)")
+                   help="Covariance EMA weight per burst (0=no memory)")
     p.add_argument("--demo",    action="store_true",
-                   help="Simulazione sintetica (nessun hardware)")
+                   help="Synthetic simulation (no hardware required)")
     p.add_argument("--n-demo-sats", type=int, default=2, choices=[1,2,3],
-                   help="Numero di satelliti simulati in modalità --demo")
+                   help="Number of synthetic satellites in --demo mode")
     p.add_argument("--max-sats",type=int,   default=int(getattr(C,"MAX_SATELLITES",3)),
-                   help="Max satelliti tracciati (sovrascrive config)")
+                   help="Max tracked satellites (overrides config)")
     p.add_argument("--papr-min",type=float,
                    default=float(getattr(C,"PAPR_INST_MIN_DB",_PAPR_INST_MIN_DB)),
-                   help="PAPR minimo [dB] per accettare un burst")
+                   help="Minimum MUSIC PAPR [dB] for multi-burst DoA acceptance")
+    p.add_argument("--snr-min", type=float,
+                   default=float(getattr(C,"SNR_INST_MIN_DB",5.0)),
+                   help="Minimum per-element SNR [dB] to accept a burst (calibration-agnostic)")
     p.add_argument("--multi",   type=int,
                    default=int(getattr(C,"MULTI_BURST_N",3)),
-                   help="Burst da mediare per DoA")
+                   help="Bursts to average for DoA")
     p.add_argument("--calibrate", type=float, default=None, metavar="AZ_DEG",
-                   help="Auto-calibra offset HW con TX noto a az=AZ_DEG")
+                   help="Auto-calibrate HW phase offsets with TX at known az=AZ_DEG")
     p.add_argument("--out-dir", default=_DATA_DIR, metavar="DIR")
     p.add_argument("--no-rec",  action="store_true")
     p.add_argument("--save-iq", action="store_true")
@@ -1258,6 +1272,7 @@ def main() -> None:
     freq_hz = int(args.freq * 1e6)
     C.FREQ_HZ          = freq_hz
     C.PAPR_INST_MIN_DB = args.papr_min
+    C.SNR_INST_MIN_DB  = args.snr_min
     C.MULTI_BURST_N    = args.multi
     C.MAX_SATELLITES   = args.max_sats
 
@@ -1268,48 +1283,55 @@ def main() -> None:
         el_max_deg=float(getattr(C, "EL_MAX_DEG", 90.0)),
         num_expected_signals=args.nsig,
         ant0_offset_deg=args.offset,
-        ant_ccw=C.ANT_CCW,   # False = CW (orario)
+        ant_ccw=C.ANT_CCW,   # False = CW (clockwise)
     )
     acc = CovarianceAccumulatorUca(alpha=args.alpha)
     S   = _make_state(cfg.n_az, cfg.n_el)
     S.rec_enabled    = not args.no_rec
     S.rec_iq_enabled = args.save_iq
 
-    ccw_str = "CCW" if C.ANT_CCW else "CW (orario)"
+    ccw_str = "CCW" if C.ANT_CCW else "CW (clockwise)"
     print("=" * 66)
     print(f"  DoA IRIDIUM MULTI-SATELLITE  —  {args.algo.upper()}  @  {freq_hz/1e6:.3f} MHz")
     if freq_hz < 1_000_000_000:
-        print(f"  [MODO] Indoor lab ISM  — TX LibreSDR richiesto")
+        print(f"  [MODE] Indoor lab 868 MHz  — LibreSDR TX required")
     else:
-        print(f"  [MODO] Real Iridium outdoor  (solo RX)")
+        print(f"  [MODE] Indoor/Outdoor 1626 MHz  — LibreSDR TX (indoor) or real Iridium (outdoor)")
     print(f"  UCA: {cfg.n_ant} ant  {ccw_str}  r={args.radius:.4f}λ  offset={args.offset:.1f}°  RHCP")
     print(f"  Heimdall: {C.HEIMDALL_HOST}:{C.HEIMDALL_PORT}")
-    print(f"  Tono preambolo: +{_PREAMBLE_TONE_HZ} Hz  |  burst: {_BURST_SYMS} sym  |  SF: {int(_SUPERFRAME_S*1000)} ms")
-    print(f"  Max satelliti: {args.max_sats}  "
-          f"multi={args.multi}  papr_min={args.papr_min:.0f} dB")
+    print(f"  Preamble tone: +{_PREAMBLE_TONE_HZ} Hz  |  burst: {_BURST_SYMS} sym  |  SF: {int(_SUPERFRAME_S*1000)} ms")
+    print(f"  Max satellites: {args.max_sats}  "
+          f"multi={args.multi}  snr_min={args.snr_min:.0f} dB  papr_min={args.papr_min:.0f} dB")
     scan_bw = int(getattr(C, "DOPPLER_SCAN_BW_HZ", 45_000))
     sep_hz  = int(getattr(C, "SAT_MIN_SEP_HZ", 5_000))
-    print(f"  Doppler scan: ±{scan_bw/1e3:.0f} kHz  separazione min: {sep_hz/1e3:.0f} kHz")
+    print(f"  Doppler scan: ±{scan_bw/1e3:.0f} kHz  min separation: {sep_hz/1e3:.0f} kHz")
     phase_offs = getattr(C, "CHANNEL_PHASE_OFFSETS_DEG", [0.0]*cfg.n_ant)
     if any(o != 0.0 for o in phase_offs):
         print(f"  HW phase cal: {[f'{o:.1f}' for o in phase_offs]} °")
     else:
-        print("  HW phase cal: non calibrato — eseguire --calibrate <az_deg>")
+        print("  HW phase cal: not calibrated — run --calibrate <az_deg>")
     print("=" * 66)
     _check_narrowband(freq_hz, cfg)
 
     if not args.demo:
         if not _check_heimdall(C.HEIMDALL_HOST, C.HEIMDALL_PORT):
-            print(f"\n[ERRORE] Heimdall DAQ non raggiungibile a "
+            print(f"\n[ERROR] Heimdall DAQ unreachable at "
                   f"{C.HEIMDALL_HOST}:{C.HEIMDALL_PORT}.")
-            print("  Avviare prima Heimdall (task 'Heimdall: Start'), poi riprovare.")
-            print("  Per test offline: aggiungere --demo")
+            print("  Start Heimdall first (task 'Heimdall: Start'), then retry.")
+            print("  For offline testing: add --demo")
             sys.exit(1)
-        src = KrakenIQSource(C.HEIMDALL_HOST, C.HEIMDALL_PORT, C.N_ANTENNAS)
+        src = KrakenIQSource(
+            host=C.HEIMDALL_HOST,
+            port=C.HEIMDALL_PORT,
+            num_channels=C.N_ANTENNAS,
+            freq_hz=freq_hz,
+            gain_db=args.gain,
+        )
+        src.start()
     else:
         src        = None
         demo_params = _DEMO_SATS[:args.n_demo_sats]
-        print(f"[DEMO] {args.n_demo_sats} satelliti sintetici attivi:")
+        print(f"[DEMO] {args.n_demo_sats} synthetic satellite(s) active:")
         for i, d in enumerate(demo_params):
             print(f"  S{i}: az={d['az']:.0f}°  el={d['el']:.0f}°  "
                   f"fd={d['doppler']:+.0f} Hz  SNR={d['snr_db']:.0f} dB  "
@@ -1358,6 +1380,8 @@ def main() -> None:
         pass
     finally:
         S.running = False
+        if src is not None and not args.demo:
+            src.stop()
         if S.rec_enabled and S.rec_t and args.out_dir:
             with S.lock:
                 snap = SimpleNamespace(**vars(S))

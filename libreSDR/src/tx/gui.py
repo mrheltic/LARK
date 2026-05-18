@@ -62,9 +62,11 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import Button
 
 # ── path setup so we can import from the libreSDR package ────────────────────
-_SRC = os.path.dirname(os.path.abspath(__file__))
+_SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # libreSDR/src
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
+
+from hw.ad9363 import Ad9363
 
 # ── Real Iridium parameters (from iridium/realistic_sim.py) ──────────────────
 # realistic_sim.py now defers its matplotlib import, so importing here is safe.
@@ -90,7 +92,7 @@ _IRA_UPS  = 4   # TX_SAMPLE_RATE // IRA_SAMPLE_RATE
 _PREAMBLE_TONE_HZ = SYMBOL_RATE // 8  # = 3125 Hz
 
 # ── Defaults (overridden by CLI args) ────────────────────────────────────────
-DEFAULT_URI       = "ip:192.168.1.10"
+from hw.ad9363 import DEFAULT_URI
 DEFAULT_FREQ_HZ   = 868_100_000   # 868.1 MHz ISM
 TX_SAMPLE_RATE    = 1_000_000     # 1 MSPS (reliable over Ethernet/USB)
 TX_RF_BW          = 200_000       # 200 kHz
@@ -191,46 +193,24 @@ def _make_ira_buf(rrc: np.ndarray,
 # =============================================================================
 
 def _connect_sdr(uri: str):
-    try:
-        import adi
-    except ImportError:
-        print("[ERROR] pyadi-iio not installed:  pip install pyadi-iio")
-        sys.exit(1)
-    print(f"[SDR] Connecting to {uri} ...", end=" ", flush=True)
-    for attempt in range(3):
-        try:
-            sdr = adi.Pluto(uri)
-            try:
-                sdr.tx_destroy_buffer()
-            except Exception:
-                pass
-            print("OK")
-            return sdr
-        except OSError as exc:
-            if exc.errno == 16 and attempt < 2:
-                print(f"busy ({attempt+1}/3), retry in 3 s ...", end=" ", flush=True)
-                time.sleep(3)
-            else:
-                print(f"FAILED\n[ERROR] {exc}")
-                sys.exit(1)
-        except Exception as exc:
-            print(f"FAILED\n[ERROR] {exc}")
-            sys.exit(1)
+    """Connect using the shared hw.ad9363 API; return the raw adi.Pluto object."""
+    hw = Ad9363.connect(uri)
+    return hw._sdr
 
 
 def _configure_hw(sdr, freq_hz: int, tx_gain: float) -> None:
-    sdr.sample_rate           = int(TX_SAMPLE_RATE)
-    sdr.tx_rf_bandwidth       = int(TX_RF_BW)
-    sdr.rx_rf_bandwidth       = int(TX_RF_BW)
-    sdr.tx_lo                 = int(freq_hz)
-    sdr.rx_lo                 = int(freq_hz)
-    sdr.tx_hardwaregain_chan0 = float(tx_gain)
+    sdr.sample_rate             = int(TX_SAMPLE_RATE)
+    sdr.tx_rf_bandwidth         = int(TX_RF_BW)
+    sdr.rx_rf_bandwidth         = int(TX_RF_BW)
+    sdr.tx_lo                   = int(freq_hz)
+    sdr.rx_lo                   = int(freq_hz)
+    sdr.tx_hardwaregain_chan0   = float(tx_gain)
     sdr.gain_control_mode_chan0 = RX_GAIN_MODE
     if RX_GAIN_MODE == "manual":
         sdr.rx_hardwaregain_chan0 = float(RX_GAIN_DB)
-    sdr.rx_buffer_size        = int(RX_BUF_SIZE)
+    sdr.rx_buffer_size          = int(RX_BUF_SIZE)
     try:
-        sdr.tx_cyclic_buffer  = False
+        sdr.tx_cyclic_buffer = False
     except Exception:
         pass
 
