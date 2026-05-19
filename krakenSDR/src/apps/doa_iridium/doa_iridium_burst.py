@@ -1189,6 +1189,14 @@ def _run_calibration(
     cfg: UcaConfig, known_az_deg: float,
 ) -> None:
     import datetime, re
+    # Show existing offsets so the user knows whether calibration is cumulative.
+    _existing_now = list(getattr(C, "CHANNEL_PHASE_OFFSETS_DEG", [0.0] * cfg.n_ant))
+    _existing_now = (_existing_now + [0.0] * cfg.n_ant)[:cfg.n_ant]
+    _has_existing = any(o != 0.0 for o in _existing_now)
+    if _has_existing:
+        print(f"\n[CAL] NOTE: existing offsets will be COMPOSED with the new residual:")
+        print(f"[CAL]   existing = {np.round(_existing_now, 2).tolist()}")
+        print(f"[CAL]   total = existing + residual  (correct from raw data)")
     print(f"\n[CAL] Collecting bursts for {_CAL_DURATION_S:.0f} s  (TX az={known_az_deg:.1f}°)")
     print( "[CAL] Do NOT move the TX or the array during calibration.")
     t0 = time.time()
@@ -1234,10 +1242,28 @@ def _run_calibration(
     hw_offsets = (hw_offsets + 180) % 360 - 180
     hw_offsets[0] = 0.0
 
+    # ── Compose with the offsets that were active during data collection ──────
+    # If the program was already running with a previous calibration, X_cal was
+    # pre-corrected with those offsets before being fed to acc.update().  The
+    # eigenvector therefore encodes only the RESIDUAL hardware error on top of
+    # the existing correction.  We must ADD the existing offsets to obtain the
+    # total correction that works from raw (uncorrected) X_bpf.
+    #
+    #   total[k] = existing[k] + hw_residual[k]
+    #
+    # When calibrating from scratch (existing = [0,0,...,0]) this is a no-op.
+    existing = list(getattr(C, "CHANNEL_PHASE_OFFSETS_DEG", [0.0] * cfg.n_ant))
+    existing = (existing + [0.0] * cfg.n_ant)[:cfg.n_ant]
+    total_offsets = hw_offsets + np.array(existing, dtype=float)
+    total_offsets = (total_offsets + 180) % 360 - 180
+    total_offsets[0] = 0.0
+
     print(f"\n[CAL] Hardware phase offsets from {acc.n_updates} burst-avgd matrices "
           f"(simple avg over {n_sum} snapshots):")
     print(f"  ┌─ Written to config.py automatically ──────────────────────────")
-    print(f"  │  CHANNEL_PHASE_OFFSETS_DEG = {hw_offsets.round(2).tolist()}")
+    print(f"  │  residual  = {hw_offsets.round(2).tolist()}")
+    print(f"  │  existing  = {np.array(existing).round(2).tolist()}")
+    print(f"  │  CHANNEL_PHASE_OFFSETS_DEG = {total_offsets.round(2).tolist()}")
     print(f"  └───────────────────────────────────────────────────────────────")
     print(f"[CAL] These offsets are PERMANENT — they survive restarts.")
     print(f"[CAL] Re-run calibration only if you change cables or the AD9363.")
@@ -1246,11 +1272,13 @@ def _run_calibration(
     try:
         with open(cfg_path) as f: txt = f.read()
         if "CHANNEL_PHASE_OFFSETS_DEG" in txt:
-            new_val = f"CHANNEL_PHASE_OFFSETS_DEG = {hw_offsets.round(2).tolist()}"
+            new_val = f"CHANNEL_PHASE_OFFSETS_DEG = {total_offsets.round(2).tolist()}"
             new_cmt = (f"  # auto-cal {datetime.datetime.now():%Y-%m-%d %H:%M} "
                        f"from {acc.n_updates} bursts ({n_sum} snapshots) az={known_az_deg:.1f}°")
+            # Match the list and any trailing comment on the same line so that
+            # successive calibration runs do not accumulate old comments.
             txt2 = re.sub(
-                r"CHANNEL_PHASE_OFFSETS_DEG = \[.*?\]",
+                r"CHANNEL_PHASE_OFFSETS_DEG = \[.*?\].*",
                 new_val + new_cmt, txt,
             )
             if txt2 != txt:

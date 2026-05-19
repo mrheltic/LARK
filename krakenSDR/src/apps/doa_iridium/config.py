@@ -190,7 +190,7 @@ EL_SMOOTH_ALPHA = 0.50
 # Iridium passes change elevation at ≈ 0.5–2°/s → 0.50 tracks well.
 
 # ── Hardware phase calibration ────────────────────────────────────────────────
-CHANNEL_PHASE_OFFSETS_DEG = [0.0, -78.03, 78.97, 97.16, -118.68]  # auto-cal 2026-05-19 10:45 from 4 bursts az=0.0°
+CHANNEL_PHASE_OFFSETS_DEG = [0.0, 24.71, -86.64, 8.72, -3.4]  # auto-cal 2026-05-19 11:33 from 1389 bursts (118 snapshots) az=0.0°
 # Per-channel phase offset [°], channel 0 is the reference (always 0.0).
 # Run --calibrate <az_deg> with TX at a known azimuth to compute automatically.
 # Example (TX at North = 0°): python3 doa_iridium_burst.py --calibrate 0.0
