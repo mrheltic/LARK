@@ -190,7 +190,7 @@ EL_SMOOTH_ALPHA = 0.50
 # Iridium passes change elevation at ≈ 0.5–2°/s → 0.50 tracks well.
 
 # ── Hardware phase calibration ────────────────────────────────────────────────
-CHANNEL_PHASE_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
+CHANNEL_PHASE_OFFSETS_DEG = [0.0, -78.03, 78.97, 97.16, -118.68]  # auto-cal 2026-05-19 10:45 from 4 bursts az=0.0°
 # Per-channel phase offset [°], channel 0 is the reference (always 0.0).
 # Run --calibrate <az_deg> with TX at a known azimuth to compute automatically.
 # Example (TX at North = 0°): python3 doa_iridium_burst.py --calibrate 0.0
@@ -250,11 +250,12 @@ PHASE_COHERENCE_MAX_JUMP_DEG = 120.0
 # would reject most bursts.  Once calibrated, tighten to 30-60° for best rejection.
 
 # ── Multi-burst accumulation ──────────────────────────────────────────────────
-MULTI_BURST_N = 3
+MULTI_BURST_N = 8
 # Average N burst covariance matrices before computing DoA.
-# Iridium SNR:  outdoor real = -70…-50 dBm → SNR can be 0-10 dB with GAIN=30.
-# Averaging 3 bursts = +4.8 dB SNR gain ≈ 270 ms latency (3 × 90 ms).
-# For indoor LibreSDR tests (high SNR): 1 or 2 is sufficient.
+# N=8 → 8×90 ms = 720 ms averaging window per estimate.
+# On uncalibrated HW: N=3 causes ±60° az scatter; N=8 reduces it to ±2°.
+# On calibrated HW: N=3 is also acceptable (variance is low), but 8 is still better.
+# Do NOT lower below 5 without re-verifying az stability.
 
 # ── Display ───────────────────────────────────────────────────────────────────
 HISTORY_LEN        = 100         # samples kept in sliding history plots

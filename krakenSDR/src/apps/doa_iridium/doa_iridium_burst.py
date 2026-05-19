@@ -1176,25 +1176,52 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
 # Auto-calibration (uses sat_id=0, the first detected satellite)
 # =============================================================================
 
+_CAL_DURATION_S  = 120.0   # total collection window
+_CAL_MIN_UPDATES = 30      # minimum acc.update() calls before accepting result
+# With MULTI_BURST_N=8 and ~11 accepted bursts/s → ~1.4 acc.update/s
+# → _CAL_MIN_UPDATES=30 reached in ~22 s; the remaining 98 s improve the estimate.
+# COV_ALPHA=0.50 → is_warm after just 4 updates (tau=2).  We intentionally
+# ignore is_warm and always collect the full window so the eigenvector
+# estimate averages over many burst preambles instead of just 4.
+
 def _run_calibration(
     acc: CovarianceAccumulatorUca, S: SimpleNamespace,
     cfg: UcaConfig, known_az_deg: float,
 ) -> None:
     import datetime, re
-    print(f"\n[CAL] Waiting for EMA convergence (TX az={known_az_deg:.1f}°)…")
+    print(f"\n[CAL] Collecting bursts for {_CAL_DURATION_S:.0f} s  (TX az={known_az_deg:.1f}°)")
+    print( "[CAL] Do NOT move the TX or the array during calibration.")
     t0 = time.time()
-    while time.time() - t0 < 120.0:
+    # Simple running sum of EMA snapshots — equal weight to every second
+    # regardless of COV_ALPHA.  Averaging N snapshots reduces eigenvector
+    # variance by √N even when each snapshot has the same EMA memory.
+    R_sum: np.ndarray | None = None
+    n_sum   = 0
+    prev_n  = 0
+    while time.time() - t0 < _CAL_DURATION_S:
         time.sleep(1.0)
         if not S.running:
             break
-        if acc.is_warm and acc.R is not None:
-            break
-        print(f"  [{time.time()-t0:5.1f}s]  {acc.n_updates} valid bursts", end="\r")
+        cur_n = acc.n_updates
+        if cur_n > prev_n and acc.R is not None:
+            if R_sum is None:
+                R_sum = acc.R.copy()
+            else:
+                R_sum = R_sum + acc.R
+            n_sum  += 1
+            prev_n  = cur_n
+        elapsed = time.time() - t0
+        pct = min(100, int(elapsed / _CAL_DURATION_S * 100))
+        print(f"\r  [{elapsed:5.1f}s / {_CAL_DURATION_S:.0f}s]  "
+              f"{acc.n_updates} burst-avgd R matrices  [{pct:3d}%]",
+              end="", flush=True)
     print()
-    if acc.R is None:
-        print("[CAL] No valid IRA bursts. Check TX / Heimdall."); return
+    if R_sum is None or acc.n_updates < _CAL_MIN_UPDATES:
+        print(f"[CAL] Only {acc.n_updates} valid bursts (need {_CAL_MIN_UPDATES}). "
+              f"Check TX / Heimdall."); return
 
-    ev, V = np.linalg.eigh(acc.R)
+    R_cal = R_sum / n_sum   # time-averaged covariance
+    ev, V = np.linalg.eigh(R_cal)
     v = V[:, -1]
     v = v * np.exp(-1j * np.angle(v[0]))
 
@@ -1207,10 +1234,13 @@ def _run_calibration(
     hw_offsets = (hw_offsets + 180) % 360 - 180
     hw_offsets[0] = 0.0
 
-    print(f"\n[CAL] Hardware phase offsets from {acc.n_updates} bursts:")
-    print(f"  ┌─ Copy into config.py ─────────────────────────────────────────")
+    print(f"\n[CAL] Hardware phase offsets from {acc.n_updates} burst-avgd matrices "
+          f"(simple avg over {n_sum} snapshots):")
+    print(f"  ┌─ Written to config.py automatically ──────────────────────────")
     print(f"  │  CHANNEL_PHASE_OFFSETS_DEG = {hw_offsets.round(2).tolist()}")
     print(f"  └───────────────────────────────────────────────────────────────")
+    print(f"[CAL] These offsets are PERMANENT — they survive restarts.")
+    print(f"[CAL] Re-run calibration only if you change cables or the AD9363.")
 
     cfg_path = os.path.join(_HERE, "config.py")
     try:
@@ -1218,14 +1248,16 @@ def _run_calibration(
         if "CHANNEL_PHASE_OFFSETS_DEG" in txt:
             new_val = f"CHANNEL_PHASE_OFFSETS_DEG = {hw_offsets.round(2).tolist()}"
             new_cmt = (f"  # auto-cal {datetime.datetime.now():%Y-%m-%d %H:%M} "
-                       f"from {acc.n_updates} bursts az={known_az_deg:.1f}°")
+                       f"from {acc.n_updates} bursts ({n_sum} snapshots) az={known_az_deg:.1f}°")
             txt2 = re.sub(
                 r"CHANNEL_PHASE_OFFSETS_DEG = \[.*?\]",
                 new_val + new_cmt, txt,
             )
             if txt2 != txt:
                 with open(cfg_path, "w") as f: f.write(txt2)
-                print("[CAL] config.py updated. Restart to apply.")
+                print("[CAL] config.py updated. Restart DoA to apply.")
+            else:
+                print("[CAL] config.py unchanged (offsets identical).")
     except Exception as e:
         print(f"[CAL] Update failed ({e}) — edit config.py manually.")
 
