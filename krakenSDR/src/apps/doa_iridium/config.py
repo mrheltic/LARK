@@ -133,10 +133,16 @@ NUM_SIGNALS = 1
 # e decorr='fb' l'algoritmo è robusto anche con piccolo multipath residuo.
 
 # ── Multi-satellite detection ─────────────────────────────────────────────────
-MAX_SATELLITES = 3
+MAX_SATELLITES = 1
 # Numero massimo di satelliti tracciati contemporaneamente.
 # In vista di Iridium (1626 MHz) ci sono tipicamente 1–3 satelliti sopra l'orizzonte.
-# Riduci a 1 per test indoor con un solo TX LibreSDR.
+# Riduci a 1 per test indoor con un solo TX LibreSDR.  ← ATTUALE: indoor single-TX.
+
+MULTI_BURST_N = 8
+# Numero di burst covariance matrix da mediare per ogni stima DoA.
+# Default 3 → scatter ±60° su HW non calibrato.
+# Valore 8 → media su 8 × 90 ms = 720 ms → varianza molto più bassa, scatter < 20°.
+# Aumenta ulteriormente (es. 12) se l'az è ancora instabile.
 
 DOPPLER_SCAN_BW_HZ = 45_000
 # Semi-ampiezza della scansione FFT intorno al tono nominale (fc + 3125 Hz) [Hz].

@@ -42,6 +42,32 @@ _DDS_NAMES = [
 ]
 
 
+def _release_tx_buffer(sdr) -> None:
+    """Reliably release the iiod DMA TX buffer even after an interrupted push.
+
+    pyadi-iio's tx_destroy_buffer() calls _txbuf.cancel() and only runs
+    ``del _txbuf`` if cancel() succeeds.  When sdr.tx() is interrupted
+    mid-push (e.g. by Ctrl+C), cancel() may raise an OSError, leaving
+    ``_txbuf`` alive on the adi.Pluto object and the DMA slot locked in iiod.
+
+    This function first calls tx_destroy_buffer(), then unconditionally
+    deletes _txbuf regardless of whether cancel() raised.  Deleting the
+    Python buffer object triggers iio_buffer_destroy() via __del__, which
+    always releases the DMA slot on the device side.
+    """
+    try:
+        sdr.tx_destroy_buffer()
+    except Exception:
+        pass
+    # Belt-and-suspenders: force-delete the buffer object even if
+    # tx_destroy_buffer() bailed out before reaching ``del self._txbuf``.
+    try:
+        if hasattr(sdr, "_txbuf"):
+            del sdr._txbuf
+    except Exception:
+        pass
+
+
 class Ad9363:
     """
     Context-manager wrapper for a LibreSDR / AD9363 (pyadi-iio).
@@ -444,16 +470,26 @@ class Ad9363:
                         pct = int(i / n_chunks * 100)
                         print(f"\r  [{pct:3d}%] chunk {i+1}/{n_chunks}",
                               end="", flush=True)
-                    sdr.tx(chunk)
+                    try:
+                        sdr.tx(chunk)
+                    except OSError as exc:
+                        if exc.errno == 16:  # EBUSY — stale DMA buffer from a previous crashed run
+                            print(
+                                "\n\n  [ERROR] iiod DMA buffer busy (EBUSY).\n"
+                                "  A previous TX run crashed and left the buffer locked.\n"
+                                "  Fix: restart iiod on the LibreSDR with:\n"
+                                "    sshpass -p analog ssh root@192.168.1.10 "
+                                "\"killall -9 iiod; sleep 2; iiod -D &\"\n"
+                                "  Then re-run this script.",
+                                flush=True,
+                            )
+                        raise
                 if not loop:
                     break
         except KeyboardInterrupt:
             print("\n  Stop requested.")
         finally:
-            try:
-                sdr.tx_destroy_buffer()
-            except Exception:
-                pass
+            _release_tx_buffer(sdr)
         if n_chunks > 1:
             print()
         print("  TX streaming complete.")
@@ -464,7 +500,4 @@ class Ad9363:
         return self
 
     def __exit__(self, *_) -> None:
-        try:
-            self._sdr.tx_destroy_buffer()
-        except Exception:
-            pass
+        _release_tx_buffer(self._sdr)
