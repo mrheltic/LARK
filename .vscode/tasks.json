@@ -538,7 +538,31 @@
                 "background": {
                     "activeOnStart": true,
                     "beginsPattern": "LibreSDR — INDOOR 1626",
-                    "endsPattern": "TX active|Stop requested|Done\\."
+                    "endsPattern": "Cyclic TX active|TX streaming complete|Done\\."
+                }
+            }
+        },
+        {
+            "label": "LibreSDR: Satellite pass sim — 1626.270 MHz (Doppler chirp)",
+            "detail": "Simulates a full Iridium LEO pass (Doppler chirp ±40 kHz, cos² amplitude envelope, IRA bursts every 90 ms). Uses chunked streaming — no 1s DMA truncation. Loops the 120 s pass until Ctrl+C. Requires wired connection or near-field setup.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx/pass_sim.py --freq 1626270000 --gain -40 --elev 60 --dur 120 --cyclic",
+            "options": {
+                "cwd": "${workspaceFolder}/libreSDR/src"
+            },
+            "group": "test",
+            "isBackground": true,
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": false
+            },
+            "problemMatcher": {
+                "pattern": { "regexp": "^(.*)$", "message": 1 },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "LibreSDR — Simulated Iridium",
+                    "endsPattern": "TX streaming complete|Done\\."
                 }
             }
         },

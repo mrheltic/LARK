@@ -340,14 +340,14 @@ def transmit_pass(
     with Ad9363.connect(uri) as sdr:
         sdr.configure_tx(freq_hz, gain_db)
         print()
-        if cyclic:
-            sdr.transmit_cyclic(iq_tx)
-        else:
-            print("  Transmitting (one-shot, full pass) ...")
-            import time as _time
-            t0 = _time.time()
-            sdr.transmit_once(iq_tx)
-            print(f"  Completed in {(_time.time() - t0):.1f} s")
+        # transmit_streaming() splits the buffer into HW_BUF_MAX-sample
+        # chunks and sends them sequentially (non-cyclic DMA).  This is the
+        # only reliable way to transmit a full LEO pass (60 s = 60 M samples
+        # @ 1 MSPS, far exceeding the 2^20 DMA limit of transmit_cyclic).
+        # loop=cyclic repeats the full pass buffer from the beginning each
+        # time, so the complete Doppler chirp envelope plays back on every
+        # cycle rather than only the first 1 s (old cyclic behaviour).
+        sdr.transmit_streaming(iq_tx, loop=cyclic)
 
     print("Done.")
 

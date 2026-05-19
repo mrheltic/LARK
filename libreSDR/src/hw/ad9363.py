@@ -392,6 +392,72 @@ class Ad9363:
         peak = float(np.max(np.abs(samples))) + 1e-12
         return (samples / peak * full_scale * 2**14).astype(np.complex64)
 
+    def transmit_streaming(
+        self,
+        samples: np.ndarray,
+        chunk_size: int = HW_BUF_MAX,
+        loop: bool = False,
+    ) -> None:
+        """
+        Stream a large IQ buffer to the DAC in sequential non-cyclic chunks.
+
+        Unlike transmit_cyclic(), which requires the whole buffer to fit in
+        the IIO DMA window (≤ HW_BUF_MAX = 1 048 576 samples), this method
+        handles arbitrarily large buffers by splitting them into DMA-safe
+        chunks and sending them back-to-back via the non-cyclic DAC FIFO.
+
+        Typical use: simulated satellite passes (60 s @ 1 MSPS = 60 M samples).
+
+        When loop=True, the full buffer is repeated until Ctrl+C is pressed.
+        Each loop iteration re-transmits all chunks in order, so the full
+        Doppler/amplitude envelope of a simulated satellite pass plays back
+        from the beginning on every cycle.
+
+        Args:
+            samples:    Complex64 IQ array (arbitrary length).
+            chunk_size: DMA chunk size in samples (default HW_BUF_MAX ≈ 1 s).
+            loop:       If True, repeat the whole buffer until Ctrl+C.
+        """
+        sdr = self._sdr
+        sdr.tx_cyclic_buffer = False
+        n_total   = len(samples)
+        dur_s     = n_total / float(DEFAULT_SAMPLE_RATE)
+        chunks    = [samples[i : i + chunk_size]
+                     for i in range(0, n_total, chunk_size)]
+        n_chunks  = len(chunks)
+
+        if loop:
+            print(f"  Streaming {n_total} samples ({dur_s:.1f} s) "
+                  f"in {n_chunks} chunk(s), looping until Ctrl+C ...")
+        else:
+            print(f"  Streaming {n_total} samples ({dur_s:.1f} s) "
+                  f"in {n_chunks} chunk(s) ...")
+
+        pass_n = 0
+        try:
+            while True:
+                pass_n += 1
+                if loop and pass_n > 1:
+                    print(f"\n  [Pass {pass_n}]", end=" ", flush=True)
+                for i, chunk in enumerate(chunks):
+                    if n_chunks > 1:
+                        pct = int(i / n_chunks * 100)
+                        print(f"\r  [{pct:3d}%] chunk {i+1}/{n_chunks}",
+                              end="", flush=True)
+                    sdr.tx(chunk)
+                if not loop:
+                    break
+        except KeyboardInterrupt:
+            print("\n  Stop requested.")
+        finally:
+            try:
+                sdr.tx_destroy_buffer()
+            except Exception:
+                pass
+        if n_chunks > 1:
+            print()
+        print("  TX streaming complete.")
+
     # -- Context manager -----------------------------------------------------
 
     def __enter__(self) -> "Ad9363":

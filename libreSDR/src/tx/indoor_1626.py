@@ -10,11 +10,11 @@ is ILLEGAL in Italy (and most countries).
 
 Usage
 -----
-    python3 tx/indoor_1626.py --dry-run          # config check only
-    python3 tx/indoor_1626.py --gain -60         # one burst at 1626.270 MHz
-    python3 tx/indoor_1626.py --gain -60 --cyclic # continuous loop
-    python3 tx/indoor_1626.py -n 1               # single burst (quick test)
-    python3 tx/indoor_1626.py --gain -60 -n 8    # 8 bursts  (≈ 0.72 s)
+    python3 tx/indoor_1626.py --dry-run           # config check only
+    python3 tx/indoor_1626.py --gain -40          # one burst at 1626.270 MHz
+    python3 tx/indoor_1626.py --gain -40 --cyclic # continuous loop
+    python3 tx/indoor_1626.py -n 1                # single burst (quick test)
+    python3 tx/indoor_1626.py --gain -40 -n 8    # 8 bursts  (≈ 0.72 s)
 """
 
 from __future__ import annotations
@@ -33,15 +33,17 @@ from hw.ad9363 import DEFAULT_URI
 # Iridium Ring Alert / Simplex channel (confirmed by gr-iridium + iridium-toolkit)
 _IRIDIUM_FREQ_HZ: int = 1_626_270_000   # 1626.270 MHz
 
-# Maximum safe gain for initial connection (very low power, cable required)
-_DEFAULT_GAIN_DB: float = -60.0   # Start here; increase only after verifying RX
+# Confirmed working gain for near-field indoor test (TX 1-3 m from KrakenSDR UCA).
+# −40 dB gives a detectable signal at 1–3 m without overloading the front-end.
+# The safety guard below rejects anything above −20 dB.
+_DEFAULT_GAIN_DB: float = -40.0
 
 
 def _print_safety_banner() -> None:
     print("=" * 68)
     print("  LibreSDR — INDOOR 1626 MHz TEST  (WIRED / NEAR-FIELD ONLY)")
     print("=" * 68)
-    print("  LEGAL WARNING: Iridium band (1616–1626.5 MHz) is licensed.")
+    print("  LEGAL WARNING: Iridium band (1616–1626.5 MHz) is licensed.") 
     print("  Use a wired connection (TX → attenuator ≥ 30 dB → RX) ONLY.")
     print("  Power levels are set to the absolute minimum by default.")
     print("=" * 68)
@@ -54,7 +56,7 @@ def main() -> None:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--gain",    type=float, default=_DEFAULT_GAIN_DB,
-                   help="TX attenuation [dB].  Start at -60, increase slowly.")
+                   help="TX attenuation [dB].  −40 dB confirmed for 1–3 m indoor test.")
     p.add_argument("-n", "--n-slots", type=int, default=4,
                    help="Number of IRA slots to transmit")
     p.add_argument("--sat-id",  type=int,   default=47,

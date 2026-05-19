@@ -1016,12 +1016,6 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
     cfo_lines = []
     for i in range(MAX_SATS):
         cl, = ax_cfo.plot([], [], "-", color=sat_colors[i % len(sat_colors)],
-                           lw=1.5, label=f"S{i}")
-    cfo_lines.append(cl)
-    # fix: rebuild properly
-    cfo_lines = []
-    for i in range(MAX_SATS):
-        cl, = ax_cfo.plot([], [], "-", color=sat_colors[i % len(sat_colors)],
                            lw=1.5, label=f"S{i} fd")
         cfo_lines.append(cl)
     ax_cfo.legend(loc="upper left", fontsize=6, facecolor=BG3,
@@ -1314,6 +1308,10 @@ def main() -> None:
     p.add_argument("--out-dir", default=_DATA_DIR, metavar="DIR")
     p.add_argument("--no-rec",  action="store_true")
     p.add_argument("--save-iq", action="store_true")
+    p.add_argument("--no-plot", action="store_true",
+                   help="Headless mode: run acquisition loop without opening the Qt GUI. "
+                        "Useful for SSH sessions or automated test runs. "
+                        "DIAG lines are printed to stdout every 10 s.")
     args = p.parse_args()
 
     freq_hz = int(args.freq * 1e6)
@@ -1422,7 +1420,11 @@ def main() -> None:
         threading.Thread(target=_auto_save_loop, daemon=True).start()
 
     try:
-        _build_ui(S, cfg, args.algo, freq_hz)
+        if args.no_plot:
+            print("[HEADLESS] Acquisition running. Press Ctrl+C to stop.")
+            acq_thread.join()
+        else:
+            _build_ui(S, cfg, args.algo, freq_hz)
     except KeyboardInterrupt:
         pass
     finally:

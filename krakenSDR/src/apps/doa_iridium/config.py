@@ -92,11 +92,11 @@ ANT0_OFFSET_DEG = 0.0
 # Calibrate: place TX due North → read median az → set ANT0_OFFSET_DEG = -median_az.
 
 # ── RF / Frequency ────────────────────────────────────────────────────────────
-# INDOOR LAB (ISM 868 MHz — LibreSDR TX, no licence required):
-FREQ_HZ = 868_100_000
+# REAL IRIDIUM (1626.270 MHz — requires licence, wired test, or outdoor sky RX):
+FREQ_HZ = 1_626_270_000
 #
-# OUTDOOR / REAL IRIDIUM (1626.270 MHz — requires licence, wired test, or sky RX only):
-# FREQ_HZ = 1_626_270_000
+# INDOOR LAB (ISM 868 MHz — LibreSDR TX, no licence required):
+# FREQ_HZ = 868_100_000
 
 GAIN_DB = 30
 # IF gain [dB] applied to all KrakenSDR channels.
