@@ -58,6 +58,12 @@ sys.path.insert(0, _HERE)
 import socket as _socket
 import numpy as np
 import matplotlib
+from burst_processing import (
+    detect_energy_bursts  as _detect_energy_bursts_api,
+    scan_preamble_tones   as _scan_preamble_tones_api,
+    compute_mf_covariance as _compute_mf_covariance_api,
+    apply_bpf_and_normalize as _apply_bpf_normalize_api,
+)
 matplotlib.use("Qt5Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
@@ -165,7 +171,8 @@ def _check_narrowband(freq_hz: float, cfg: UcaConfig) -> None:
 
 
 def _run_doa_algo(X_cal: np.ndarray, R: np.ndarray,
-                  cfg: UcaConfig, algo: str) -> np.ndarray:
+                  cfg: UcaConfig, algo: str,
+                  n_snapshots: int | None = None) -> np.ndarray:
     decorr = getattr(C, "MUSIC_DECORR", "none")
     if algo == "capon":
         return doa_capon_uca_2d(X_cal, cfg, R_in=R, decorr=decorr)
@@ -177,7 +184,8 @@ def _run_doa_algo(X_cal: np.ndarray, R: np.ndarray,
         return doa_unitary_esprit_uca_2d(R, cfg)[0]
     if algo == "mfba-music":
         return doa_mfba_music_uca_2d(R, cfg)[0]
-    return doa_music_uca_2d(X_cal, cfg, R_in=R, decorr=decorr)
+    return doa_music_uca_2d(X_cal, cfg, R_in=R, decorr=decorr,
+                            n_snapshots=n_snapshots)
 
 
 # =============================================================================
@@ -230,12 +238,16 @@ def _scan_doppler_peaks(
 
     Sb = Spec[mask].copy()
     fb = freqs[mask]
-    noise_floor = float(np.median(Sb)) + 1e-20
+    _Sb_pos = Sb[Sb > 0.0]
+    noise_floor = float(np.median(_Sb_pos)) + 1e-20 if _Sb_pos.size else 1e-20
 
     results: list[tuple[float, float]] = []
     for _ in range(n_peaks):
         idx = int(np.argmax(Sb))
-        snr = 10.0 * np.log10(float(Sb[idx]) / noise_floor)
+        peak_pow = float(Sb[idx])
+        if peak_pow <= 0.0:
+            break
+        snr = 10.0 * np.log10(peak_pow / noise_floor)
         if snr < min_snr_db:
             break
         results.append((float(fb[idx]), float(snr)))
@@ -270,6 +282,8 @@ def _make_sat_tracker(
         cfo_hist    = collections.deque(maxlen=hist_len),
         spec2d      = np.full((n_el, n_az), -40.0),
         R_batch     = collections.deque(maxlen=multi_n),
+        X_batch     = collections.deque(maxlen=multi_n),  # raw preamble IQ per burst
+        Y_batch     = collections.deque(maxlen=multi_n),  # MF output vectors (n_ant,)
         burst_count = 0,
         last_seen   = time.monotonic(),
         az_init     = True,
@@ -339,21 +353,33 @@ def _update_tracker(
     cfo_hz: float, spec2d: np.ndarray,
     az_alpha: float, el_alpha: float,
     el_min: float, el_max: float,
+    az_freeze_el: float = 75.0,
 ) -> None:
     el_step = max(0.1, (el_max - el_min) / 90.0)
     on_floor   = el_doa < el_min + el_step
     on_ceiling = el_doa > el_max - el_step
 
-    # Azimuth EMA (phasore circolare)
+    # Azimuth EMA (phasore circolare).
+    # Above az_freeze_el the projected UCA aperture ∝ cos(el) collapses → MUSIC
+    # spectrum is nearly flat in azimuth → the inferred az is noise-dominated.
+    # We keep the last reliable az_phasor value and resume updating once the
+    # source descends back below the freeze threshold.
+    az_frozen = el_doa >= az_freeze_el
     phasor_new = np.exp(1j * np.deg2rad(az_doa))
     if trk.az_init:
-        trk.az_phasor = phasor_new
-        trk.az_kf.update(az_doa)
-        trk.az_init   = False
-    else:
+        # Only commit the first azimuth when the DoA is in a reliable el range.
+        # If the first returning estimate has el in the freeze zone (flat MUSIC
+        # spectrum in az) or at the grid ceiling (degenerate solution), keep
+        # az_init=True and wait for a burst with a trustworthy az.
+        if not az_frozen and not on_ceiling and not on_floor:
+            trk.az_phasor = phasor_new
+            trk.az_kf.update(az_doa)
+            trk.az_init   = False
+    elif not az_frozen:
         trk.az_phasor = az_alpha * trk.az_phasor + (1.0 - az_alpha) * phasor_new
     trk.az_ema = float(np.degrees(np.angle(trk.az_phasor)) % 360.0)
-    trk.az_kf.update(az_doa)
+    if not az_frozen:
+        trk.az_kf.update(az_doa)
 
     if not on_floor and not on_ceiling:
         trk.el_ema = el_alpha * trk.el_ema + (1.0 - el_alpha) * el_doa
@@ -561,6 +587,16 @@ def _acq_loop(
     _min_sep         = float(getattr(C, "SAT_MIN_SEP_HZ",        5_000))
     _sat_timeout     = float(getattr(C, "SAT_TIMEOUT_S",          8.0))
     _max_sats        = int(getattr(C, "MAX_SATELLITES",            3))
+    # Doppler gate: reject FFT peaks whose |cfo_hz| > _doppler_gate_hz.
+    # 0 = disabled (accept all Doppler, outdoor satellite mode).
+    # 5000 = indoor TX: pass TX at fd≈0 Hz, block satellites at ±24 kHz.
+    _doppler_gate_hz = float(getattr(C, "DOPPLER_GATE_HZ", 0.0))
+    # Max allowed CFO jump for an already-locked tracker.
+    # Helps reject spurious FFT peaks inside the gate window.
+    # 0 = disabled.
+    _cfo_track_jump_hz = float(
+        getattr(C, "CFO_TRACK_MAX_JUMP_HZ", 2000.0 if _doppler_gate_hz > 0 else 0.0)
+    )
     # Narrow BPF centred on the detected (Doppler-corrected) tone.
     # tone_hz from _scan_doppler_peaks already tracks the per-satellite CFO
     # to ~62 Hz resolution (nfft=8192 at 1.024 MSPS), so a 8 kHz window
@@ -578,7 +614,9 @@ def _acq_loop(
 
     _no_burst_streak = 0
     _diag_t0   = time.monotonic()
-    _cnt_det = _cnt_eig = _cnt_papr = _cnt_acc = 0
+    _cnt_det = _cnt_eig = _cnt_snr = _cnt_papr = _cnt_acc = 0
+    _cnt_no_tone = _cnt_fd_rej = 0
+    _papr_sum = 0.0;  _papr_n = 0
     # Pre-load gate config (constant for the lifetime of _acq_loop).
     # AZ outlier gate is only valid on calibrated hardware: on uncalibrated
     # arrays MUSIC azimuths can span ±180°, so the circular median of the
@@ -620,7 +658,8 @@ def _acq_loop(
         n_total  = X_stream.shape[1]
 
         # ── Energy detection on ch0 ──────────────────────────────────────────
-        bursts = _detect_bursts(X_stream[0])
+        _energy_threshold = 2.0 if _doppler_gate_hz > 0 else 3.0
+        bursts = _detect_bursts(X_stream[0], threshold_factor=_energy_threshold)
         if not bursts:
             pwr_db = float(10 * np.log10(np.mean(np.abs(X_stream[0])**2) + 1e-20))
             with S.lock:
@@ -631,7 +670,7 @@ def _acq_loop(
                 print(
                     "[WARN] 10 consecutive frames without an IRA burst detected.\n"
                     "  Indoor:  check that LibreSDR TX is active\n"
-                    "           (python3 tx/indoor_1626.py --gain -40 --cyclic)\n"
+                    "           (python3 tx/indoor_1626.py --gain -50 --cyclic)\n"
                     "  Outdoor: wait for an Iridium pass (check TLE)\n"
                     "  Testing: add --demo to simulate the signal."
                 )
@@ -646,13 +685,17 @@ def _acq_loop(
                 f"S{sid}:az={trk.az_deg:.0f}°/el={trk.el_deg:.0f}°/fd={trk.cfo_hz:+.0f}Hz"
                 for sid, trk in S.satellites.items()
             )
+            _papr_mean_str = f"{_papr_sum/_papr_n:.1f}" if _papr_n > 0 else "--"
             print(
-                f"[DIAG] det={_cnt_det} eig_rej={_cnt_eig} "
-                f"papr_rej={_cnt_papr} acc={_cnt_acc} | "
+                f"[DIAG] det={_cnt_det} no_tone={_cnt_no_tone} fd_rej={_cnt_fd_rej} "
+                f"eig_rej={_cnt_eig} snr_rej={_cnt_snr} "
+                f"papr_rej={_cnt_papr} acc={_cnt_acc} papr_mean={_papr_mean_str}dB | "
                 f"sats={len(S.satellites)}: {sats_str}"
             )
             _diag_t0 = now
-            _cnt_det = _cnt_eig = _cnt_papr = _cnt_acc = 0
+            _cnt_det = _cnt_eig = _cnt_snr = _cnt_papr = _cnt_acc = 0
+            _cnt_no_tone = _cnt_fd_rej = 0
+            _papr_sum = 0.0;  _papr_n = 0
 
         pwr_db = float(10 * np.log10(np.mean(np.abs(X_stream[0])**2) + 1e-20))
 
@@ -662,32 +705,136 @@ def _acq_loop(
                 continue
 
             X_win = X_stream[:, b_start:b_end]   # (n_ant, window)
-            X0    = X_win[0]
 
-            # ── FFT scan for all preamble tones in this burst window ───────────
-            peaks = _scan_doppler_peaks(
-                X0, _fs,
-                nom_tone_hz = float(_PREAMBLE_TONE_HZ),
-                scan_bw_hz  = _scan_bw,
-                n_peaks     = _max_sats,
-                min_sep_hz  = _min_sep,
-                min_snr_db  = 6.0,
+            # ── Preamble onset refinement (joint time×frequency search) ────────
+            # The energy detector has ±_ENERGY_WIN/2 sample jitter.  For weak
+            # indoor signals this means X_win[:, :_PRE_SAMPLES] sometimes starts
+            # before the preamble, sometimes in the middle of it, and sometimes
+            # after it (in the DQPSK data).  A joint time×frequency sweep over
+            # X_win[0] finds both the exact preamble position AND tone frequency,
+            # making the separate FFT Doppler scan unnecessary.
+            onset_ref, tone_ref = _find_preamble_onset(
+                X_win[0], 0, X_win.shape[1],
+                known_hz=(_tone_known.get(0, None)
+                          if not S.satellites
+                          else _tone_known.get(next(iter(S.satellites)), None)),
+                win=4096,   # 4096-pt FFT → 250 Hz resolution → stable CFO
             )
+            tone_ref_valid = abs(tone_ref - _PREAMBLE_TONE_HZ) <= (_doppler_gate_hz + 4000)
+
+            if tone_ref_valid:
+                # ── Refinement succeeded: use its tone_hz directly ─────────────
+                # Apply onset correction: if refinement says preamble starts at
+                # onset_ref samples into X_win, slide the window back by up to
+                # _ENERGY_WIN samples (half the energy detector jitter window)
+                # so X_win[:, :_PRE_SAMPLES] aligns with the preamble.
+                if onset_ref > _ENERGY_WIN and onset_ref < X_win.shape[1] // 2:
+                    b_start_adj = b_start + onset_ref - _ENERGY_WIN
+                    b_end_adj = min(b_start_adj + _WINDOW_SAMPLES, n_total)
+                    X_win = X_stream[:, b_start_adj:b_end_adj]
+                    if X_win.shape[1] < _PRE_SAMPLES:
+                        X_win = X_stream[:, b_start:b_end]  # revert
+                peaks: list[tuple[float, float]] = [(float(tone_ref), 10.0)]
+            else:
+                # ── Refinement failed: Doppler FFT scan (preamble-first) ───────
+                _PREAMBLE_SCAN_MIN_SNR = 6.0
+                X0_pre = X_win[0, :_PRE_SAMPLES]
+
+                # When a Doppler gate is active (indoor TX mode), scan ONLY inside
+                # the gate window (±gate_hz around the nominal preamble tone).
+                # This ensures the TX at low Doppler is the STRONGEST peak in the
+                # scan, not a secondary peak dominated by the satellite at -21 kHz.
+                # With no gate (outdoor), scan the full ±45 kHz for all satellites.
+                _n_peaks_scan = min(_max_sats + 3, 6)
+                _scan_bw_used = _doppler_gate_hz if _doppler_gate_hz > 0 else _scan_bw
+
+                # Step 1: scan preamble-only segment (most selective)
+                peaks = _scan_doppler_peaks(
+                    X0_pre, _fs,
+                    nom_tone_hz = float(_PREAMBLE_TONE_HZ),
+                    scan_bw_hz  = _scan_bw_used,
+                    n_peaks     = _n_peaks_scan,
+                    min_sep_hz  = _min_sep,
+                    min_snr_db  = _PREAMBLE_SCAN_MIN_SNR,
+                )
+
+                # Step 2: fall back to a wider FFT on the full burst window.
+                if not peaks or (peaks and peaks[0][1] < _PREAMBLE_SCAN_MIN_SNR):
+                    X0_wide = X_win[0]
+                    peaks_wide = _scan_doppler_peaks(
+                        X0_wide, _fs,
+                        nom_tone_hz = float(_PREAMBLE_TONE_HZ),
+                        scan_bw_hz  = _scan_bw_used,
+                        n_peaks     = _n_peaks_scan,
+                        min_sep_hz  = _min_sep,
+                        min_snr_db  = _PREAMBLE_SCAN_MIN_SNR,
+                    )
+                    if peaks_wide and (not peaks or peaks_wide[0][1] > peaks[0][1]):
+                        peaks = peaks_wide
+
+            # ── Post-scan sanity check ──────────────────────────────────────────
+
+            if not peaks:
+                _cnt_no_tone += 1
+
+            # Prioritise peaks close to current tracker CFO to avoid hopping
+            # between unrelated local maxima inside the same burst window.
+            if peaks:
+                with S.lock:
+                    _trk_cfos = [float(tk.cfo_hz) for tk in S.satellites.values()]
+                if _trk_cfos:
+                    peaks = sorted(
+                        peaks,
+                        key=lambda p: (
+                            min(abs((p[0] - _PREAMBLE_TONE_HZ) - c) for c in _trk_cfos),
+                            -p[1],
+                        ),
+                    )
+
+            # At most one accepted peak per tracker for this burst.
+            _used_tracker_ids: set[int] = set()
 
             for tone_hz, peak_snr_db in peaks:
                 cfo_hz = tone_hz - _PREAMBLE_TONE_HZ
 
-                # ── BPF on the preamble region only ────────────────────────────
-                # Apply the narrowband filter only over the first PRE_SAMPLES of
-                # X_win. The energy detector fires within ±_ENERGY_WIN/2 = ±128
-                # samples of the actual burst onset, so X_win[:,0:PRE_SAMPLES]
-                # always contains the full preamble CW region.  Limiting the
-                # input to PRE_SAMPLES avoids IFFT circular-convolution from the
-                # DQPSK data region bleeding back into the preamble filter output.
+                # ── Doppler gate ──────────────────────────────────────────────
+                # Reject peaks outside the expected Doppler window.
+                # Indoor TX: _doppler_gate_hz=5000 → cfo≈0 passes, satellites
+                # at cfo≈−24kHz are discarded. Gate 0 = disabled (outdoor).
+                if _doppler_gate_hz > 0 and abs(cfo_hz) > _doppler_gate_hz:
+                    _cnt_fd_rej += 1
+                    continue
+
+                # ── Find / create tracker (before BPF) ─────────────────────────
+                # We need the tracker's stable CFO EMA to centre the narrowband
+                # BPF.  Using the per-burst tone_hz makes each burst's BPF output
+                # land at a different frequency when the LO drifts (TCXO warm-up),
+                # destroying multi-burst covariance coherence.
+                with S.lock:
+                    trk = _find_or_create_tracker(
+                        S.satellites, cfo_hz,
+                        S.sat_colors, _min_sep, _max_sats,
+                        cfg.n_el, cfg.n_az, _hist_len, _multi_n, el_mid,
+                    )
+                if trk is None:
+                    continue
+
+                if trk.sat_id in _used_tracker_ids:
+                    continue
+
+                if (_cfo_track_jump_hz > 0.0
+                    and trk.burst_count >= max(8, _multi_n // 2)
+                        and abs(cfo_hz - trk.cfo_hz) > _cfo_track_jump_hz):
+                    _cnt_fd_rej += 1
+                    continue
+
+                _used_tracker_ids.add(trk.sat_id)
+
+                # ── BPF on preamble region (per-burst tone_hz) ──────────────────
                 if X_win.shape[1] < _PRE_SAMPLES:
                     continue
                 X_bpf = extract_pilot_tone(X_win[:, :_PRE_SAMPLES], _fs,
-                                           tone_hz=tone_hz, bw_hz=_bpf_bw)
+                                            tone_hz=tone_hz, bw_hz=_bpf_bw)
                 X_bpf = amplitude_normalize_channels(X_bpf)
 
                 if _has_cal:
@@ -702,35 +849,23 @@ def _acq_loop(
                 _n_pre = _PRE_SAMPLES - _bpf_guard
                 if _n_pre < 128:
                     continue
-                X_pre = X_cal[:, _bpf_guard : _bpf_guard + _n_pre]
 
-                # Matched-filter covariance (rank-1, optimal SNR for CW sources).
-                # Project each antenna onto conj(known tone), then form outer product:
-                #
-                #   y_k = (1/N) Σ_n  x_k[n] · exp(-j·2π·f_tone/Fs·n)
-                #   R_mf = y · y^H   →  rank-1, λ1 = |y|²·M, λ2..M = σ²·I
-                #
-                # This is the optimal single-frequency estimator: zero contribution
-                # from DQPSK data and no averaging over incoherent symbols.
-                # Fallback to sample covariance when MF output is too weak (no signal).
-                t_vec = np.arange(_n_pre, dtype=np.float64)
-                ref   = np.exp(-2j * np.pi * tone_hz / _fs * t_vec)  # (N,) matched filter
-                y_mf  = (X_pre @ ref) / _n_pre                        # (M,) per-antenna output
-                R_mf  = np.outer(y_mf, y_mf.conj())                   # (M, M) rank-1
-                # Use rank-1 MF covariance when signal is detectable; fall back to
-                # sample covariance in low-SNR regime where MF is numerically fragile.
-                mf_power = float(np.real(np.trace(R_mf)))
-                sample_power = float(np.real(np.trace(
-                    (X_pre @ X_pre.conj().T) / _n_pre)))
-                if mf_power > 0.01 * sample_power:   # MF captures ≥1% total power
-                    R_inst = R_mf
-                else:
-                    R_inst = (X_pre @ X_pre.conj().T) / _n_pre
+                # Matched-filter covariance via modular API.
+                # NOTE: t_vec must start at _bpf_guard (not 0) so the reference
+                # phase matches the actual sample positions in X_cal.
+                # Bug fixed 2026-05-20: using np.arange(_n_pre) caused a phase
+                # offset of _bpf_guard × 2π × f_tone / fs ≈ 8 rad → y_mf ≈ 0
+                # → fallback to sample covariance → low eigenvalue ratio → 95%
+                # of real preamble bursts rejected by SNR gate.
+                X_pre = X_cal[:, _bpf_guard : _bpf_guard + _n_pre]
+                R_inst, y_mf, snr = _compute_mf_covariance_api(
+                    X_cal, tone_hz, _fs, _n_pre, _bpf_guard
+                )
                 try:
                     eig = eigenvalue_spread_uca_db(R_inst)
-                    snr = snr_uca_db(R_inst)
                 except Exception:
                     continue
+                # snr already returned by _compute_mf_covariance_api
 
                 if eig[0] < _eig_min:
                     _cnt_eig += 1
@@ -748,38 +883,52 @@ def _acq_loop(
                 # preamble, SNR >> 20 dB; for noise falling through the energy
                 # detector, SNR < 0 dB.
                 if snr < _snr_inst_min:
-                    _cnt_papr += 1
+                    _cnt_snr += 1
                     continue
 
-                # ── Associa al tracker ────────────────────────────────────────
-                with S.lock:
-                    trk = _find_or_create_tracker(
-                        S.satellites, cfo_hz,
-                        S.sat_colors, _min_sep, _max_sats,
-                        cfg.n_el, cfg.n_az, _hist_len, _multi_n, el_mid,
-                    )
-                if trk is None:
-                    continue
-
+                # ── Accumulate into tracker batch ──────────────────────────────
                 trk.R_batch.append(R_inst)
+                # Phase-align X_pre to tracker's reference frequency.
+                # Without this, TCXO warm-up drift (1-4 kHz over minutes) makes
+                # each burst's X_pre have a different carrier frequency, so the
+                # accumulated covariance hstack(X_batch) @ hstack(X_batch)^H
+                # becomes nearly full-rank → eigenvalue spread < 2x → MDL=4.
+                # Shifting every X_pre to the tracker's EMA CFO makes all
+                # accumulated segments share the same frequency → coherent R_avg.
+                tone_ref = _PREAMBLE_TONE_HZ + trk.cfo_hz
+                _t_align = np.arange(_bpf_guard, _bpf_guard + _n_pre, dtype=np.float64)
+                if trk.burst_count > 0 and abs(tone_ref - tone_hz) > 200:
+                    X_pre_aligned = X_pre * np.exp(-2j * np.pi * (tone_ref - tone_hz) / _fs * _t_align)
+                else:
+                    X_pre_aligned = X_pre
+                trk.X_batch.append(X_pre_aligned)
+                trk.last_seen = time.monotonic()
                 if len(trk.R_batch) < _multi_n:
                     continue
 
-                # ── DoA media su _multi_n burst ───────────────────────────────
-                R_avg = np.mean(list(trk.R_batch), axis=0)
+                # ── Sample covariance from aligned preamble IQ ─────────────────
+                # X_pre from each burst is phase-aligned to the tracker's CFO EMA.
+                # Accumulating multi_n bursts × n_pre samples = ~100k snapshots.
+                X_big = np.hstack(list(trk.X_batch))   # (n_ant, n_pre*multi_n)
+                R_avg = (X_big @ X_big.conj().T) / X_big.shape[1]
                 try:
-                    spec2d = _run_doa_algo(X_cal, R_avg, cfg, algo)
+                    spec2d = _run_doa_algo(X_cal, R_avg, cfg, algo,
+                                              n_snapshots=X_big.shape[1])
                     az_doa, el_doa, papr_doa = find_peak_uca_2d(spec2d, cfg)
-                except Exception:
+                except Exception as _doa_exc:
                     continue
 
-                # Multi-burst PAPR gate is skipped when hardware is uncalibrated:
-                # inter-channel phase offsets push y_mf off the UCA steering
-                # manifold, collapsing MUSIC PAPR to < 3 dB even for a real
-                # signal.  Accept the DoA result regardless; run --calibrate to
-                # restore the steering match and then the PAPR gate becomes useful.
-                # if papr_doa < _papr_min:
-                #     continue
+                # Multi-burst PAPR gate: reject estimates where the MUSIC spectrum
+                # is essentially flat (no spatial null from the noise subspace).
+                # At PAPR < _papr_min the peak position is dominated by noise and
+                # multipath; accepting it corrupts the tracker az/el EMA.
+                # The gate is intentionally enabled even on calibrated hardware:
+                # PAPR < 2 dB means the steering manifold match failed (multipath
+                # too strong indoor, or wrong calibration) and the DoA is useless.
+                _papr_sum += papr_doa;  _papr_n += 1
+                if papr_doa < _papr_min:
+                    _cnt_papr += 1
+                    continue
 
                 # Phase diffs computed here (before gates; also used in recording)
                 phase_diffs = np.degrees(np.angle(R_avg[1:, 0]))
@@ -814,12 +963,9 @@ def _acq_loop(
                 _cnt_acc += 1
                 acc.update(R_avg)   # per calibrazione
 
-                # CRB for azimuth (Salama 2025 §8.2.1; Stoica & Nehorai 1990).
-                # n_snaps is the preamble-only snapshot count used for R_inst;
-                # this is the effective N that determines the Fisher information.
-                # crb_azimuth_deg expects per-element SNR; snr_uca_db returns
-                # the array-gain SNR = M × per-element, so subtract 10·log10(M).
-                n_snaps  = X_pre.shape[1]
+                # CRB for azimuth.  The covariance R_avg is formed from X_big
+                # with N = X_big.shape[1] = multi_n × n_pre snapshots.
+                n_snaps  = X_big.shape[1]
                 snr_per_element_db = snr - 10.0 * np.log10(float(cfg.n_ant))
                 crb_deg_ = crb_azimuth_deg(snr_per_element_db, n_snaps, cfg,
                                            el_deg=el_doa)
@@ -835,7 +981,10 @@ def _acq_loop(
                         trk, az_doa, el_doa, papr_doa, snr,
                         cfo_hz, spec2d, _az_alpha, _el_alpha,
                         cfg.el_min_deg, cfg.el_max_deg,
+                        az_freeze_el=float(getattr(C, "AZ_FREEZE_EL_DEG", 75.0)),
                     )
+                    # Remember tone frequency for preamble onset refinement
+                    _tone_known[trk.sat_id] = float(tone_hz)
                     # Store phase baseline for the coherence gate (only updated
                     # after a burst passes every quality check)
                     trk.last_phase_diffs = phase_diffs.copy()
@@ -1354,6 +1503,9 @@ def main() -> None:
                    help="Number of synthetic satellites in --demo mode")
     p.add_argument("--max-sats",type=int,   default=int(getattr(C,"MAX_SATELLITES",3)),
                    help="Max tracked satellites (overrides config)")
+    p.add_argument("--fd-max",  type=float, default=None, metavar="HZ",
+                   help="Doppler gate: discard peaks with |cfo_hz| > HZ. "
+                        "0 = no gate (outdoor). 5000 = indoor TX-only mode.")
     p.add_argument("--papr-min",type=float,
                    default=float(getattr(C,"PAPR_INST_MIN_DB",_PAPR_INST_MIN_DB)),
                    help="Minimum MUSIC PAPR [dB] for multi-burst DoA acceptance")
@@ -1380,6 +1532,8 @@ def main() -> None:
     C.SNR_INST_MIN_DB  = args.snr_min
     C.MULTI_BURST_N    = args.multi
     C.MAX_SATELLITES   = args.max_sats
+    if args.fd_max is not None:
+        C.DOPPLER_GATE_HZ = args.fd_max
 
     cfg = UcaConfig(
         n_ant=C.N_ANTENNAS, radius_lambda=args.radius,
@@ -1409,7 +1563,9 @@ def main() -> None:
           f"multi={args.multi}  snr_min={args.snr_min:.0f} dB  papr_min={args.papr_min:.0f} dB")
     scan_bw = int(getattr(C, "DOPPLER_SCAN_BW_HZ", 45_000))
     sep_hz  = int(getattr(C, "SAT_MIN_SEP_HZ", 5_000))
-    print(f"  Doppler scan: ±{scan_bw/1e3:.0f} kHz  min separation: {sep_hz/1e3:.0f} kHz")
+    fd_gate = float(getattr(C, "DOPPLER_GATE_HZ", 0.0))
+    fd_gate_str = f"  fd-gate: ±{fd_gate/1e3:.1f} kHz  (indoor TX mode)" if fd_gate > 0 else "  fd-gate: OFF  (outdoor/satellite mode)"
+    print(f"  Doppler scan: ±{scan_bw/1e3:.0f} kHz  min separation: {sep_hz/1e3:.0f} kHz  |{fd_gate_str}")
     phase_offs = getattr(C, "CHANNEL_PHASE_OFFSETS_DEG", [0.0]*cfg.n_ant)
     if any(o != 0.0 for o in phase_offs):
         print(f"  HW phase cal: {[f'{o:.1f}' for o in phase_offs]} °")

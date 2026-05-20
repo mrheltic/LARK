@@ -522,7 +522,7 @@
 
         {
             "label": "LibreSDR: Indoor 1626 MHz — TX IRA burst (lab DoA)",
-            "detail": "Transmits IRA π/4-DQPSK bursts at 1626.270 MHz at −40 dB. Near-field indoor test: TX antenna 1–3 m from KrakenSDR UCA. Safety guard rejects gain > −20 dB. Ctrl+C to stop.",
+            "detail": "Transmits IRA π/4-DQPSK bursts at 1626.270 MHz at −40 dB (higher power → better indoor SNR, dominates multipath at 1–2 m). Safety guard rejects gain > −20 dB. Ctrl+C to stop.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 tx/indoor_1626.py --gain -40 --cyclic",
             "options": {
@@ -547,9 +547,9 @@
 
         {
             "label": "KrakenSDR: Iridium DoA burst — 1626.270 MHz (multi-satellite)",
-            "detail": "Burst-gated 2D-MUSIC DoA at real Iridium L-band 1626.270 MHz. Doppler scan ±45 kHz isolates up to 2 simultaneous satellites, each with an independent tracker and coloured sky plot. Requires Heimdall configured at 1626.270 MHz and LibreSDR TX active.",
+            "detail": "Burst-gated 2D-MUSIC DoA at 1626.270 MHz. Indoor TX mode (--fd-max 5000): traccia solo il LibreSDR TX a fd≈0 Hz, scarta satelliti a fd≈±24 kHz. Per outdoor satellite: rimuovere --fd-max. Requires Heimdall configured at 1626.270 MHz.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_iridium/doa_iridium_burst.py --freq 1626.270 --max-sats 1",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_iridium/doa_iridium_burst.py --freq 1626.270 --max-sats 1 --fd-max 5000",
             "options": {
                 "cwd": "${workspaceFolder}/krakenSDR/src",
                 "env": { "DISPLAY": ":0" }
