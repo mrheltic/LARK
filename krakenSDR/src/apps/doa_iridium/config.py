@@ -39,7 +39,7 @@ ANT_CCW = False
 # The steering vector uses φ_k = 2πk/N (k=0 at North, k=1 at 72° clockwise).
 # Set True if azimuth estimates are mirrored (East ↔ West swapped).
 
-ANT0_OFFSET_DEG = -251.2
+ANT0_OFFSET_DEG = -91.7  # auto-cal 2026-05-21 20:49 median_az=91.7° tx_az=0.0°
 # Rotation of antenna 0 from geographic North [°].
 # Re-calibrate after any physical change:
 #   python3 doa_iridium_burst.py --calibrate 0.0
@@ -96,7 +96,7 @@ MAX_SATELLITES = 1
 # Iridium L-band: typically 1–3 satellites above horizon.
 # Indoor single-TX: set to 1.
 
-MULTI_BURST_N = 30
+MULTI_BURST_N = 15
 # Number of preamble bursts accumulated per DoA estimate.
 # Each burst contributes ~2500 preamble IQ samples; the sample covariance
 #   R = X_big @ X_big^H / (N × n_pre)   with  X_big = hstack(X_pre)
@@ -155,8 +155,9 @@ INDOOR_EL_MAX_DEG = 40.0
 # Indoor MUSIC grid cap.  Excludes el > 40° (ceiling reflections at 60–80°).
 # Active only when DOPPLER_GATE_HZ > 0.
 
-INDOOR_EL_PREF_MAX_DEG = 28.0
-# Preferred elevation upper bound for pick_doa_peak scoring (TX at 10–20°).
+INDOOR_EL_PREF_MAX_DEG = 22.0
+# Preferred elevation upper bound for pick_doa_peak scoring.
+# TX at 10–20°; ceiling reflections at 40–80° are heavily penalised above this.
 
 INDOOR_EL_PREF_MIN_DEG = 10.0
 # Penalise peaks below this elevation (horizon / aliasing).
@@ -174,17 +175,19 @@ COV_ALPHA = 0.85
 # Indoor stationary TX:  0.85–0.90  (τ ≈ 7 bursts ≈ 600 ms)
 # Outdoor satellite:     0.50–0.70  (faster tracking)
 
-AZ_SMOOTH_ALPHA = 0.93
-# Circular EMA on per-burst azimuth.  Higher = fewer visible updates, more stable.
+AZ_SMOOTH_ALPHA = 0.70
+# Circular EMA on per-burst azimuth.  τ = 1/(1−α) ≈ 3.3 updates.
+# Indoor stationary TX: 0.90–0.95  (max stability, slow response)
+# Outdoor satellite:     0.50–0.70  (tracks 0.5–1°/s motion)
 
-EL_SMOOTH_ALPHA = 0.93
-# Linear EMA on per-burst elevation.
+EL_SMOOTH_ALPHA = 0.70
+# Linear EMA on per-burst elevation.  Same τ as azimuth for balanced response.
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Hardware phase calibration
 # ═══════════════════════════════════════════════════════════════════════════════
 
-CHANNEL_PHASE_OFFSETS_DEG = [0.0, 157.25, -32.92, 36.16, 142.09]
+CHANNEL_PHASE_OFFSETS_DEG = [0.0, 39.21, -95.7, 12.68, -16.57]  # auto-cal 2026-05-21 20:49 from 1398 bursts (117 snapshots) az=0.0°
 # Per-channel phase offset [°].  Channel 0 is reference (always 0.0).
 # Auto-calibrated 2026-05-21 18:26 from 1442 bursts at az=0.0°.
 # Re-run:  python3 doa_iridium_burst.py --calibrate 0.0

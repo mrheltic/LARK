@@ -524,7 +524,7 @@
             "label": "LibreSDR: Indoor 1626 MHz — TX IRA burst (lab DoA)",
             "detail": "Transmits IRA π/4-DQPSK bursts at 1626.270 MHz at −40 dB (higher power → better indoor SNR, dominates multipath at 1–2 m). Safety guard rejects gain > −20 dB. Ctrl+C to stop.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx/indoor_1626.py --gain -40 --cyclic",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx/indoor_1626.py --gain -20 --cyclic",
             "options": {
                 "cwd": "${workspaceFolder}/libreSDR/src"
             },

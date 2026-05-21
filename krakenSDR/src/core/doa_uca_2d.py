@@ -344,7 +344,7 @@ def pick_doa_peak_uca_2d(
             continue
         score = papr
         if el > el_pref_hi:
-            score -= 1.2 * (el - el_pref_hi)
+            score -= 2.5 * (el - el_pref_hi)
         elif el < el_pref_lo:
             score -= 0.6 * (el_pref_lo - el)
 
