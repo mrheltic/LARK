@@ -52,7 +52,7 @@ _IRIDIUM_FREQ_HZ: int = 1_626_270_000   # 1626.270 MHz
 # −60 dB → received power ≈ −96 dBm at KrakenSDR (d ≈ 1 m) = real satellite SNR.
 # Use −40 dB for high-SNR alignment / diagnosis; −70 dB for worst-case simulation.
 # The safety guard below rejects anything above −20 dB.
-_DEFAULT_GAIN_DB: float = -60.0
+_DEFAULT_GAIN_DB: float = -30.0
 
 
 def _print_safety_banner() -> None:
@@ -73,7 +73,7 @@ def main() -> None:
     )
     p.add_argument("--gain",    type=float, default=_DEFAULT_GAIN_DB,
                    help="TX attenuation [dB].  −40 dB confirmed for 1–3 m indoor test.")
-    p.add_argument("-n", "--n-slots", type=int, default=4,
+    p.add_argument("-n", "--n-slots", type=int, default=20,
                    help="Number of IRA slots to transmit")
     p.add_argument("--sat-id",  type=int,   default=47,
                    help="Satellite ID in payload (0–127)")

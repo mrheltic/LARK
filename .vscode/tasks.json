@@ -546,19 +546,49 @@
         },
 
         {
-            "label": "KrakenSDR: Iridium DoA burst — 1626.270 MHz (multi-satellite)",
-            "detail": "Burst-gated 2D-MUSIC DoA at 1626.270 MHz. Indoor TX mode (--fd-max 5000): traccia solo il LibreSDR TX a fd≈0 Hz, scarta satelliti a fd≈±24 kHz. Per outdoor satellite: rimuovere --fd-max. Requires Heimdall configured at 1626.270 MHz.",
+            "label": "KrakenSDR: Iridium DoA burst — 1626.270 MHz (headless)",
+            "detail": "DoA su IRA burst a 1626.270 MHz senza GUI. Attende Heimdall, usa parametri da config.py. Output [DIAG] ogni 10s.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_iridium/doa_iridium_burst.py --freq 1626.270 --max-sats 1 --fd-max 5000",
+            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/doa_iridium_burst.py --no-plot",
             "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src",
-                "env": { "DISPLAY": ":0" }
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
+            "group": {
+                "kind": "test",
+                "isDefault": false
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "KrakenSDR: Iridium DoA burst — 1626.270 MHz (GUI)",
+            "detail": "DoA con GUI interattiva (skyplot + MUSIC 2D + phase plot). Usa parametri da config.py.",
+            "type": "shell",
+            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/doa_iridium_burst.py",
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
             },
             "group": "test",
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated"
+                "panel": "dedicated",
+                "focus": true
             },
+            "problemMatcher": []
+        },
+        {
+            "label": "LARK: Indoor 1626 MHz — laboratorio completo (Heimdall + TX + DoA)",
+            "detail": "Avvio in sequenza: 1) Heimdall DAQ 1626 MHz, 2) LibreSDR TX −60 dB, 3) DoA GUI. Usa questo per un test da zero.",
+            "dependsOn": [
+                "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
+                "LibreSDR: Indoor 1626 MHz — TX IRA burst (lab DoA)",
+                "KrakenSDR: Iridium DoA burst — 1626.270 MHz (GUI)"
+            ],
+            "dependsOrder": "sequence",
             "problemMatcher": []
         }
     ],

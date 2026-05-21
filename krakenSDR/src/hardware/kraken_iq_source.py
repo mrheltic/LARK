@@ -169,6 +169,7 @@ class KrakenIQSource:
         gain_db:      float = 30.0,
         queue_size:   int   = 4,
         verbose:      int   = 0,          # 0 = silent, N = print every N frames
+        recv_timeout_s: float = 45.0,     # per-frame TCP recv timeout (large CPI)
     ):
         self.host         = host
         self.port         = port
@@ -177,6 +178,7 @@ class KrakenIQSource:
         self.freq_hz      = int(freq_hz)
         self.gain_db      = gain_db if isinstance(gain_db, list) else [gain_db] * num_channels
         self.verbose      = verbose
+        self._recv_timeout = float(recv_timeout_s)
 
         self._sock      = None
         self._ctrl_sock = None
@@ -216,17 +218,30 @@ class KrakenIQSource:
         try:
             # Data socket
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._sock.settimeout(5.0)
+            # Large CPI frames (~4 MB) need a generous recv timeout when the
+            # DAQ is busy, calibrating delay_sync, or recovering from a restart.
+            self._sock.settimeout(self._recv_timeout)
             self._sock.connect((self.host, self.port))
             self._sock.sendall(b"streaming")
 
             # Read bootstrap frame: Heimdall sends it automatically
             # after "streaming" — no "IQDownload" needed here.
-            _ = self._recv_frame(request=False)
+            _boot = None
+            for _try in range(3):
+                try:
+                    _boot = self._recv_frame(request=False)
+                    break
+                except socket.timeout:
+                    if _try < 2:
+                        time.sleep(2.0)
+                    else:
+                        raise
+            if _boot is None:
+                raise ConnectionError("bootstrap frame empty")
 
             # Control socket
             self._ctrl_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._ctrl_sock.settimeout(5.0)
+            self._ctrl_sock.settimeout(15.0)
             self._ctrl_sock.connect((self.host, self.ctrl_port))
 
             self._connected = True
@@ -314,11 +329,30 @@ class KrakenIQSource:
         while not self._stop_evt.is_set():
             if not self._connected:
                 if not self._connect():
-                    time.sleep(2.0)
+                    time.sleep(3.0)
                     continue
 
             try:
                 frame = self._recv_frame()
+            except socket.timeout:
+                if not self._stop_evt.is_set():
+                    print("[KrakenIQ] Frame recv timed out — retrying once")
+                try:
+                    frame = self._recv_frame()
+                except Exception as exc2:
+                    if not self._stop_evt.is_set():
+                        print(f"[KrakenIQ] Receive error: {exc2}")
+                    self._connected = False
+                    for s in (self._sock, self._ctrl_sock):
+                        try:
+                            if s:
+                                s.close()
+                        except Exception:
+                            pass
+                    self._sock = None
+                    self._ctrl_sock = None
+                    time.sleep(3.0)
+                    continue
             except Exception as exc:
                 if not self._stop_evt.is_set():
                     print(f"[KrakenIQ] Receive error: {exc}")
@@ -331,7 +365,7 @@ class KrakenIQSource:
                         pass
                 self._sock = None
                 self._ctrl_sock = None
-                time.sleep(1.0)
+                time.sleep(3.0)
                 continue
 
             if frame is None:

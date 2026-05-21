@@ -36,6 +36,8 @@ from __future__ import annotations
 __all__ = [
     "UcaConfig",
     "find_peak_uca_2d",
+    "find_peaks_uca_2d",
+    "pick_doa_peak_uca_2d",
     "extract_pilot_tone",
     "amplitude_normalize_channels",
     "doa_music_uca_2d",
@@ -65,68 +67,68 @@ import numpy as np
 @dataclass
 class UcaConfig:
     """
-    Configurazione di un UCA a N antenne per DoA 2D (azimuth + elevazione).
+    Configuration for an N-element UCA for 2D DoA (azimuth + elevation).
 
-    Parametri
-    ---------
-    n_ant                : numero di antenne          default 5
-    radius_lambda        : raggio in frazioni di λ    default 0.5
-                           A 868 MHz con r=17.3 cm → r=0.5λ
-                           A 868 MHz con r=12.5 cm → r≈0.362λ (vecchio KrakenSDR)
-    n_az                 : punti di scansione azimuth (0…360°)   default 72 → 5° step
-    n_el                 : punti di scansione elevazione (el_min…90°) default 18 → 5°
-    el_min_deg           : elevazione minima [°]      default 5°
-    num_expected_signals : sorgenti attese (D nello split del sottospazio MUSIC)
-                           0 = auto-detect via MDL
-    ant0_offset_deg      : rotazione fisica dell'antenna 0 rispetto al Nord [°]
-                           Usare calibrazione sul campo per correggerlo.
-    ant_ccw              : True se le antenne fisiche sono poste in senso anti-orario
-                           (CCW) guardando dall'alto; False = orario (CW, default).
-                           Con matrice CW su array CCW: az_stimato = 360° − az_reale.
+    Parameters
+    ----------
+    n_ant                : number of antennas             default 5
+    radius_lambda        : radius in wavelengths          default 0.5
+    n_az                 : azimuth scan points (0…360°)   default 72 → 5° step
+    n_el                 : elevation scan points           default 18 → 5° step
+    el_min_deg           : minimum elevation [°]           default 5°
+    el_max_deg           : maximum elevation [°]           default 90°;
+                            lower for indoor (e.g. 45°) to exclude ceiling
+    num_expected_signals : expected sources (D in MUSIC subspace split)
+                            0 = auto-detect via MDL
+    ant0_offset_deg      : physical rotation of antenna 0 from North [°]
+                            Calibrate in the field to correct.
+    ant_ccw              : True if physical antennas are counter-clockwise
+                            (CCW) viewed from above; False = clockwise (CW, default).
+                            With CW matrix on CCW array: az_est = 360° − az_true.
     """
     n_ant:                int   = 5
     radius_lambda:        float = 0.5
     n_az:                 int   = 72
     n_el:                 int   = 18
     el_min_deg:           float = 5.0
-    el_max_deg:           float = 90.0  # elevazione massima [°]; abbassare indoor (es. 45°)
+    el_max_deg:           float = 90.0  # maximum elevation [°]; lower for indoor (e.g. 45°)
     num_expected_signals: int   = 1
-    ant0_offset_deg:      float = 0.0   # rotazione fisica ant0 rispetto al Nord
-    ant_ccw:              bool  = False  # True = antenne in senso anti-orario (CCW)
+    ant0_offset_deg:      float = 0.0   # physical rotation of antenna-0 from North
+    ant_ccw:              bool  = False  # True = antennas in counter-clockwise order (CCW)
 
     _cache: dict = field(default_factory=dict, init=False, repr=False, compare=False)
 
-    # ── Geometria ─────────────────────────────────────────────────────────────
+    # ── Geometry ─────────────────────────────────────────────────────────────
 
     @property
     def positions(self) -> np.ndarray:
-        """(n_ant, 2) array: coordinate [Est, Nord] per antenna in lunghezze d'onda."""
+        """(n_ant, 2) array: [East, North] coordinates per antenna in wavelengths."""
         k = np.arange(self.n_ant, dtype=np.float64)
-        # senso positivo = orario (CW); ant_ccw=True inverte il segno dell'angolo
+        # positive direction = clockwise (CW); ant_ccw=True flips the sign
         sign  = -1.0 if self.ant_ccw else 1.0
         phi_k = np.deg2rad(self.ant0_offset_deg) + sign * 2.0 * np.pi * k / self.n_ant
         return np.column_stack([
-            self.radius_lambda * np.sin(phi_k),   # Est
-            self.radius_lambda * np.cos(phi_k),   # Nord
+            self.radius_lambda * np.sin(phi_k),   # East
+            self.radius_lambda * np.cos(phi_k),   # North
         ])
 
     def az_range_deg(self) -> np.ndarray:
-        """Griglia di scansione azimuth in gradi: 0° … 360°."""
+        """Azimuth scan grid in degrees: 0° … 360°."""
         return np.linspace(0.0, 360.0, self.n_az, endpoint=False)
 
     def el_range_deg(self) -> np.ndarray:
-        """Griglia di scansione elevazione in gradi: el_min … el_max."""
+        """Elevation scan grid in degrees: el_min … el_max."""
         return np.linspace(self.el_min_deg, self.el_max_deg, self.n_el)
 
-    # ── Matrice di steering (pre-calcolata e cachata) ─────────────────────────
+    # ── Steering matrix (pre-computed and cached) ──────────────────────────
 
     def get_steering_matrix(self) -> np.ndarray:
         """
-        Matrice di steering (n_ant, n_el × n_az), pre-calcolata e messa in cache.
+        Steering matrix (n_ant, n_el × n_az), pre-computed and cached.
 
-        Indice di colonna: i_el * n_az + i_az  →  punto di griglia (el[i_el], az[i_az]).
+        Column index: i_el * n_az + i_az → grid point (el[i_el], az[i_az]).
 
-        Formula identica a CrossArrayConfig.get_steering_matrix():
+        Formula (identical to CrossArrayConfig):
             τ_k = 2π · (p_k_E · cosθ · sinφ + p_k_N · cosθ · cosφ)
             A_k = exp(j·τ_k)
         """
@@ -143,15 +145,15 @@ class UcaConfig:
 
             AZ, EL = np.meshgrid(az, el)           # (n_el, n_az)
 
-            # Coseni direttori nel piano Est-Nord
+            # Direction cosines in East-North plane
             u_east  = np.cos(EL) * np.sin(AZ)     # cosθ · sinφ
             u_north = np.cos(EL) * np.cos(AZ)     # cosθ · cosφ
 
-            # Appiattire a (N_grid,) dove N_grid = n_el × n_az
+            # Flatten to (N_grid,) where N_grid = n_el × n_az
             ue = u_east.ravel()
             un = u_north.ravel()
 
-            # Ritardi di fase (n_ant, N_grid)
+            # Phase delays (n_ant, N_grid)
             p   = self.positions                   # (n_ant, 2)
             tau = 2.0 * np.pi * (
                 p[:, 0:1] * ue[np.newaxis, :]
@@ -162,14 +164,14 @@ class UcaConfig:
         return self._cache[key]
 
     def invalidate_cache(self) -> None:
-        """Forza il ricalcolo della matrice di steering al prossimo accesso."""
+        """Force recomputation of the steering matrix on next access."""
         self._cache.clear()
 
-    # ── Compatibilità con find_peak_2d di doa_algorithms_3d ─────────────────
+    # ── Compatibility with find_peak_2d from doa_algorithms_3d ──────────────
 
     @property
     def d_lambda(self) -> float:
-        """Alias per compatibilità con CrossArrayConfig (non usato nel calcolo)."""
+        """Alias for CrossArrayConfig compatibility (not used in computation)."""
         return self.radius_lambda
 
 
@@ -182,15 +184,15 @@ def find_peak_uca_2d(
     cfg:  UcaConfig,
 ) -> Tuple[float, float, float]:
     """
-    Trova (azimuth_deg, elevation_deg, papr_db) dallo spettro 2D.
+    Find (azimuth_deg, elevation_deg, papr_db) from a 2D spectrum.
 
-    Usa l'interpolazione parabolica 2D attorno al bin di picco per
-    accuratezza sub-griglia (±metà step di griglia).
+    Uses 2D parabolic interpolation around the peak bin for
+    sub-grid accuracy (±half grid step).
 
-    Restituisce
+    Returns
     -----------
-    az_deg  : azimuth stimato  [°, 0…360]
-    el_deg  : elevazione stimata [°, el_min…90]
+    az_deg  : estimated azimuth  [°, 0…360]
+    el_deg  : estimated elevation [°, el_min…90]
     papr_db : Peak-to-Average Power Ratio dello spettro [dB]
     """
     idx       = np.unravel_index(np.argmax(spec), spec.shape)
@@ -231,6 +233,145 @@ def find_peak_uca_2d(
               if mean_v > 1e-15 else 0.0)
 
     return float(az_deg), float(el_deg), float(papr)
+
+
+def find_peaks_uca_2d(
+    spec: np.ndarray,
+    cfg:  UcaConfig,
+    n_peaks: int = 2,
+    min_sep_deg: float = 10.0,
+) -> list[tuple[float, float, float]]:
+    """
+    Find the top ``n_peaks`` in a 2D MUSIC spectrum, with peak suppression.
+
+    After each peak is found, a circular neighbourhood of radius
+    ``min_sep_deg`` in both azimuth and elevation is zeroed so that
+    subsequent searches find the NEXT-strongest local maximum rather
+    than the same peak shifted by one grid bin.
+
+    Returns a list of (az_deg, el_deg, papr_db), sorted by PAPR.
+    """
+    n_el, n_az = spec.shape
+    az_step = 360.0 / n_az
+    el_step = (90.0 - cfg.el_min_deg) / max(n_el - 1, 1)
+    az_bins_suppress = max(1, int(np.ceil(min_sep_deg / az_step)))
+    el_bins_suppress = max(1, int(np.ceil(min_sep_deg / el_step)))
+
+    work = spec.copy()
+    results: list[tuple[float, float, float]] = []
+
+    for _ in range(n_peaks):
+        idx = np.unravel_index(np.argmax(work), work.shape)
+        i_el, i_az = int(idx[0]), int(idx[1])
+
+        # ── parabolic interpolation (same as find_peak_uca_2d) ─────────────
+        az_frac = 0.0
+        ym_a = float(work[i_el, (i_az - 1) % n_az])
+        y0_a = float(work[i_el, i_az])
+        yp_a = float(work[i_el, (i_az + 1) % n_az])
+        denom_az = ym_a - 2.0 * y0_a + yp_a
+        if abs(denom_az) > 1e-6:
+            az_frac = float(np.clip(0.5 * (ym_a - yp_a) / denom_az, -0.5, 0.5))
+
+        el_frac = 0.0
+        if 0 < i_el < n_el - 1:
+            ym_e = float(work[i_el - 1, i_az])
+            y0_e = float(work[i_el, i_az])
+            yp_e = float(work[i_el + 1, i_az])
+            denom_el = ym_e - 2.0 * y0_e + yp_e
+            if abs(denom_el) > 1e-6:
+                el_frac = float(np.clip(0.5 * (ym_e - yp_e) / denom_el, -0.5, 0.5))
+
+        az_deg = (cfg.az_range_deg()[i_az] + az_frac * az_step) % 360.0
+        el_deg = float(np.clip(cfg.el_range_deg()[i_el] + el_frac * el_step,
+                               cfg.el_min_deg, 90.0))
+
+        # ── PAPR (from the ORIGINAL spec, not the suppressed copy) ─────────
+        s_lin  = 10.0 ** (np.clip(spec, -200.0, 0.0) / 10.0)
+        mean_v = float(np.mean(s_lin))
+        papr   = (10.0 * np.log10(float(np.max(s_lin)) / (mean_v + 1e-15))
+                  if mean_v > 1e-15 else 0.0)
+
+        results.append((float(az_deg), float(el_deg), float(papr)))
+
+        # ── suppress neighbourhood of the found peak ───────────────────────
+        for az_off in range(-az_bins_suppress, az_bins_suppress + 1):
+            for el_off in range(-el_bins_suppress, el_bins_suppress + 1):
+                j_az = (i_az + az_off) % n_az
+                j_el = i_el + el_off
+                if 0 <= j_el < n_el:
+                    work[j_el, j_az] = -200.0
+
+    return results
+
+
+def pick_doa_peak_uca_2d(
+    spec: np.ndarray,
+    cfg: UcaConfig,
+    *,
+    indoor: bool = False,
+    el_pref_hi: float = 35.0,
+    el_pref_lo: float = 8.0,
+    phase_diffs: np.ndarray | None = None,
+    az_hint_deg: float | None = None,
+    n_peaks: int = 4,
+    min_sep_deg: float = 8.0,
+) -> tuple[float, float, float]:
+    """
+    Select the best (az, el, papr) from a 2D MUSIC spectrum.
+
+    Outdoor (``indoor=False``): global PAPR maximum (``find_peak_uca_2d``).
+
+    Indoor (``indoor=True``): score multiple local peaks — prefer elevation in
+    the direct-path window ``[el_pref_lo, el_pref_hi]`` and optionally boost
+    peaks whose inter-channel phases match ``phase_diffs`` (stable at low TX
+    power), and optionally favour azimuth near ``az_hint_deg`` (tracker EMA).
+    Suppresses ceiling multipath peaks at el ≈ 60–80°.
+    """
+    if not indoor:
+        return find_peak_uca_2d(spec, cfg)
+
+    peaks = find_peaks_uca_2d(spec, cfg, n_peaks=n_peaks, min_sep_deg=min_sep_deg)
+    if not peaks:
+        return find_peak_uca_2d(spec, cfg)
+
+    pos = cfg.positions
+    best: tuple[float, float, float] | None = None
+    best_score = -1e9
+
+    for az, el, papr in peaks:
+        if el > cfg.el_max_deg + 1.0:
+            continue
+        score = papr
+        if el > el_pref_hi:
+            score -= 1.2 * (el - el_pref_hi)
+        elif el < el_pref_lo:
+            score -= 0.6 * (el_pref_lo - el)
+
+        if phase_diffs is not None and phase_diffs.size >= cfg.n_ant - 1:
+            az_r = np.deg2rad(az)
+            el_r = np.deg2rad(el)
+            tau = 2.0 * np.pi * (
+                pos[:, 0] * np.cos(el_r) * np.sin(az_r)
+                + pos[:, 1] * np.cos(el_r) * np.cos(az_r)
+            )
+            tau -= tau[0]
+            expected = np.degrees(tau[1:])
+            ph_err = float(np.mean(np.abs(
+                ((phase_diffs - expected + 180.0) % 360.0) - 180.0
+            )))
+            score -= 0.15 * ph_err
+
+        if az_hint_deg is not None:
+            d_az = abs(az - az_hint_deg) % 360.0
+            d_az = min(d_az, 360.0 - d_az)
+            score -= 0.10 * d_az
+
+        if score > best_score:
+            best_score = score
+            best = (az, el, papr)
+
+    return best if best is not None else peaks[0]
 
 
 # =============================================================================
@@ -327,25 +468,25 @@ def _get_cov(X: np.ndarray, R_in: np.ndarray | None) -> np.ndarray:
 
 
 # =============================================================================
-# Decorrelazione della covarianza (anti-multipath)
+# ── Covariance decorrelation (anti-multipath) ──────────────────────────
 # =============================================================================
 
 def _circulant_smooth(R: np.ndarray) -> np.ndarray:
     """
     Circulant averaging (UCA spatial smoothing, Mathews & Zoltowski 1994).
 
-    Per ogni lag circolare l calcola la media:
+    For each circular lag l, compute the average:
         d[l] = (1/N) * sum_{k=0}^{N-1}  R[k, (k+l) mod N]
-    e ricostruisce la matrice circolante R_c[i,j] = d[(j-i) mod N].
+    and reconstruct the circulant matrix R_c[i,j] = d[(j-i) mod N].
 
-    Equivalente a N sovrapposizione di sotto-array virtuali (rotazioni del UCA):
+    Equivalent to N overlapping virtual sub-arrays (UCA rotations):
         R_c = (1/N) * sum_k  Π^k · R · (Π^k)^H
-    dove Π è la matrice di permutazione ciclica.
+    where Π is the cyclic permutation matrix.
 
-    Benefici:
-    - Decorrela sorgenti coerenti (multipath) → N/2 copie coerenti tollerabili
-    - Forza la struttura circolante teorica della covarianza UCA
-    - Fonte: Ita97/2D_MUSIC_DOA (spatial smoothing) adattato per UCA circolare
+    Benefits:
+    - Decorrelates coherent sources (multipath) → N/2 coherent copies tolerated
+    - Enforces the theoretical circulant structure of the UCA covariance
+    - Source: Ita97/2D_MUSIC_DOA (spatial smoothing) adapted for circular UCA
     """
     N = R.shape[0]
     k = np.arange(N)
@@ -353,10 +494,10 @@ def _circulant_smooth(R: np.ndarray) -> np.ndarray:
     d = np.empty(N, dtype=complex)
     for lag in range(N):
         d[lag] = np.mean(R[k, (k + lag) % N])
-    # Costruisci matrice circolante: R_c[i, j] = d[(j - i) % N]
+    # Build circulant matrix: R_c[i, j] = d[(j - i) % N]
     rows = [np.roll(d, i) for i in range(N)]
     R_c  = np.array(rows, dtype=complex)
-    # Assicura simmetria Hermitiana (errori numerici)
+    # Enforce Hermitian symmetry (numerical errors)
     return (R_c + R_c.conj().T) * 0.5
 
 
@@ -364,27 +505,27 @@ def _fb_average_uca(R: np.ndarray) -> np.ndarray:
     """
     Forward-Backward averaging per UCA: R_fb = 0.5 * (R + J · R* · J).
 
-    J è la matrice di scambio anti-diagonale (exchange matrix).
-    Per ULA pari è esatta (a(-ψ) = J·a*(ψ) a meno di fase scalare).
-    Per UCA N=5 è approssimata ma migliora la robustezza al multipath coerente
-    riducendo il rango effettivo delle sorgenti coerenti.
+    J is the anti-diagonal exchange matrix.
+    For even ULA it is exact (a(-ψ) = J·a*(ψ) up to scalar phase).
+    For N=5 UCA it is approximate but improves robustness to coherent multipath
+    by reducing the effective rank of coherent sources.
 
-    Implementazione analoga a Ita97/2D_MUSIC_DOA fb=True.
+    Implementation analogous to Ita97/2D_MUSIC_DOA fb=True.
     """
     N = R.shape[0]
-    J    = np.eye(N, dtype=complex)[::-1, :]   # antidiagonale identità
+    J    = np.eye(N, dtype=complex)[::-1, :]   # anti-diagonal identity
     R_fb = 0.5 * (R + J @ np.conj(R) @ J)
-    return (R_fb + R_fb.conj().T) * 0.5  # forza simmetria Hermitiana
+    return (R_fb + R_fb.conj().T) * 0.5  # enforce Hermitian symmetry
 
 
 def _decor_cov(R: np.ndarray, mode: str) -> np.ndarray:
     """
-    Applica decorrelazione alla covarianza.
+    Apply decorrelation to the covariance.
 
     mode: 'none' | 'circulant' | 'fb' | 'both'
-        'circulant' = solo circulant smoothing  (preferito per Capon)
-        'fb'        = solo forward-backward     (limitato senza circulant)
-        'both'      = circulant poi FB          (default per MUSIC indoor)
+        'circulant' = circulant smoothing only  (preferred for Capon)
+        'fb'        = forward-backward only     (limited without circulant)
+        'both'      = circulant then FB          (default for indoor MUSIC)
     """
     if mode in ("circulant", "both"):
         R = _circulant_smooth(R)
@@ -405,21 +546,21 @@ def doa_music_uca_2d(
     decorr:      str = "none",
 ) -> np.ndarray:
     """
-    Pseudo-spettro 2D-MUSIC per UCA.
+    2D-MUSIC pseudospectrum for UCA.
 
     P(φ, θ) = 1 / ‖E_n^H · a(φ, θ)‖²
 
-    NOTA sulla decorrelazione per UCA:
-    - Il circulant smoothing è corretto per URA (Ita97/2D_MUSIC_DOA, sps=True)
-      ma NON per UCA: forza R ad essere ciclicamente simmetrica → autovettori
-      = vettori DFT → spettro MUSIC con simmetria N-fold (stella a N punte).
-    - Per UCA la decorrelazione anti-multipath corretta è la media temporale
-      (EMA, gestita da CovarianceAccumulatorUca) — con alpha=0.97, 33 frame
-      di integrazione decorrelano il multipath indoor.
-    - decorr='none' è il default sicuro. Usare 'circulant'/'fb' solo in
-      esperimenti offline con molti snapshot garantiti.
+    NOTE on decorrelation for UCA:
+    - Circulant smoothing is correct for URA (Ita97/2D_MUSIC_DOA, sps=True)
+      but NOT for UCA: forces R to be cyclically symmetric → eigenvectors
+      = DFT vectors → MUSIC spectrum with N-fold symmetry (N-pointed star).
+    - For UCA the correct anti-multipath decorrelation is temporal averaging
+      (EMA, handled by CovarianceAccumulatorUca) — with alpha=0.97, 33 frames
+      of integration decorrelate indoor multipath.
+    - decorr='none' is the safe default. Use 'circulant'/'fb' only in
+      offline experiments with many guaranteed snapshots.
 
-    Parametri
+    Parameters
     ---------
     X           : (n_ant, N_campioni) complesso
     cfg         : UcaConfig
@@ -427,9 +568,9 @@ def doa_music_uca_2d(
     n_snapshots : campioni IQ (per MDL auto-detect)
     decorr      : 'none' (default) | 'circulant' | 'fb' | 'both'
 
-    Restituisce
+    Returns
     -----------
-    spec : (n_el, n_az) float ndarray  [dB, picco = 0, floor = −40 dB]
+    spec : (n_el, n_az) float ndarray  [dB, peak = 0, floor = −40 dB]
     """
     R = _decor_cov(_get_cov(X, R_in), decorr)
     M = R.shape[0]
@@ -446,7 +587,7 @@ def doa_music_uca_2d(
 
     eigenvalues, eigenvectors = np.linalg.eigh(R)
 
-    # Auto-detect sorgenti via MDL (Wax & Kailath 1985) se num_expected_signals == 0
+    # Auto-detect sources via MDL (Wax & Kailath 1985) when num_expected_signals == 0
     if cfg.num_expected_signals == 0:
         if n_snapshots is not None:
             _N = n_snapshots
@@ -460,7 +601,7 @@ def doa_music_uca_2d(
     else:
         n_sig = max(1, min(cfg.num_expected_signals, M - 1))
 
-    En = eigenvectors[:, :-n_sig]           # (M, M-n_sig) sottospazio rumore
+    En = eigenvectors[:, :-n_sig]           # (M, M-n_sig) noise subspace
 
     A  = cfg.get_steering_matrix()          # (M, N_grid)
     Pa = En.conj().T @ A                   # (M-n_sig, N_grid)
@@ -481,16 +622,16 @@ def doa_bartlett_uca_2d(
     R_in: np.ndarray | None = None,
 ) -> np.ndarray:
     """
-    Beamformer convenzionale 2D (delay-and-sum) per UCA.
+    Conventional 2D beamformer (delay-and-sum) for UCA.
 
     P(φ, θ) = a^H(φ, θ) · R · a(φ, θ)
 
-    Il più robusto quando un canale è degradato — degrada gracefully
-    allargando il lobo principale invece di fallire silenziosamente.
+    Most robust when a channel is degraded — degrades gracefully
+    by broadening the main lobe instead of failing silently.
 
-    Restituisce
+    Returns
     -----------
-    spec : (n_el, n_az) float ndarray  [dB, picco = 0, floor = −40 dB]
+    spec : (n_el, n_az) float ndarray  [dB, peak = 0, floor = −40 dB]
     """
     R = _get_cov(X, R_in)
     A = cfg.get_steering_matrix()              # (M, N_grid)
@@ -512,22 +653,22 @@ def doa_capon_uca_2d(
     decorr: str = "none",
 ) -> np.ndarray:
     """
-    Beamformer 2D-Capon (MVDR) per UCA.
+    2D-Capon beamformer (MVDR) for UCA.
 
     P(φ, θ) = 1 / (a^H(φ, θ) · R^{-1} · a(φ, θ))
 
     decorr='none' di default (vedi nota in doa_music_uca_2d).
     Il circulant smoothing forza N-fold symmetry rendendo Capon
-    equivalente a Bartlett su una covarianza degradata.
+    equivalent to Bartlett on a degraded covariance.
 
-    Restituisce
+    Returns
     -----------
-    spec : (n_el, n_az) float ndarray  [dB, picco = 0, floor = −40 dB]
+    spec : (n_el, n_az) float ndarray  [dB, peak = 0, floor = −40 dB]
     """
     R = _decor_cov(_get_cov(X, R_in), decorr)
 
     M   = R.shape[0]
-    # Loading adattivo basato sul max autovalore
+    # Adaptive loading based on max eigenvalue
     ev_max = float(abs(np.linalg.eigvalsh(R)[-1]))
     eps    = 1e-4 * max(ev_max, 1e-20)
     R      = R + eps * np.eye(M, dtype=complex)
@@ -547,13 +688,13 @@ def doa_capon_uca_2d(
 
 
 # =============================================================================
-# Metriche di qualità del segnale
+# ── Signal quality metrics ───────────────────────────────────────────
 # =============================================================================
 
 def eigenvalue_spread_uca_db(R: np.ndarray) -> np.ndarray:
     """
-    Autovalori della covarianza in dB, ordinati decrescenti.
-    Normalizzati rispetto al più piccolo (piano del rumore = 0 dB).
+    Covariance eigenvalues in dB, descending order.
+    Normalised to the smallest (noise floor = 0 dB).
     """
     ev = np.sort(np.maximum(np.linalg.eigvalsh(R), 0.0))[::-1]
     return 10.0 * np.log10(ev / (ev[-1] + 1e-20) + 1e-20)
@@ -709,7 +850,7 @@ class CovarianceAccumulatorUca:
 
 
 # =============================================================================
-# Interno: stima del numero di sorgenti (MDL semplificato)
+# Internal: source count estimation (simplified MDL)
 # =============================================================================
 
 def _estimate_signal_count_mdl(
