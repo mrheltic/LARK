@@ -326,33 +326,32 @@ class KrakenIQSource:
     # ------------------------------------------------------------------
 
     def _worker(self):
+        _reconnect_delay = 3.0
         while not self._stop_evt.is_set():
             if not self._connected:
                 if not self._connect():
-                    time.sleep(3.0)
+                    time.sleep(_reconnect_delay)
+                    _reconnect_delay = min(_reconnect_delay * 1.5, 30.0)
                     continue
+                _reconnect_delay = 3.0  # reset on success
 
             try:
                 frame = self._recv_frame()
             except socket.timeout:
                 if not self._stop_evt.is_set():
-                    print("[KrakenIQ] Frame recv timed out — retrying once")
-                try:
-                    frame = self._recv_frame()
-                except Exception as exc2:
-                    if not self._stop_evt.is_set():
-                        print(f"[KrakenIQ] Receive error: {exc2}")
-                    self._connected = False
-                    for s in (self._sock, self._ctrl_sock):
-                        try:
-                            if s:
-                                s.close()
-                        except Exception:
-                            pass
-                    self._sock = None
-                    self._ctrl_sock = None
-                    time.sleep(3.0)
-                    continue
+                    print("[KrakenIQ] Frame recv timed out — reconnecting")
+                # Close and reconnect (don't retry on same socket)
+                self._connected = False
+                for s in (self._sock, self._ctrl_sock):
+                    try:
+                        if s:
+                            s.close()
+                    except Exception:
+                        pass
+                self._sock = None
+                self._ctrl_sock = None
+                time.sleep(2.0)
+                continue
             except Exception as exc:
                 if not self._stop_evt.is_set():
                     print(f"[KrakenIQ] Receive error: {exc}")
