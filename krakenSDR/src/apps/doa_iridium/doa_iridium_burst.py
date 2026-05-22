@@ -239,12 +239,12 @@ def _scan_doppler_peaks(
 
     Sb = Spec[mask].copy()
     fb = freqs[mask]
-    noise_floor = float(np.median(Sb)) + 1e-20
+    noise_floor = max(float(np.median(Sb)), 1e-20)
 
     results: list[tuple[float, float]] = []
     for _ in range(n_peaks):
         idx = int(np.argmax(Sb))
-        snr = 10.0 * np.log10(float(Sb[idx]) / noise_floor)
+        snr = 10.0 * np.log10(max(float(Sb[idx]), 1e-20) / noise_floor)
         if snr < min_snr_db:
             break
         results.append((float(fb[idx]), float(snr)))
@@ -337,10 +337,21 @@ def _update_tracker(
     trk.snr_hist.append(snr_db)
     trk.cfo_hist.append(cfo_hz)
 
-    new_sign = int(np.sign(cfo_hz)) if abs(cfo_hz) > 200.0 else 0
-    if (bool(getattr(C, "DOPPLER_XZ_ENABLED", False))
+    _xz_en = bool(getattr(C, "DOPPLER_XZ_ENABLED", False))
+    _xz_min_abs_hz = float(getattr(C, "DOPPLER_XZ_MIN_ABS_HZ", 600.0))
+    _xz_min_jump_hz = float(getattr(C, "DOPPLER_XZ_MIN_JUMP_HZ", 1200.0))
+    _xz_deadtime_s = float(getattr(C, "DOPPLER_XZ_DEADTIME_S", 2.0))
+
+    new_sign = int(np.sign(cfo_hz)) if abs(cfo_hz) > _xz_min_abs_hz else 0
+    _jump_ok = abs(cfo_hz - trk.cfo_hz) >= _xz_min_jump_hz
+    _deadtime_ok = (
+        trk.t_zero_crossing is None
+        or (time.monotonic() - trk.t_zero_crossing) >= _xz_deadtime_s
+    )
+    if (_xz_en
             and trk.cfo_prev_sign != 0 and new_sign != 0
-            and new_sign != trk.cfo_prev_sign):
+            and new_sign != trk.cfo_prev_sign
+            and _jump_ok and _deadtime_ok):
         trk.el_at_zero_crossing = el_doa
         trk.t_zero_crossing     = time.monotonic()
         print(
@@ -1238,8 +1249,16 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
         if az_spec is not None and len(az_spec) > 0:
             az_spec_line.set_ydata(az_spec)
         for i, mk in enumerate(az_spec_markers):
-            mk.set_data([sats_sorted[i].az_deg], [0]) if i < len(sats_sorted) and not sats_sorted[i].no_doa else mk.set_data([], [])
-            mk.set_visible(i < len(sats_sorted) and not sats_sorted[i].no_doa)
+            if i < len(sats_sorted) and not sats_sorted[i].no_doa and az_spec is not None and len(az_spec) > 0:
+                _az = float(sats_sorted[i].az_deg % 360.0)
+                _idx = int(round((_az / 360.0) * (len(az_spec) - 1)))
+                _idx = int(np.clip(_idx, 0, len(az_spec) - 1))
+                _y = float(az_spec[_idx])
+                mk.set_data([_az], [_y])
+                mk.set_visible(True)
+            else:
+                mk.set_data([], [])
+                mk.set_visible(False)
 
         # ── Phase monitor ────────────────────────────────────────────────────
         for i, (line, q) in enumerate(zip(ph_lines, ph_hist)):
@@ -1491,11 +1510,16 @@ def main() -> None:
     if args.fd_max is not None:
         C.DOPPLER_GATE_HZ = args.fd_max
 
+    _fd_gate_for_mode = float(getattr(C, "DOPPLER_GATE_HZ", 0.0))
+    _el_max_cfg = float(getattr(C, "EL_MAX_DEG", 90.0))
+    if _fd_gate_for_mode > 0.0:
+        _el_max_cfg = min(_el_max_cfg, float(getattr(C, "INDOOR_EL_MAX_DEG", _el_max_cfg)))
+
     cfg = UcaConfig(
         n_ant=C.N_ANTENNAS, radius_lambda=args.radius,
         n_az=C.N_AZ, n_el=C.N_EL,
         el_min_deg=C.EL_MIN_DEG,
-        el_max_deg=float(getattr(C, "EL_MAX_DEG", 90.0)),
+        el_max_deg=_el_max_cfg,
         num_expected_signals=args.nsig,
         ant0_offset_deg=args.offset,
         ant_ccw=C.ANT_CCW,   # False = CW (clockwise)
