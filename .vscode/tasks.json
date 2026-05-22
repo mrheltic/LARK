@@ -507,7 +507,7 @@
             "label": "KrakenSDR: Calibrate HW phase offsets — TX from North 0° (1626 MHz)",
             "detail": "Calibrazione hardware UCA: posiziona l'antenna 0 del KrakenSDR a Nord geografico, posiziona il LibreSDR TX a Nord (az=0°) a 1–3 m. Avvia prima 'LibreSDR: Indoor 1626 MHz — TX IRA burst'. Questo task raccoglie ~120 s di burst, calcola i phase offset per canale e li scrive automaticamente in config.py. Riavvia il DoA dopo.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_iridium/doa_iridium_burst.py --freq 1626.270 --max-sats 1 --calibrate 0.0 --no-plot --no-rec",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_iridium/iridium_burst_doa_runner.py --freq 1626.270 --max-sats 1 --calibrate 0.0 --no-plot --no-rec",
             "options": {
                 "cwd": "${workspaceFolder}/krakenSDR/src"
             },
@@ -546,10 +546,10 @@
         },
 
         {
-            "label": "KrakenSDR: Iridium DoA burst — 1626.270 MHz (headless)",
+            "label": "KrakenSDR: Iridium Burst DoA Runner — 1626.270 MHz (headless)",
             "detail": "DoA su IRA burst a 1626.270 MHz senza GUI. Attende Heimdall, usa parametri da config.py. Output [DIAG] ogni 10s.",
             "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/doa_iridium_burst.py --no-plot",
+            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/iridium_burst_doa_runner.py --no-plot",
             "options": {
                 "cwd": "${workspaceFolder}/krakenSDR/src"
             },
@@ -565,10 +565,10 @@
             "problemMatcher": []
         },
         {
-            "label": "KrakenSDR: Iridium DoA burst — 1626.270 MHz (GUI)",
+            "label": "KrakenSDR: Iridium Burst DoA Runner — 1626.270 MHz (GUI)",
             "detail": "DoA con GUI interattiva (skyplot + MUSIC 2D + phase plot). Usa parametri da config.py.",
             "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/doa_iridium_burst.py",
+            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/iridium_burst_doa_runner.py",
             "options": {
                 "cwd": "${workspaceFolder}/krakenSDR/src"
             },
@@ -581,10 +581,10 @@
             "problemMatcher": []
         },
         {
-            "label": "KrakenSDR: Iridium DoA — collect 5ch dataset (offline)",
-            "detail": "Collects burst windows from all 5 antennas using the same burst detector/tone estimator as doa_iridium_burst.py, then annotates TLE-based ground truth.",
+            "label": "KrakenSDR: Iridium Dataset — collect 5ch bursts",
+            "detail": "Collects burst windows from all 5 antennas using the same burst detector/tone estimator as iridium_burst_doa_runner.py, then annotates TLE-based ground truth.",
             "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/doa_iridium_collect_dataset.py --max-time-s ${input:iridiumCollectSeconds} --max-bursts ${input:iridiumCollectBursts}",
+            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/collect_iridium_burst_dataset.py --max-time-s ${input:iridiumCollectSeconds} --max-bursts ${input:iridiumCollectBursts}",
             "options": {
                 "cwd": "${workspaceFolder}/krakenSDR/src"
             },
@@ -597,10 +597,10 @@
             "problemMatcher": []
         },
         {
-            "label": "KrakenSDR: Iridium DoA — process dataset offline",
+            "label": "KrakenSDR: Iridium Dataset — offline DoA processing",
             "detail": "Runs offline DoA on a collected dataset and outputs per-burst estimates plus GT error summary when GT is available.",
             "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/doa_iridium_process_offline.py --input ${input:iridiumDatasetFile} --algo ${input:iridiumOfflineAlgo}",
+            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/process_iridium_burst_dataset_offline.py --input ${input:iridiumDatasetFile} --algo ${input:iridiumOfflineAlgo}",
             "options": {
                 "cwd": "${workspaceFolder}/krakenSDR/src"
             },
@@ -618,7 +618,7 @@
             "dependsOn": [
                 "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
                 "LibreSDR: Indoor 1626 MHz — TX IRA burst (lab DoA)",
-                "KrakenSDR: Iridium DoA burst — 1626.270 MHz (GUI)"
+                "KrakenSDR: Iridium Burst DoA Runner — 1626.270 MHz (GUI)"
             ],
             "dependsOrder": "sequence",
             "problemMatcher": []
@@ -658,7 +658,7 @@
         },
         {
             "id": "iridiumDatasetFile",
-            "description": "Path to .npz dataset generated by doa_iridium_collect_dataset.py",
+            "description": "Path to .npz dataset generated by collect_iridium_burst_dataset.py",
             "default": "../../data/doa_iridium/doa_iridium_dataset_latest.npz",
             "type": "promptString"
         },

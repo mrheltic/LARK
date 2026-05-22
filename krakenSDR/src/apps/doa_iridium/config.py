@@ -39,7 +39,7 @@ ANT_CCW = False
 
 ANT0_OFFSET_DEG = 0.0
 # Rotation of antenna 0 from geographic North [°].
-# Re-calibrate:  python3 doa_iridium_burst.py --calibrate 0.0
+# Re-calibrate:  python3 iridium_burst_doa_runner.py --calibrate 0.0
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # RF / Frequency
@@ -48,7 +48,7 @@ ANT0_OFFSET_DEG = 0.0
 FREQ_HZ = 1_626_270_000
 # Iridium Ring Alert channel (1626.270 MHz).
 
-GAIN_DB = 38
+GAIN_DB = 40
 # IF gain [dB] applied to all KrakenSDR channels.  RTL-SDR max ≈ 49.6 dB.
 # Indoor −60 dB TX at ~1 m:  45–49 dB
 # Indoor −20 dB TX at ~1 m:  30–35 dB  (avoid saturation)
@@ -77,19 +77,20 @@ MAX_SATELLITES = 1
 # Maximum simultaneously tracked satellites.
 # Iridium L-band: typically 1–3 above horizon.  Indoor single-TX: set to 1.
 
-MULTI_BURST_N = 12
+MULTI_BURST_N = 30
 # Number of preamble bursts accumulated per DoA estimate.
-# Indoor: 20 → ~1 estimate every 10s.  Outdoor satellite: 10–15.
+# Higher value => fewer estimates per second, but more stable/precise DoA.
+# Indoor static single-source: 18–24 recommended. Outdoor satellite: 10–15.
 
 DOPPLER_SCAN_BW_HZ = 45_000
 # Half-width [Hz] of FFT scan around preamble tone (3125 Hz).
 
-DOPPLER_GATE_HZ = 2_500
+DOPPLER_GATE_HZ = 3_000
 # CFO rejection gate [Hz].  Peaks with |cfo| > DOPPLER_GATE_HZ discarded.
 # Indoor TX: 3000 Hz  (static TX, TCXO ±1 kHz)
 # Outdoor satellite: 0 (disabled)
 
-CFO_TRACK_MAX_JUMP_HZ = 1_500
+CFO_TRACK_MAX_JUMP_HZ = 3_000
 # Max CFO jump [Hz] between consecutive bursts for same tracker.
 
 SAT_MIN_SEP_HZ = 5_000
@@ -110,15 +111,20 @@ N_EL       = 86        # elevation grid points [5°, 90°] with 1° step
 EL_MIN_DEG = 5.0       # lower bound: patches are directional
 EL_MAX_DEG = 90.0      # upper bound: satellite can pass through zenith
 
-INDOOR_EL_MAX_DEG = 35.0
-# Indoor MUSIC grid cap.  Excludes high-elevation ceiling reflections.
-# Active only when DOPPLER_GATE_HZ > 0.
+INDOOR_EL_MAX_DEG = 40.0
+# Indoor MUSIC grid cap.  Excludes el > 40° (ceiling reflections at 60–80°).
 
 INDOOR_EL_PREF_MAX_DEG = 22.0
-# Preferred elevation upper bound for pick_doa_peak scoring (TX at 10–20°).
+# Preferred elevation upper bound for pick_doa_peak scoring.
+# Keep wider indoor range to avoid artificial lock around ~15-20°.
 
-INDOOR_EL_PREF_MIN_DEG = 10.0
-# Penalise peaks below this elevation (horizon / aliasing).
+INDOOR_EL_PREF_MIN_DEG = 5.0
+# Penalise peaks below this elevation (horizon / aliasing), but keep floor low
+# enough to track realistic indoor setups.
+
+INDOOR_SINGLE_SOURCE_RELAX_GATES = True
+# Indoor near-field with a single source is multipath-heavy: relaxing AZ/phase
+# continuity gates improves acceptance and prevents tracking stalls.
 
 AZ_FREEZE_EL_DEG = 60.0
 # Above this elevation the projected UCA aperture collapses.
@@ -130,12 +136,10 @@ AZ_FREEZE_EL_DEG = 60.0
 COV_ALPHA = 0.88
 # Burst-level covariance EMA weight.  τ = 1/(1−α) burst time constant.
 
-AZ_SMOOTH_ALPHA = 0.88
-# Circular EMA on per-burst azimuth.  τ = 1/(1−α) ≈ 2 updates.
-# Indoor stationary TX: 0.70–0.90  (stable, slow)
-# Outdoor satellite:     0.50       (tracks 0.5–1°/s motion)
+AZ_SMOOTH_ALPHA = 0.70
+# Circular EMA on per-burst azimuth.  τ = 1/(1−α) ≈ 3.3 updates.
 
-EL_SMOOTH_ALPHA = 0.88
+EL_SMOOTH_ALPHA = 0.70
 # Linear EMA on per-burst elevation.
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -144,7 +148,7 @@ EL_SMOOTH_ALPHA = 0.88
 
 CHANNEL_PHASE_OFFSETS_DEG = [0.0, 24.71, -86.64, 8.72, -3.4]
 # Per-channel phase offset [°].  Channel 0 is reference (always 0.0).
-# Re-run:  python3 doa_iridium_burst.py --calibrate 0.0
+# Re-run:  python3 iridium_burst_doa_runner.py --calibrate 0.0
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Quality gates
@@ -159,12 +163,12 @@ EIG_SPREAD_MIN_DB = 0.5
 EIG_SN_GAP_MIN_DB = 0.0
 # Disabled post-BPF.
 
-SNR_INST_MIN_DB = -3.0
+SNR_INST_MIN_DB = -5.0
 # Minimum per-burst SINR [dB] from eigenvalue ratio of sample covariance.
 # After amplitude normalisation, SINR = (λ₁ − σ²_n) / σ²_n is scale-invariant.
 # −5 dB: accepts weak indoor signals; pure noise ≈ 0 dB.
 
-PAPR_INST_MIN_DB = 6.0
+PAPR_INST_MIN_DB = 4.0
 # Minimum MUSIC PAPR [dB] for accumulated multi-burst DoA.
 # Indoor: 4.0  →  Outdoor clear sky: 8.0–12.0
 
@@ -184,12 +188,21 @@ SAMPLE_RATE_HZ       = 1_024_000   # KrakenSDR / Heimdall DAQ rate [Hz]
 AZ_OUTLIER_ENABLED      = True
 AZ_OUTLIER_MAX_DEV_DEG  = 60.0
 AZ_OUTLIER_MIN_HISTORY  = 15
+AZ_OUTLIER_RELOCK_STREAK = 12
+# If AZ_OUTLIER rejects this many bursts in a row, force tracker re-lock.
+# Prevents freeze after abrupt antenna/TX direction changes.
 
 AZ_PICK_HINT_MIN_HISTORY = 4
 # Burst history before using tracker azimuth median in pick_doa_peak.
 
-PHASE_COHERENCE_ENABLED     = True
+PHASE_COHERENCE_ENABLED     = False
 PHASE_COHERENCE_MAX_JUMP_DEG = 55.0
+PHASE_COHERENCE_RELOCK_STREAK = 12
+# If phase coherence rejects this many bursts in a row, reset phase baseline.
+
+GATE_RELOCK_BYPASS_BURSTS = 12
+# After a relock event, temporarily bypass AZ/phase gates for N accepted bursts
+# so the tracker can converge to the new direction without wiping plot history.
 
 # Doppler zero-crossing event diagnostics.
 # Keep disabled for indoor static TX because CFO can jitter around zero and
@@ -205,3 +218,9 @@ DOPPLER_XZ_DEADTIME_S = 2.0
 
 HISTORY_LEN        = 50          # samples kept in sliding history plots
 UPDATE_INTERVAL_MS = 300         # matplotlib animation refresh [ms]
+
+SKYPLOT_LOBE_WIDTH_DEG = 12.0
+# Visual angular width of skyplot lobe projection derived from azimuth spectrum.
+
+SKYPLOT_LOBE_ALPHA = 0.10
+# Fill opacity for skyplot lobes.

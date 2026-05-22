@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 """
-Offline DoA processor for datasets produced by doa_iridium_collect_dataset.py.
+Offline DoA processor for datasets produced by collect_iridium_burst_dataset.py.
 
 The processing path intentionally reuses internal functions from
-`doa_iridium_burst.py` so results are aligned with the online burst engine.
+`iridium_burst_doa_runner.py` so results are aligned with the online burst engine.
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import sys
-import time
-from pathlib import Path
 
 import numpy as np
 
@@ -25,13 +22,23 @@ if _SRC not in sys.path:
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-_CFG_PATH = os.path.join(_HERE, "config.py")
-_cfg_spec = importlib.util.spec_from_file_location("doa_iridium_config", _CFG_PATH)
-C = importlib.util.module_from_spec(_cfg_spec)
-assert _cfg_spec and _cfg_spec.loader
-_cfg_spec.loader.exec_module(C)
+from core.iridium_dataset_utils import (
+    bootstrap_paths,
+    build_uca_cfg_from_config,
+    compute_phase_coherence,
+    default_offline_report_path,
+    enrich_summary_with_gt_errors,
+    estimate_papr_db,
+    extract_tone_and_cfo,
+    json_default,
+    load_local_config,
+    summarize_rows,
+)
 
-import doa_iridium_burst as dib
+_HERE, _SRC, _ = bootstrap_paths(__file__, include_repo_root=False)
+C = load_local_config(_HERE)
+
+import iridium_burst_doa_runner as dib
 from core.doa_uca_2d import (
     UcaConfig,
     pick_doa_peak_uca_2d,
@@ -60,27 +67,6 @@ def _build_argparser() -> argparse.ArgumentParser:
     return p
 
 
-def _default_out_path(inp: str, algo: str) -> str:
-    stem = Path(inp).with_suffix("")
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    return f"{stem}_{algo}_offline_{ts}.json"
-
-
-def _to_serializable(obj):
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, (np.floating, np.integer)):
-        return obj.item()
-    return obj
-
-
-def _estimate_papr_db(x: np.ndarray) -> float:
-    p = np.abs(x) ** 2
-    p_avg = max(float(np.mean(p)), 1e-12)
-    p_pk = float(np.max(p))
-    return 10.0 * np.log10(max(p_pk / p_avg, 1e-12))
-
-
 def main() -> None:
     args = _build_argparser().parse_args()
 
@@ -97,24 +83,7 @@ def main() -> None:
     if n_bursts == 0:
         raise SystemExit("Empty dataset")
 
-    fd_gate = float(getattr(C, "DOPPLER_GATE_HZ", 0.0))
-    el_max_cfg = float(getattr(C, "EL_MAX_DEG", 90.0))
-    if fd_gate > 0.0:
-        el_max_cfg = min(el_max_cfg, float(getattr(C, "INDOOR_EL_MAX_DEG", el_max_cfg)))
-
-    cfg = UcaConfig(
-        n_ant=int(getattr(C, "N_ANTENNAS", 5)),
-        radius_lambda=float(getattr(C, "RADIUS_LAMBDA", 0.5)),
-        n_az=int(getattr(C, "N_AZ", 360)),
-        n_el=int(getattr(C, "N_EL", 86)),
-        el_min_deg=float(getattr(C, "EL_MIN_DEG", 5.0)),
-        el_max_deg=el_max_cfg,
-        num_expected_signals=max(1, int(getattr(C, "NUM_SIGNALS", 1))),
-        ant0_offset_deg=float(getattr(C, "ANT0_OFFSET_DEG", 0.0)),
-        ant_ccw=bool(getattr(C, "ANT_CCW", False)),
-    )
-    az_grid = cfg.az_range_deg()
-    el_grid = cfg.el_range_deg()
+    cfg, az_grid, el_grid = build_uca_cfg_from_config(C, UcaConfig)
 
     tone_hz_nom = float(dib._PREAMBLE_TONE_HZ)
     pre_samples = int(data["pre_samples"][0]) if "pre_samples" in data else int(dib._PRE_SAMPLES)
@@ -136,28 +105,28 @@ def main() -> None:
         Xpre = Xw[:, :pre_samples]
         X0_pre = Xpre[0]
 
-        peaks = dib._scan_doppler_peaks(
-            X0_pre, fs,
-            nom_tone_hz=tone_hz_nom,
-            scan_bw_hz=float(getattr(C, "DOPPLER_SCAN_BW_HZ", 45_000)),
-            n_peaks=1,
-            min_sep_hz=float(getattr(C, "SAT_MIN_SEP_HZ", 5_000)),
+        tone_info = extract_tone_and_cfo(
+            dib=dib,
+            C=C,
+            x_pre=X0_pre,
+            fs=fs,
+            tone_hz_nom=tone_hz_nom,
             min_snr_db=float(getattr(C, "DOPPLER_SNR_MIN_DB", 0.0)),
         )
-        if not peaks:
+        if tone_info is None:
             continue
 
-        tone_hz, tone_snr_db = peaks[0]
-        cfo_hz = float(tone_hz - tone_hz_nom)
+        tone_hz = tone_info.tone_hz
+        tone_snr_db = tone_info.tone_snr_db
+        cfo_hz = tone_info.cfo_hz
 
         if args.fd_max > 0 and abs(cfo_hz) > args.fd_max:
             continue
 
-        # Keep the same pilot-tone extraction path as online DoA.
         Xp = extract_pilot_tone(Xpre, fs, tone_hz)
         Xp = amplitude_normalize_channels(Xp)
 
-        coh = float(np.abs(np.mean(np.exp(1j * np.angle(Xp[1:] * np.conj(Xp[:1]))))))
+        coh = compute_phase_coherence(Xp)
         if args.phase_coh_min > 0 and coh < args.phase_coh_min:
             continue
 
@@ -214,7 +183,7 @@ def main() -> None:
             "az_deg": float(az_est),
             "el_deg": float(el_est),
             "peak": peak_metric,
-            "papr_db": float(_estimate_papr_db(Xpre[0])),
+            "papr_db": float(estimate_papr_db(Xpre[0])),
         }
 
         if "gt_az_deg" in data and "gt_el_deg" in data:
@@ -235,9 +204,9 @@ def main() -> None:
     if not out_rows:
         raise SystemExit("No bursts accepted by offline pipeline")
 
-    out_path = args.out if args.out else _default_out_path(args.input, args.algo)
+    out_path = args.out if args.out else default_offline_report_path(args.input, args.algo)
     report = {
-        "tool": "doa_iridium_process_offline",
+        "tool": "process_iridium_burst_dataset_offline",
         "input": os.path.abspath(args.input),
         "algo": args.algo,
         "freq_hz": int(freq_hz),
@@ -245,34 +214,14 @@ def main() -> None:
         "n_input_bursts": int(n_bursts),
         "n_output_rows": int(len(out_rows)),
         "rows": out_rows,
-        "summary": {
-            "az_mean_deg": float(np.mean([r["az_deg"] for r in out_rows])),
-            "el_mean_deg": float(np.mean([r["el_deg"] for r in out_rows])),
-            "cfo_mean_hz": float(np.mean([r["cfo_hz"] for r in out_rows])),
-            "coh_mean": float(np.mean([r["phase_coherence"] for r in out_rows])),
-        },
+        "summary": summarize_rows(out_rows),
     }
 
     if any(("gt_az_deg" in r and r["gt_az_deg"] is not None) for r in out_rows):
-        az_err = []
-        el_err = []
-        for r in out_rows:
-            if r.get("gt_az_deg") is None or r.get("gt_el_deg") is None:
-                continue
-            # Wrap azimuth error in [-180, 180] for a physically meaningful metric.
-            da = (float(r["az_deg"]) - float(r["gt_az_deg"]) + 180.0) % 360.0 - 180.0
-            de = float(r["el_deg"]) - float(r["gt_el_deg"])
-            az_err.append(abs(da))
-            el_err.append(abs(de))
-        if az_err:
-            report["summary"].update({
-                "az_mae_deg": float(np.mean(az_err)),
-                "el_mae_deg": float(np.mean(el_err)),
-                "n_gt_rows": int(len(az_err)),
-            })
+        report["summary"] = enrich_summary_with_gt_errors(report["summary"], out_rows)
 
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2, default=_to_serializable)
+        json.dump(report, f, indent=2, default=json_default)
 
     print(f"[OFFLINE] Saved {out_path}")
     print(f"[OFFLINE] rows={len(out_rows)} / input={n_bursts}")

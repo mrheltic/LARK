@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-doa_iridium_burst.py — Multi-satellite burst-gated 2D DoA on Iridium IRA
+iridium_burst_doa_runner.py — Multi-satellite burst-gated 2D DoA on Iridium IRA
 =========================================================================
 2D DoA (azimuth 0-360°, elevation 5-90°) on Iridium IRA bursts; supports
 simultaneous reception of up to 3 satellites (discriminated by preamble
@@ -30,12 +30,12 @@ in the active tracker registry.
 
 Usage
 -----
-    python3 doa_iridium_burst.py              # real hardware (Heimdall active)
-    python3 doa_iridium_burst.py --demo       # synthetic 2-satellite simulation
-    python3 doa_iridium_burst.py --demo --n-demo-sats 3
-    python3 doa_iridium_burst.py --freq 1626.270
-    python3 doa_iridium_burst.py --calibrate 45.0
-    python3 doa_iridium_burst.py --out-dir /tmp/doa_iridium
+    python3 iridium_burst_doa_runner.py              # real hardware (Heimdall active)
+    python3 iridium_burst_doa_runner.py --demo       # synthetic 2-satellite simulation
+    python3 iridium_burst_doa_runner.py --demo --n-demo-sats 3
+    python3 iridium_burst_doa_runner.py --freq 1626.270
+    python3 iridium_burst_doa_runner.py --calibrate 45.0
+    python3 iridium_burst_doa_runner.py --out-dir /tmp/doa_iridium
 """
 
 from __future__ import annotations
@@ -293,10 +293,15 @@ def _make_sat_tracker(
         trail       = collections.deque(maxlen=30),
         az_raw_hist = collections.deque(maxlen=hist_len),
         el_raw_hist = collections.deque(maxlen=hist_len),
+        az_kf_hist  = collections.deque(maxlen=hist_len),
+        el_kf_hist  = collections.deque(maxlen=hist_len),
         cfo_prev_sign = 0,
         el_at_zero_crossing = None,
         t_zero_crossing     = None,
         last_phase_diffs    = None,
+        az_reject_streak    = 0,
+        ph_reject_streak    = 0,
+        gate_bypass_left    = 0,
     )
 
 
@@ -334,6 +339,10 @@ def _update_tracker(
     trk.el_hist.append(trk.el_ema)
     trk.az_raw_hist.append(az_doa)
     trk.el_raw_hist.append(el_doa)
+    _az_kf = trk.az_kf.state_deg if trk.az_kf.state_deg is not None else trk.az_ema
+    _el_kf = trk.el_kf.state
+    trk.az_kf_hist.append(float(_az_kf))
+    trk.el_kf_hist.append(float(_el_kf))
     trk.snr_hist.append(snr_db)
     trk.cfo_hist.append(cfo_hz)
 
@@ -453,6 +462,11 @@ def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
         rec_sat_cfo  = [], rec_X     = [],
         # Cramér-Rao Bound (Salama 2025 §8.2.1) and MDL source count per burst
         rec_crb      = [], rec_mdl_k = [],
+        # Live diagnostics panels
+        cfo_diag_hist = collections.deque(maxlen=300),
+        burst_env = np.array([], dtype=float),
+        burst_pre_idx = 0,
+        burst_data_idx = int(_PRE_SAMPLES),
     )
 
 
@@ -601,6 +615,7 @@ def _acq_loop(
     _diag_t0   = time.monotonic()
     _cnt_det = _cnt_eig = _cnt_snr = _cnt_papr = _cnt_acc = 0
     _cnt_no_tone = _cnt_fd_rej = 0
+    _cnt_az_rej = _cnt_ph_rej = _cnt_relock = 0
     _papr_sum = 0.0;  _papr_n = 0
     # Pre-load gate config (constant for the lifetime of _acq_loop).
     # AZ outlier gate is only valid on calibrated hardware: on uncalibrated
@@ -610,9 +625,18 @@ def _acq_loop(
     _az_outlier_en  = bool(getattr(C,  "AZ_OUTLIER_ENABLED",         True)) and _has_cal
     _az_outlier_min = int(getattr(C,   "AZ_OUTLIER_MIN_HISTORY",        5))
     _az_outlier_dev = float(getattr(C, "AZ_OUTLIER_MAX_DEV_DEG",     45.0))
+    _az_relock_streak = int(getattr(C, "AZ_OUTLIER_RELOCK_STREAK",      8))
     _ph_coh_en      = bool(getattr(C,  "PHASE_COHERENCE_ENABLED",     True)) and _has_cal
     _ph_coh_dev     = float(getattr(C, "PHASE_COHERENCE_MAX_JUMP_DEG", 60.0))
+    _ph_relock_streak = int(getattr(C, "PHASE_COHERENCE_RELOCK_STREAK", 8))
+    _relock_bypass_bursts = int(getattr(C, "GATE_RELOCK_BYPASS_BURSTS", 12))
     _indoor_tx      = _doppler_gate_hz > 0
+    _indoor_single_src = _indoor_tx and _max_sats <= 1
+    if _indoor_single_src and bool(getattr(C, "INDOOR_SINGLE_SOURCE_RELAX_GATES", True)):
+        # Indoor near-field + single source is strongly affected by multipath.
+        # Hard AZ/phase continuity gates can reject most valid bursts and stall tracking.
+        _az_outlier_en = False
+        _ph_coh_en = False
     _el_pref_hi     = float(getattr(C, "INDOOR_EL_PREF_MAX_DEG", 28.0))
     _el_pref_lo     = float(getattr(C, "INDOOR_EL_PREF_MIN_DEG", 10.0))
 
@@ -675,6 +699,7 @@ def _acq_loop(
             _papr_mean_str = f"{_papr_sum/_papr_n:.1f}" if _papr_n > 0 else "--"
             print(
                 f"[DIAG] det={_cnt_det} no_tone={_cnt_no_tone} fd_rej={_cnt_fd_rej} "
+                f"az_rej={_cnt_az_rej} ph_rej={_cnt_ph_rej} relock={_cnt_relock} "
                 f"eig_rej={_cnt_eig} snr_rej={_cnt_snr} "
                 f"papr_rej={_cnt_papr} acc={_cnt_acc} papr_mean={_papr_mean_str}dB | "
                 f"sats={len(S.satellites)}: {sats_str}"
@@ -682,6 +707,7 @@ def _acq_loop(
             _diag_t0 = now
             _cnt_det = _cnt_eig = _cnt_snr = _cnt_papr = _cnt_acc = 0
             _cnt_no_tone = _cnt_fd_rej = 0
+            _cnt_az_rej = _cnt_ph_rej = _cnt_relock = 0
             _papr_sum = 0.0;  _papr_n = 0
 
         pwr_db = float(10 * np.log10(np.mean(np.abs(X_stream[0])**2) + 1e-20))
@@ -724,14 +750,18 @@ def _acq_loop(
             )
 
             if tone_ref_valid:
+                pre_start_stream = b_start + max(0, int(onset_ref - _ENERGY_WIN))
                 if onset_ref > _ENERGY_WIN and onset_ref < X_win.shape[1] // 2:
                     b_start_adj = b_start + onset_ref - _ENERGY_WIN
                     b_end_adj = min(b_start_adj + _WINDOW_SAMPLES, n_total)
                     X_win = X_stream[:, b_start_adj:b_end_adj]
+                    pre_start_stream = b_start_adj + _ENERGY_WIN
                     if X_win.shape[1] < _PRE_SAMPLES:
                         X_win = X_stream[:, b_start:b_end]
+                        pre_start_stream = b_start
                 peaks: list[tuple[float, float]] = [(float(tone_ref), 10.0)]
             else:
+                pre_start_stream = b_start
                 # Refinement failed — fall back to Doppler FFT scan
                 X0_pre = X_win[0, :_PRE_SAMPLES] if X_win.shape[1] >= _PRE_SAMPLES else X_win[0]
                 _PSCAN_SNR = 6.0
@@ -924,13 +954,28 @@ def _acq_loop(
                 # at least AZ_OUTLIER_MIN_HISTORY DoA estimates have been
                 # accumulated — before that every estimate seeds the history.
                 # This suppresses multi-modal MUSIC scatter on uncalibrated HW.
+                _gate_bypass_active = trk.gate_bypass_left > 0
                 if (_az_outlier_en and not trk.no_doa
-                        and len(trk.az_hist) >= _az_outlier_min):
+                        and len(trk.az_hist) >= _az_outlier_min
+                        and not _gate_bypass_active):
                     med = _circ_median(list(trk.az_hist))
                     d   = abs(az_doa - med) % 360.0
                     dev = min(d, 360.0 - d)
                     if dev > _az_outlier_dev:
+                        trk.az_reject_streak += 1
+                        _cnt_az_rej += 1
+                        if trk.az_reject_streak >= _az_relock_streak:
+                            # Soft re-lock for abrupt antenna/TX rotation.
+                            # Keep visual history intact, reset only gating state.
+                            trk.az_init = True
+                            trk.R_batch.clear(); trk.X_batch.clear(); trk.Y_batch.clear()
+                            trk.last_phase_diffs = None
+                            trk.gate_bypass_left = max(trk.gate_bypass_left, _relock_bypass_bursts)
+                            trk.az_reject_streak = 0
+                            trk.ph_reject_streak = 0
+                            _cnt_relock += 1
                         continue   # outlier azimuth — discard
+                    trk.az_reject_streak = 0
 
                 # ── Phase coherence gate ──────────────────────────────────────
                 # Reject bursts where inter-channel phase diffs jump more than
@@ -939,13 +984,30 @@ def _acq_loop(
                 # 90 ms superframes is typically < 10°); a phantom peak from a
                 # spurious multipath or DoA ambiguity produces a large jump.
                 if (_ph_coh_en and not trk.no_doa
-                        and trk.last_phase_diffs is not None):
+                        and trk.last_phase_diffs is not None
+                        and not _gate_bypass_active):
                     ph_delta = np.abs(((phase_diffs - trk.last_phase_diffs + 180.0)
                                        % 360.0) - 180.0)
                     if float(np.max(ph_delta)) > _ph_coh_dev:
+                        trk.ph_reject_streak += 1
+                        _cnt_ph_rej += 1
+                        if trk.ph_reject_streak >= _ph_relock_streak:
+                            # Reset phase baseline and burst accumulator on discontinuity.
+                            trk.R_batch.clear(); trk.X_batch.clear(); trk.Y_batch.clear()
+                            trk.last_phase_diffs = None
+                            trk.az_init = True
+                            trk.gate_bypass_left = max(trk.gate_bypass_left, _relock_bypass_bursts)
+                            trk.az_reject_streak = 0
+                            trk.ph_reject_streak = 0
+                            _cnt_relock += 1
                         continue   # phase discontinuity — discard
+                    trk.ph_reject_streak = 0
 
                 _cnt_acc += 1
+                trk.az_reject_streak = 0
+                trk.ph_reject_streak = 0
+                if trk.gate_bypass_left > 0:
+                    trk.gate_bypass_left -= 1
                 acc.update(R_avg)   # per calibrazione
 
                 # CRB for azimuth (Salama 2025 §8.2.1; Stoica & Nehorai 1990).
@@ -983,6 +1045,14 @@ def _acq_loop(
                     S.eig_db    = eig
                     S.crb_az_deg = float(crb_deg_)
                     S.mdl_k      = int(mdl_k)
+                    S.cfo_diag_hist.append(float(cfo_hz))
+                    dbg_len = max(1, min(_BURST_SAMPLES, n_total - int(pre_start_stream)))
+                    dbg_env = np.abs(
+                        X_stream[0, int(pre_start_stream): int(pre_start_stream) + dbg_len]
+                    ).astype(float, copy=False)
+                    S.burst_env = dbg_env
+                    S.burst_pre_idx = 0
+                    S.burst_data_idx = max(0, min(int(_PRE_SAMPLES), dbg_len - 1))
                     S.phase_diffs = phase_diffs
                     for i in range(4):
                         S.phase_hist[i].append(float(phase_diffs[i]))
@@ -1052,16 +1122,15 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
     ax_sky.grid(color=C_BDR, lw=0.5, alpha=0.4)
     ax_sky.set_title("DoA Skyplot", color=C_TEXT, fontsize=11, pad=15)
 
-    sky_dots, sky_trails, sky_rings, sky_labels = [], [], [], []
+    sky_dots, sky_trails, sky_labels = [], [], []
     for i in range(MAX_SATS):
         col = sat_colors[i % len(sat_colors)]
         dot, = ax_sky.plot([], [], "o", color=col, ms=14, zorder=8, mec="white", mew=1.5)
         trail, = ax_sky.plot([], [], "o", color=col, ms=4, alpha=0.35, zorder=6)
-        ring, = ax_sky.plot([], [], "-", color=col, lw=2.5, alpha=0.7, zorder=7)
         lbl = ax_sky.text(0, 0, "", ha="left", va="bottom",
                            color=col, fontsize=7.5, fontweight="bold", zorder=9, visible=False)
         sky_dots.append(dot); sky_trails.append(trail)
-        sky_rings.append(ring); sky_labels.append(lbl)
+        sky_labels.append(lbl)
 
     lbl_nosig = ax_sky.text(np.pi/2, 45, "waiting\nfor bursts…",
                              ha="center", va="center", color=C_MUT, fontsize=11, fontstyle="italic")
@@ -1074,25 +1143,41 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
         height_ratios=[2.2, 2.2, 1.8, 1.5], hspace=0.38,
     )
 
-    # Row 0 — Az/El timeseries (EMA lines + raw scatter)
+    # Row 0 — Az/El timeseries (EMA + raw + Kalman overlay)
     ax_hist = fig.add_subplot(gs_right[0, 0], facecolor=BG2)
     ax_hist.set_facecolor(BG2)
-    ax_hist.set_title("Azimuth / Elevation — per satellite  (— EMA,  · raw)", color=C_TEXT, fontsize=9)
+    ax_hist.set_title("Azimuth / Elevation — per satellite  (Az left axis, El right axis)", color=C_TEXT, fontsize=9)
     ax_hist.set_xlim(0, H); ax_hist.set_ylim(0, 360)
     ax_hist.tick_params(colors=C_MUT, labelsize=6.5)
     for sp in ax_hist.spines.values(): sp.set_edgecolor(C_BDR)
     ax_hist.grid(color=C_BDR, lw=0.4, alpha=0.4)
+    ax_hist.set_ylabel("Azimuth [°]", color=C_MUT, fontsize=7)
+
+    ax_hist_el = ax_hist.twinx()
+    ax_hist_el.set_ylim(el_min, max(90.0, el_max))
+    ax_hist_el.tick_params(colors=C_MUT, labelsize=6.5)
+    for sp in ax_hist_el.spines.values():
+        sp.set_edgecolor(C_BDR)
+    ax_hist_el.set_ylabel("Elevation [°]", color=C_MUT, fontsize=7)
+
     hist_az_lines, hist_el_lines = [], []
     hist_az_raw, hist_el_raw = [], []
+    hist_az_kf, hist_el_kf = [], []
     for i in range(MAX_SATS):
         col = sat_colors[i % len(sat_colors)]
         la, = ax_hist.plot([], [], "-", color=col, lw=2.0, label=f"S{i} Az")
-        le, = ax_hist.plot([], [], "--", color=col, lw=1.2, alpha=0.7, label=f"S{i} El")
+        le, = ax_hist_el.plot([], [], "--", color=col, lw=1.2, alpha=0.9, label=f"S{i} El")
+        lkfa, = ax_hist.plot([], [], "-", color=col, lw=1.3, alpha=0.8, label=f"S{i} Az KF")
+        lkfe, = ax_hist_el.plot([], [], ":", color=col, lw=1.3, alpha=0.9, label=f"S{i} El KF")
         lra, = ax_hist.plot([], [], ".", color=col, ms=2.5, alpha=0.4)
-        lre, = ax_hist.plot([], [], marker="s", color=col, ms=2.5, alpha=0.3, ls="")
+        lre, = ax_hist_el.plot([], [], marker="s", color=col, ms=2.5, alpha=0.35, ls="")
         hist_az_lines.append(la); hist_el_lines.append(le)
         hist_az_raw.append(lra); hist_el_raw.append(lre)
-    ax_hist.legend(loc="upper left", fontsize=6, ncol=2, facecolor=BG3, edgecolor=C_BDR, labelcolor=C_TEXT)
+        hist_az_kf.append(lkfa); hist_el_kf.append(lkfe)
+    _h1, _l1 = ax_hist.get_legend_handles_labels()
+    _h2, _l2 = ax_hist_el.get_legend_handles_labels()
+    ax_hist.legend(_h1 + _h2, _l1 + _l2, loc="upper left", fontsize=6, ncol=2,
+                   facecolor=BG3, edgecolor=C_BDR, labelcolor=C_TEXT)
 
     # Row 1 — 2D MUSIC heatmap + multi-peak
     ax_2d = fig.add_subplot(gs_right[1, 0], facecolor=BG2)
@@ -1110,8 +1195,8 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
     hm_peaks2 = [ax_2d.plot([], [], c=sat_colors[i%len(sat_colors)], marker="s", ms=8, mew=1, mec="white", ls="", alpha=0.55, zorder=4)[0] for i in range(MAX_SATS)]
     plt.colorbar(hm_img, ax=ax_2d, fraction=0.04, pad=0.03, label="dB", location="right")
 
-    # Row 2 — Spectrum projection + Phase monitor
-    gs_r2 = gridspec.GridSpecFromSubplotSpec(1, 2, subplot_spec=gs_right[2, 0], wspace=0.3)
+    # Row 2 — Spectrum projection + Eigenvalue profile + Phase monitor
+    gs_r2 = gridspec.GridSpecFromSubplotSpec(1, 3, subplot_spec=gs_right[2, 0], wspace=0.3)
     ax_spec = fig.add_subplot(gs_r2[0, 0], facecolor=BG2)
     ax_spec.set_facecolor(BG2)
     ax_spec.set_title("Azimuth spectrum", color=C_TEXT, fontsize=8)
@@ -1122,7 +1207,20 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
     az_spec_line, = ax_spec.plot(np.linspace(0, 360, n_az), np.full(n_az, -40), color=C_BLUE, lw=1.2)
     az_spec_markers = [ax_spec.plot([], [], "D", color=sat_colors[i%len(sat_colors)], ms=8, zorder=5)[0] for i in range(MAX_SATS)]
 
-    ax_ph = fig.add_subplot(gs_r2[0, 1], facecolor=BG2)
+    ax_eig = fig.add_subplot(gs_r2[0, 1], facecolor=BG2)
+    ax_eig.set_facecolor(BG2)
+    ax_eig.set_title("Eigenvalue profile", color=C_TEXT, fontsize=8)
+    ax_eig.set_xlim(-0.5, n_ant - 0.5)
+    ax_eig.set_ylim(-40, 40)
+    ax_eig.tick_params(colors=C_MUT, labelsize=6.5)
+    for sp in ax_eig.spines.values(): sp.set_edgecolor(C_BDR)
+    ax_eig.grid(color=C_BDR, lw=0.3, alpha=0.4)
+    eig_bars = ax_eig.bar(np.arange(n_ant), np.zeros(n_ant), color=C_TEAL, alpha=0.8)
+    eig_idx_highlight = ax_eig.axvline(1.0, color=C_ROSE, alpha=0.75, lw=1.8, ls="--")
+    txt_eig_rank = ax_eig.text(0.03, 0.92, "D=1", transform=ax_eig.transAxes,
+                               color=C_ROSE, fontsize=7, fontweight="bold")
+
+    ax_ph = fig.add_subplot(gs_r2[0, 2], facecolor=BG2)
     ax_ph.set_facecolor(BG2)
     ax_ph.set_title("ΔΦ CH1..4 – CH0  (stability)", color=C_TEXT, fontsize=8)
     ax_ph.set_xlim(0, H); ax_ph.set_ylim(-185, 185)
@@ -1137,19 +1235,32 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
     ph_lines = [ax_ph.plot([], [], "-", color=_ph_colors[i], lw=1.2, label=f"CH{i+1}")[0] for i in range(4)]
     ax_ph.legend(loc="upper left", fontsize=5.5, ncol=2, facecolor=BG3, edgecolor=C_BDR, labelcolor=C_TEXT)
 
-    # Row 3 — Quality dashboard + Status
-    gs_r3 = gridspec.GridSpecFromSubplotSpec(1, 2, subplot_spec=gs_right[3, 0], wspace=0.3)
-    ax_qual = fig.add_subplot(gs_r3[0, 0], facecolor=BG2)
-    ax_qual.set_facecolor(BG2); ax_qual.set_xlim(0, 10); ax_qual.set_ylim(0, 5); ax_qual.axis("off")
-    ax_qual.set_title("Signal quality", color=C_TEXT, fontsize=8)
-    txt_qual_papr = ax_qual.text(0.5, 4.5, "", ha="left", va="top", color=C_TEXT, fontsize=7, family="monospace")
-    txt_qual_sinr = ax_qual.text(0.5, 3.8, "", ha="left", va="top", color=C_TEXT, fontsize=7, family="monospace")
-    txt_qual_eig  = ax_qual.text(0.5, 3.1, "", ha="left", va="top", color=C_TEXT, fontsize=7, family="monospace")
-    txt_qual_crb  = ax_qual.text(0.5, 2.4, "", ha="left", va="top", color=C_TEAL, fontsize=7, family="monospace")
-    txt_qual_mdl  = ax_qual.text(0.5, 1.7, "", ha="left", va="top", color=C_TEXT, fontsize=7, family="monospace")
-    txt_qual_rate = ax_qual.text(0.5, 1.0, "", ha="left", va="top", color=C_LIME, fontsize=7, family="monospace")
+    # Row 3 — CFO trend + Burst envelope + Status
+    gs_r3 = gridspec.GridSpecFromSubplotSpec(1, 3, subplot_spec=gs_right[3, 0], wspace=0.3)
+    ax_cfo = fig.add_subplot(gs_r3[0, 0], facecolor=BG2)
+    ax_cfo.set_facecolor(BG2)
+    ax_cfo.set_title("Doppler / CFO trend", color=C_TEXT, fontsize=8)
+    ax_cfo.set_xlim(0, 300)
+    ax_cfo.set_ylim(-3000, 3000)
+    ax_cfo.tick_params(colors=C_MUT, labelsize=6.5)
+    for sp in ax_cfo.spines.values(): sp.set_edgecolor(C_BDR)
+    ax_cfo.grid(color=C_BDR, lw=0.3, alpha=0.4)
+    ax_cfo.axhline(0, color=C_BDR, lw=0.8)
+    cfo_line, = ax_cfo.plot([], [], color=C_AMBER, lw=1.4)
 
-    ax_stat = fig.add_subplot(gs_r3[0, 1], facecolor=BG2)
+    ax_env = fig.add_subplot(gs_r3[0, 1], facecolor=BG2)
+    ax_env.set_facecolor(BG2)
+    ax_env.set_title("Last burst envelope |IQ|", color=C_TEXT, fontsize=8)
+    ax_env.set_xlim(0, _PRE_SAMPLES)
+    ax_env.set_ylim(0, 1.2)
+    ax_env.tick_params(colors=C_MUT, labelsize=6.5)
+    for sp in ax_env.spines.values(): sp.set_edgecolor(C_BDR)
+    ax_env.grid(color=C_BDR, lw=0.3, alpha=0.4)
+    env_line, = ax_env.plot([], [], color=C_LIME, lw=1.2)
+    env_vpre = ax_env.axvline(0, color=C_TEAL, ls="--", lw=1.0, alpha=0.9)
+    env_vdata = ax_env.axvline(_PRE_SAMPLES, color=C_AMBER, ls="--", lw=1.0, alpha=0.9)
+
+    ax_stat = fig.add_subplot(gs_r3[0, 2], facecolor=BG2)
     ax_stat.set_facecolor(BG2); ax_stat.set_xlim(0, 10); ax_stat.set_ylim(0, 5); ax_stat.axis("off")
     ax_stat.set_title("Status", color=C_TEXT, fontsize=8)
     txt_stat_rec   = ax_stat.text(0.5, 4.5, "", ha="left", va="top", color=C_LIME, fontsize=7, family="monospace")
@@ -1173,6 +1284,7 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
                 az_deg=t.az_deg, el_deg=t.el_deg,
                 az_hist=list(t.az_hist), el_hist=list(t.el_hist),
                 az_raw_hist=list(t.az_raw_hist), el_raw_hist=list(t.el_raw_hist),
+                az_kf_hist=list(t.az_kf_hist), el_kf_hist=list(t.el_kf_hist),
                 cfo_hist=list(t.cfo_hist), cfo_hz=t.cfo_hz,
                 papr_db=t.papr_db, snr_db=t.snr_db,
                 no_doa=t.no_doa, color=t.color,
@@ -1190,13 +1302,17 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
             rec_n    = len(S.rec_t)
             rec_t_snap = list(S.rec_t)
             snr_hist = list(S.snr_hist)
+            cfo_diag = list(S.cfo_diag_hist)
+            burst_env = S.burst_env.copy()
+            burst_pre_idx = int(S.burst_pre_idx)
+            burst_data_idx = int(S.burst_data_idx)
 
         sats_sorted = sorted(sats_snap.values(), key=lambda t: 0 if not t.no_doa else 1)
 
         # ── Skyplot dots + trails + PAPR rings ──────────────────────────────
         has_any = False
         for i in range(MAX_SATS):
-            dot, trail, ring, lbl = sky_dots[i], sky_trails[i], sky_rings[i], sky_labels[i]
+            dot, trail, lbl = (sky_dots[i], sky_trails[i], sky_labels[i])
             if i < len(sats_sorted) and not sats_sorted[i].no_doa:
                 t = sats_sorted[i]
                 r = float(np.clip(90.0 - t.el_deg, 0, 90))
@@ -1208,16 +1324,12 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
                     trail.set_data(tr_th, tr_r); trail.set_visible(True)
                 else:
                     trail.set_visible(False)
-                papr_norm = np.clip(t.papr_db / 35.0, 0.1, 1.0)
-                ring_r = np.full(50, r + 4 + 8 * papr_norm)
-                ring.set_data(np.linspace(0, 2*np.pi, 50), ring_r)
-                ring.set_alpha(0.3 + 0.5 * papr_norm); ring.set_visible(True)
+
                 lbl.set_text(f"S{i}  {t.az_deg:.0f}°/{t.el_deg:.0f}°")
                 lbl.set_position((th + 0.12, r + 4)); lbl.set_visible(True)
                 has_any = True
             else:
-                dot.set_visible(False); trail.set_visible(False)
-                ring.set_visible(False); lbl.set_visible(False)
+                dot.set_visible(False); trail.set_visible(False); lbl.set_visible(False)
         lbl_nosig.set_visible(not has_any)
 
         # ── 2D MUSIC heatmap + multi-peak ────────────────────────────────────
@@ -1233,16 +1345,21 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
                 pk.set_visible(False); pk2.set_visible(False)
 
         # ── Az/El history (EMA lines + raw scatter) ──────────────────────────
-        for i, (la, le, lra, lre) in enumerate(zip(hist_az_lines, hist_el_lines, hist_az_raw, hist_el_raw)):
+        for i, (la, le, lkfa, lkfe, lra, lre) in enumerate(
+            zip(hist_az_lines, hist_el_lines, hist_az_kf, hist_el_kf, hist_az_raw, hist_el_raw)
+        ):
             if i < len(sats_sorted) and not sats_sorted[i].no_doa:
                 t = sats_sorted[i]
                 xa = np.arange(len(t.az_hist))
                 la.set_data(xa, t.az_hist); le.set_data(xa, t.el_hist)
+                lkfa.set_data(np.arange(len(t.az_kf_hist)), t.az_kf_hist)
+                lkfe.set_data(np.arange(len(t.el_kf_hist)), t.el_kf_hist)
                 if t.az_raw_hist:
                     lra.set_data(np.arange(len(t.az_raw_hist)), t.az_raw_hist)
                     lre.set_data(np.arange(len(t.el_raw_hist)), t.el_raw_hist)
             else:
                 la.set_data([], []); le.set_data([], [])
+                lkfa.set_data([], []); lkfe.set_data([], [])
                 lra.set_data([], []); lre.set_data([], [])
 
         # ── Azimuth spectrum ─────────────────────────────────────────────────
@@ -1264,20 +1381,39 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
         for i, (line, q) in enumerate(zip(ph_lines, ph_hist)):
             line.set_data(np.arange(len(q)), q)
 
-        # ── Quality dashboard ────────────────────────────────────────────────
-        snr_med = np.median(snr_hist) if snr_hist else 0.0
+        # ── Eigen profile ────────────────────────────────────────────────────
+        if len(eig) == n_ant:
+            eig_ref = float(np.max(eig))
+            eig_rel = eig - eig_ref
+            for b, v in zip(eig_bars, eig_rel):
+                b.set_height(float(v))
+            d_hat = max(1, min(n_ant - 1, mdl_k_snap))
+            eig_idx_highlight.set_xdata([float(d_hat), float(d_hat)])
+            txt_eig_rank.set_text(f"D={d_hat}")
+
+        # ── CFO trend ───────────────────────────────────────────────────────
+        if cfo_diag:
+            xc = np.arange(len(cfo_diag))
+            cfo_line.set_data(xc, cfo_diag)
+            ymax = max(1500.0, 1.1 * float(np.max(np.abs(cfo_diag))))
+            ax_cfo.set_ylim(-ymax, ymax)
+
+        # ── Burst envelope ───────────────────────────────────────────────────
+        if burst_env.size:
+            env = burst_env.astype(float)
+            xe = np.arange(len(env))
+            env_line.set_data(xe, env)
+            ax_env.set_xlim(0, max(len(env), 16))
+            y_max = max(1e-6, 1.10 * float(np.max(env)))
+            ax_env.set_ylim(0.0, y_max)
+            env_vpre.set_xdata([float(burst_pre_idx), float(burst_pre_idx)])
+            env_vdata.set_xdata([float(burst_data_idx), float(burst_data_idx)])
+
+        # ── Status dashboard ─────────────────────────────────────────────────
         n_active = len([t for t in sats_snap.values() if not t.no_doa])
         papr0 = sats_sorted[0].papr_db if sats_sorted else 0.0
         snr0  = sats_sorted[0].snr_db if sats_sorted else 0.0
-        txt_qual_papr.set_text(f"PAPR: {papr0:.1f} dB")
-        txt_qual_sinr.set_text(f"SINR: {snr0:.1f} dB  (med {snr_med:.1f})")
-        if len(eig) == n_ant:
-            spr = eig[0] - eig[-1] if eig[-1] > -200 else eig[0] - eig[1]
-            txt_qual_eig.set_text(f"λ spread: {spr:.0f} dB")
-        txt_qual_crb.set_text(f"CRB_az ≥ {crb_snap:.3f}°" if crb_snap < 100 else "CRB_az: --")
-        txt_qual_mdl.set_text(f"MDL K̂={mdl_k_snap}  sats={n_active}/{MAX_SATS}")
         _elapsed = rec_t_snap[-1] - rec_t_snap[0] if len(rec_t_snap) >= 2 else 0
-        txt_qual_rate.set_text(f"bursts: {n_burst}  rate: {n_burst/_elapsed:.1f}/s" if _elapsed > 0 else f"bursts: {n_burst}")
 
         # ── Status panel ─────────────────────────────────────────────────────
         txt_stat_rec.set_text(f"{'●' if rec_on else '○'} REC  saved: {rec_n}")
@@ -1287,16 +1423,20 @@ def _build_ui(S: SimpleNamespace, cfg: UcaConfig,
         txt_stat_cfo.set_text(f"CFO: {cfo0/1e3:+.2f} kHz")
         _has_cal = any(o != 0.0 for o in getattr(C, "CHANNEL_PHASE_OFFSETS_DEG", []))
         txt_stat_cal.set_text(f"cal: {'YES' if _has_cal else 'NO'}  gain={getattr(C,'GAIN_DB','?')}dB  multi={getattr(C,'MULTI_BURST_N','?')}")
-        txt_stat_msg.set_text(f"CFO={cfo0/1e3:+.2f}k  PAPR={papr0:.0f}dB  SINR={snr0:.1f}dB  K̂={mdl_k_snap}")
+        txt_stat_msg.set_text(
+            f"CFO={cfo0/1e3:+.2f}k  PAPR={papr0:.0f}dB  SINR={snr0:.1f}dB  "
+            f"K̂={mdl_k_snap}  acc={n_burst}"
+        )
 
-        return (*sky_dots, *sky_trails, *sky_rings, *sky_labels, lbl_nosig,
+        return (*sky_dots, *sky_trails, *sky_labels, lbl_nosig,
                 hm_img, *hm_peaks, *hm_peaks2,
-                *hist_az_lines, *hist_el_lines, *hist_az_raw, *hist_el_raw,
+                *hist_az_lines, *hist_el_lines, *hist_az_kf, *hist_el_kf,
+                *hist_az_raw, *hist_el_raw,
                 az_spec_line, *az_spec_markers, *ph_lines,
-                txt_qual_papr, txt_qual_sinr, txt_qual_eig, txt_qual_crb,
-                txt_qual_mdl, txt_qual_rate,
+            cfo_line, env_line, env_vpre, env_vdata,
                 txt_stat_rec, txt_stat_time, txt_stat_burst,
-                txt_stat_cfo, txt_stat_cal, txt_stat_msg)
+                txt_stat_cfo, txt_stat_cal, txt_stat_msg,
+                txt_eig_rank)
 
     ani = animation.FuncAnimation(fig, _update, interval=C.UPDATE_INTERVAL_MS,
                                    blit=False, cache_frame_data=False)

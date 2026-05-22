@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch doa_iridium_burst.py after Heimdall is listening.
+# Launch iridium_burst_doa_runner.py after Heimdall is listening.
 # Used by VS Code tasks — avoids starting DoA before ports 5000/5001 are open.
 set -euo pipefail
 
@@ -37,9 +37,9 @@ if ! pgrep -f 'indoor_1626\.py' >/dev/null 2>&1; then
 fi
 
 # Kill stale DoA instances (only one KrakenIQ client on port 5000)
-if pgrep -f 'doa_iridium_burst\.py' >/dev/null 2>&1; then
-    echo "[DoA] Stopping previous doa_iridium_burst instance …"
-    pkill -f 'doa_iridium_burst\.py' 2>/dev/null || true
+if pgrep -f 'iridium_burst_doa_runner\.py' >/dev/null 2>&1; then
+    echo "[DoA] Stopping previous iridium_burst_doa_runner instance …"
+    pkill -f 'iridium_burst_doa_runner\.py' 2>/dev/null || true
     sleep 1
 fi
 
@@ -48,7 +48,7 @@ export MPLBACKEND="${MPLBACKEND:-Qt5Agg}"
 export DISPLAY="${DISPLAY:-:0}"
 
 cd "$SRC"
-exec "$VENV" -u apps/doa_iridium/doa_iridium_burst.py \
+exec "$VENV" -u apps/doa_iridium/iridium_burst_doa_runner.py \
     --freq 1626.270 \
     --max-sats 1 \
     --fd-max 2000 \

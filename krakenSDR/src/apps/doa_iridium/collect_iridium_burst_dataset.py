@@ -3,15 +3,13 @@
 Collect 5-channel Iridium burst measurements for offline processing.
 
 This collector intentionally reuses internal functions from
-`doa_iridium_burst.py` so online and offline pipelines share the same
+`iridium_burst_doa_runner.py` so online and offline pipelines share the same
 burst detection and tone/CFO estimation behavior.
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
-import json
 import os
 import sys
 import threading
@@ -30,13 +28,19 @@ if _HERE not in sys.path:
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-_CFG_PATH = os.path.join(_HERE, "config.py")
-_cfg_spec = importlib.util.spec_from_file_location("doa_iridium_config", _CFG_PATH)
-C = importlib.util.module_from_spec(_cfg_spec)
-assert _cfg_spec and _cfg_spec.loader
-_cfg_spec.loader.exec_module(C)
+from core.iridium_dataset_utils import (
+    bootstrap_paths,
+    check_tcp_endpoint,
+    default_dataset_out_dir,
+    extract_tone_and_cfo,
+    load_local_config,
+    save_dataset_npz_json,
+)
 
-import doa_iridium_burst as dib
+_HERE, _SRC, _ = bootstrap_paths(__file__, include_repo_root=True)
+C = load_local_config(_HERE)
+
+import iridium_burst_doa_runner as dib
 from hardware.kraken_iq_source import KrakenIQSource
 from shared.observer import get_observer
 from shared.satellite_tracker import match_bursts_to_satellites
@@ -55,7 +59,7 @@ def _build_argparser() -> argparse.ArgumentParser:
                    help="Maximum number of collected bursts")
     p.add_argument("--max-time-s", type=float, default=0.0,
                    help="Maximum collection time in seconds (0 = unlimited)")
-    p.add_argument("--out-dir", default=os.path.normpath(os.path.join(dib._SRC, "..", "data", "doa_iridium")),
+    p.add_argument("--out-dir", default=default_dataset_out_dir(dib._SRC),
                    help="Output directory")
     p.add_argument("--fd-max", type=float, default=float(getattr(C, "DOPPLER_GATE_HZ", 0.0)),
                    help="Doppler gate [Hz], 0 = disabled")
@@ -74,18 +78,6 @@ def _build_argparser() -> argparse.ArgumentParser:
     return p
 
 
-def _save_dataset(payload: dict, meta: dict, out_dir: str) -> tuple[str, str]:
-    os.makedirs(out_dir, exist_ok=True)
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    base = os.path.join(out_dir, f"doa_iridium_dataset_{ts}")
-    npz_path = base + ".npz"
-    json_path = base + ".json"
-    np.savez_compressed(npz_path, **payload)
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
-    return npz_path, json_path
-
-
 def main() -> None:
     args = _build_argparser().parse_args()
 
@@ -93,7 +85,7 @@ def main() -> None:
     host = C.HEIMDALL_HOST
     port = C.HEIMDALL_PORT
 
-    if not dib._check_heimdall(host, port):
+    if not check_tcp_endpoint(host, port):
         raise SystemExit(f"Heimdall unreachable at {host}:{port}")
 
     print("[COLLECT] Starting 5-channel burst collector")
@@ -120,7 +112,6 @@ def main() -> None:
     cfo_hz_list: list[float] = []
     tone_snr_db_list: list[float] = []
 
-    # Buffer frames to keep the exact same burst detector behavior as online DoA.
     frame_buf: list[np.ndarray] = []
     frame_buf_len = 0
     min_buf = dib._SF_SAMPLES + dib._WINDOW_SAMPLES + 2048
@@ -161,7 +152,6 @@ def main() -> None:
                 if X_win.shape[1] < pre_samples:
                     continue
 
-                # Reuse same preamble onset/tone estimator as online pipeline.
                 onset_ref, tone_ref = dib._find_preamble_onset(
                     X_win[0], 0, X_win.shape[1], known_hz=float(dib._PREAMBLE_TONE_HZ),
                     win=4096, freq_lock_bw=max(1200.0, float(args.fd_max) if args.fd_max > 0 else 2000.0),
@@ -173,33 +163,33 @@ def main() -> None:
                     if X_win.shape[1] < pre_samples:
                         continue
 
-                X0_pre = X_win[0, :pre_samples]
-                peaks = dib._scan_doppler_peaks(
-                    X0_pre, fs,
-                    nom_tone_hz=float(dib._PREAMBLE_TONE_HZ),
-                    scan_bw_hz=float(getattr(C, "DOPPLER_SCAN_BW_HZ", 45_000)),
-                    n_peaks=1,
-                    min_sep_hz=float(getattr(C, "SAT_MIN_SEP_HZ", 5_000)),
+                tone_info = extract_tone_and_cfo(
+                    dib=dib,
+                    C=C,
+                    x_pre=X_win[0, :pre_samples],
+                    fs=fs,
+                    tone_hz_nom=float(dib._PREAMBLE_TONE_HZ),
                     min_snr_db=float(args.tone_snr_min),
                 )
-                if not peaks:
+                if tone_info is None:
                     continue
 
-                tone_hz, tone_snr_db = peaks[0]
-                cfo_hz = float(tone_hz - dib._PREAMBLE_TONE_HZ)
-                if args.fd_max > 0 and abs(cfo_hz) > args.fd_max:
+                if args.fd_max > 0 and abs(tone_info.cfo_hz) > args.fd_max:
                     continue
 
                 t_ms = (time.time() - t0_wall) * 1000.0
                 with lock:
                     bursts.append(X_win.astype(np.complex64, copy=False))
                     timestamps_ms.append(t_ms)
-                    cfo_hz_list.append(cfo_hz)
-                    tone_snr_db_list.append(float(tone_snr_db))
+                    cfo_hz_list.append(tone_info.cfo_hz)
+                    tone_snr_db_list.append(tone_info.tone_snr_db)
                     n = len(bursts)
 
                 if args.verbose:
-                    print(f"[COLLECT] #{n:4d} t={t_ms/1000:7.2f}s cfo={cfo_hz:+8.1f}Hz toneSNR={tone_snr_db:5.1f}dB")
+                    print(
+                        f"[COLLECT] #{n:4d} t={t_ms/1000:7.2f}s "
+                        f"cfo={tone_info.cfo_hz:+8.1f}Hz toneSNR={tone_info.tone_snr_db:5.1f}dB"
+                    )
 
                 if _stop_if_needed():
                     running = False
@@ -234,7 +224,7 @@ def main() -> None:
     }
 
     meta = {
-        "tool": "doa_iridium_collect_dataset",
+        "tool": "collect_iridium_burst_dataset",
         "timestamp_utc": t0_utc.isoformat(),
         "n_bursts": int(len(bursts)),
         "duration_s": float(time.time() - t0_wall),
@@ -261,7 +251,6 @@ def main() -> None:
                 lon,
                 alt,
                 el_min_deg=0.0,
-                # Keep robust fallback in case CFO has residual offset.
                 use_elevation_heuristic=True,
                 verbose=True,
             )
@@ -283,7 +272,7 @@ def main() -> None:
             print(f"[COLLECT] Ground truth annotation skipped: {exc}")
             meta["ground_truth_error"] = str(exc)
 
-    npz_path, json_path = _save_dataset(payload, meta, args.out_dir)
+    npz_path, json_path = save_dataset_npz_json(payload, meta, args.out_dir)
     print(f"[COLLECT] Saved {npz_path}")
     print(f"[COLLECT] Saved {json_path}")
 
