@@ -88,6 +88,28 @@ from core.tone_extraction import (
     find_tone_onset    as _fto_core,
 )
 
+# ── TLE-aided elevation prior ─────────────────────────────────────────────────
+# Optional: apply a Gaussian-shaped dB penalty to the MUSIC 2D spectrum along
+# the elevation axis, centred on the TLE-predicted elevation.  This prevents
+# the flat-UCA horizontal array from "floating" the source to unrealistic high
+# elevations when the actual satellite is at el < 25°.
+#
+# The prior is applied AFTER MUSIC (post-multiplication in dB-domain) so that
+# it never corrupts the noise subspace projection; it only guides peak-picking.
+def _apply_tle_el_prior(
+    spec2d:    np.ndarray,       # (n_el, n_az) MUSIC spectrum [dB]
+    cfg,                         # UcaConfig with el_min_deg / el_max_deg
+    el_prior:  float,            # TLE-predicted elevation [deg]
+    sigma_deg: float = 20.0,     # 1-σ window for the Gaussian penalty
+    max_pen_db: float = 30.0,    # maximum dB penalty at the tails
+) -> np.ndarray:
+    """Return spec2d with a Gaussian elevation prior applied (in dB)."""
+    n_el = spec2d.shape[0]
+    el_grid = np.linspace(cfg.el_min_deg, cfg.el_max_deg, n_el)
+    penalty_db = 0.5 * ((el_grid - el_prior) / sigma_deg) ** 2 * (20.0 / np.log(10))
+    penalty_db = np.clip(penalty_db, 0.0, max_pen_db)
+    return spec2d - penalty_db[:, np.newaxis]
+
 # ── Palette ───────────────────────────────────────────────────────────────────
 BG    = "#1a1d27"; BG2   = "#21253a"; BG3  = "#2a2f47"
 C_BDR = "#3b4263"; C_MUT = "#8891b0"; C_TEXT = "#d8dae8"
@@ -437,6 +459,9 @@ def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
         eig_db      = np.zeros(5),
         phase_diffs = np.zeros(4),
         phase_hist  = [collections.deque(maxlen=C.HISTORY_LEN) for _ in range(4)],
+        # Circular EMA state for smooth phase display (unit-phasor domain).
+        # EMA is applied before appending to phase_hist so the plot is stable.
+        _phase_phasors = np.ones(4, dtype=complex),
         energy_hist = collections.deque(maxlen=C.HISTORY_LEN),
         snr_hist    = collections.deque(maxlen=C.HISTORY_LEN),
         burst_n     = 0,
@@ -462,6 +487,9 @@ def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
         rec_sat_cfo  = [], rec_X     = [],
         # Cramér-Rao Bound (Salama 2025 §8.2.1) and MDL source count per burst
         rec_crb      = [], rec_mdl_k = [],
+        # Tracker identity + raw MUSIC spectrum (unweighted) per estimate
+        rec_sat_id   = [],  # int tracker ID per estimate → use for per-sat grouping
+        rec_spec2d   = [],  # (n_el, n_az) float32 MUSIC power per estimate
         # Live diagnostics panels
         cfo_diag_hist = collections.deque(maxlen=300),
         burst_env = np.array([], dtype=float),
@@ -637,6 +665,93 @@ def _acq_loop(
         # Hard AZ/phase continuity gates can reject most valid bursts and stall tracking.
         _az_outlier_en = False
         _ph_coh_en = False
+
+    # ── TLE elevation prior (outdoor only) ───────────────────────────────────
+    # When enabled, the MUSIC 2D spectrum gets a Gaussian dB penalty applied
+    # along the elevation axis, centred on the TLE-predicted elevation for each
+    # satellite.  This corrects the systematic +30° EL bias caused by the flat
+    # horizontal UCA having no phase slope in the elevation dimension.
+    # Result: both EL estimate and (coupled) AZ estimate improve significantly.
+    _tle_prior_en    = False  # disabled — use only collected data
+    _tle_prior_sigma = float(getattr(C, "TLE_EL_PRIOR_SIGMA_DEG", 20.0))
+    _tle_lo_offset_hz = float(getattr(C, "TLE_DOPPLER_LO_OFFSET_HZ", 0.0))
+    # Per-tracker cache: {sat_id: (az_tle, el_tle, t_computed)}
+    _tle_el_cache: dict[int, tuple[float, float, float]] = {}
+    _tle_cat  = None   # loaded lazily below
+    _obs_lat  = float(getattr(C, "OBSERVER_LAT_DEG",   0.0))
+    _obs_lon  = float(getattr(C, "OBSERVER_LON_DEG",   0.0))
+    _obs_alt  = float(getattr(C, "OBSERVER_ALT_M",     0.0))
+    if _tle_prior_en:
+        try:
+            import json as _json
+            import pathlib as _pl
+            import math as _math
+            from sgp4.api import Satrec as _Satrec, jday as _jday
+            _obs_j = _pl.Path.home() / ".config" / "lark" / "observer.json"
+            if _obs_j.is_file():
+                _obs_d = _json.loads(_obs_j.read_text())
+                _obs_lat = float(_obs_d.get("lat", 0.0))
+                _obs_lon = float(_obs_d.get("lon", 0.0))
+                _obs_alt = float(_obs_d.get("alt", 0.0))
+            _tle_file = _pl.Path.home() / ".config" / "lark" / "iridium_tle.txt"
+            if _tle_file.is_file():
+                _tle_lines = [l.strip() for l in _tle_file.read_text().splitlines() if l.strip()]
+                _tle_cat   = [(
+                    _tle_lines[i].strip(),
+                    _Satrec.twoline2rv(_tle_lines[i+1], _tle_lines[i+2])
+                ) for i in range(0, len(_tle_lines)-2, 3)
+                  if _tle_lines[i+1].startswith("1 ")]
+                print(f"[TLE-PRIOR] Loaded {len(_tle_cat)} satellites "
+                      f"(observer {_obs_lat:.2f}°N {_obs_lon:.2f}°E)")
+            else:
+                print("[TLE-PRIOR] TLE file not found — elevation prior disabled")
+                _tle_prior_en = False
+        except Exception as _tle_exc:
+            print(f"[TLE-PRIOR] Load failed: {_tle_exc} — disabled")
+            _tle_prior_en = False
+
+    def _tle_predict_el(cfo_hz: float, ts: float) -> float | None:
+        """Propagate TLE to get elevation of the best-matching satellite."""
+        if not _tle_prior_en or _tle_cat is None: return None
+        if abs(_obs_lat) < 0.01 and abs(_obs_lon) < 0.01: return None
+        import datetime as _dt2, pytz as _ptz2
+        dt_ = _dt2.datetime.fromtimestamp(ts, tz=_ptz2.utc)
+        jd_, fr_ = _jday(dt_.year, dt_.month, dt_.day,
+                         dt_.hour, dt_.minute, dt_.second + dt_.microsecond/1e6)
+        lat_ = _math.radians(_obs_lat); lon_ = _math.radians(_obs_lon)
+        Re_ = 6378137.0; fe_ = 1/298.257223563
+        Nv_ = Re_/(_math.sqrt(1-(2*fe_-fe_**2)*_math.sin(lat_)**2))
+        ox_ = (Nv_+_obs_alt)*_math.cos(lat_)*_math.cos(lon_)
+        oy_ = (Nv_+_obs_alt)*_math.cos(lat_)*_math.sin(lon_)
+        oz_ = (Nv_*(1-(2*fe_-fe_**2))+_obs_alt)*_math.sin(lat_)
+        n_h_ = [-_math.sin(lat_)*_math.cos(lon_),-_math.sin(lat_)*_math.sin(lon_),_math.cos(lat_)]
+        u_h_ = [ _math.cos(lat_)*_math.cos(lon_), _math.cos(lat_)*_math.sin(lon_),_math.sin(lat_)]
+        e_h_ = [-_math.sin(lon_), _math.cos(lon_), 0.0]
+        FREQ_= float(getattr(C, "FREQ_HZ", 1626.270e6)); CL_=3e8
+        cfo_corr_hz = float(cfo_hz - _tle_lo_offset_hz)
+        best_err = 1e9; best_az = None; best_el = None
+        for _name, _sat in _tle_cat:
+            e_, r_, v_ = _sat.sgp4(jd_, fr_)
+            if e_ != 0: continue
+            rx_,ry_,rz_ = [x*1e3 for x in r_]; vx_,vy_,vz_ = [x*1e3 for x in v_]
+            dx_,dy__,dz_ = rx_-ox_, ry_-oy_, rz_-oz_
+            rng_ = _math.sqrt(dx_**2+dy__**2+dz_**2)
+            U_ = u_h_[0]*dx_+u_h_[1]*dy__+u_h_[2]*dz_
+            el_ = _math.degrees(_math.asin(U_/rng_))
+            if el_ < -5: continue
+            rdot_= (dx_*vx_+dy__*vy_+dz_*vz_)/rng_
+            fd_= -rdot_*FREQ_/CL_
+            err = abs(fd_ - cfo_corr_hz)
+            if err < best_err:
+                best_err = err
+                best_el  = el_
+                E_ = e_h_[0]*dx_+e_h_[1]*dy__+e_h_[2]*dz_
+                N_ = n_h_[0]*dx_+n_h_[1]*dy__+n_h_[2]*dz_
+                best_az  = _math.degrees(_math.atan2(E_,N_))%360
+        if best_err > 20_000:  # > 20 kHz after LO correction -> no reliable match
+            return None
+        return best_el
+
     _el_pref_hi     = float(getattr(C, "INDOOR_EL_PREF_MAX_DEG", 28.0))
     _el_pref_lo     = float(getattr(C, "INDOOR_EL_PREF_MIN_DEG", 10.0))
 
@@ -720,12 +835,15 @@ def _acq_loop(
             X_win = X_stream[:, b_start:b_end]   # (n_ant, window)
 
             # ── Preamble onset refinement (joint time×frequency search) ──────
-            # The energy detector has ±_ENERGY_WIN/2 sample jitter.  A joint
-            # time-frequency sweep over X_win[0] finds both the exact preamble
-            # position AND tone frequency, bypassing the Doppler FFT scan which
-            # picks up DQPSK spectral lobes and produces CFO jumps of ±5 kHz.
-            _known_tone: float | None = None
-            _lock_bw = float(_doppler_gate_hz) if _doppler_gate_hz > 0 else 2000.0
+            # Default: anchor always to nominal preamble tone so that
+            # find_preamble_onset uses ±lock_bw instead of a full-band search
+            # (full-band returns the strongest carrier in the 1 MHz band which
+            # is NOT the Iridium tone in outdoor L-band environments).
+            _known_tone: float = float(_PREAMBLE_TONE_HZ)
+            # Outdoor: lock_bw = full Doppler scan (±45 kHz) to capture
+            #   satellites at ±17–40 kHz Doppler.
+            # Indoor: narrow lock around known TX CFO (few kHz).
+            _lock_bw = float(_doppler_gate_hz) if _doppler_gate_hz > 0 else float(_scan_bw)
             if _indoor_tx:
                 with S.lock:
                     if S.satellites:
@@ -737,17 +855,29 @@ def _acq_loop(
                             _lock_bw = 1200.0  # narrow lock after history
                         else:
                             _known_tone = float(_PREAMBLE_TONE_HZ + _cfo)
-                    else:
-                        _known_tone = float(_PREAMBLE_TONE_HZ)
+            else:
+                # Outdoor: refine anchor from established tracker when available
+                with S.lock:
+                    if S.satellites:
+                        _best_sid = min(S.satellites,
+                                        key=lambda sid: (S.satellites[sid].no_doa,
+                                                         -S.satellites[sid].burst_count))
+                        _trk0 = S.satellites[_best_sid]
+                        if _trk0.burst_count > 3 and not _trk0.no_doa:
+                            _kt = _tone_known.get(_best_sid)
+                            if _kt is not None:
+                                _known_tone = float(_kt)
+                                _lock_bw = float(_min_sep) * 2.0  # ±10 kHz post-lock
 
             onset_ref, tone_ref = _find_preamble_onset(
                 X_win[0], 0, X_win.shape[1],
                 known_hz=_known_tone, win=4096, freq_lock_bw=_lock_bw,
             )
-            tone_ref_valid = (
-                _doppler_gate_hz <= 0
-                or abs(tone_ref - _PREAMBLE_TONE_HZ) <= _doppler_gate_hz
-            )
+            # Validate tone_ref: in both indoor and outdoor mode, accept only
+            # tones within the Doppler scan window to avoid phantom trackers
+            # from wideband interference or noise peaks outside Iridium range.
+            _tone_valid_bw = _doppler_gate_hz if _doppler_gate_hz > 0 else _scan_bw
+            tone_ref_valid = abs(tone_ref - _PREAMBLE_TONE_HZ) <= _tone_valid_bw
 
             if tone_ref_valid:
                 pre_start_stream = b_start + max(0, int(onset_ref - _ENERGY_WIN))
@@ -918,8 +1048,22 @@ def _acq_loop(
                 try:
                     spec2d = _run_doa_algo(X_cal, R_avg, cfg, algo,
                                               n_snapshots=X_big.shape[1])
+                    # ── TLE elevation prior (outdoor only) ───────────────────
+                    # Refresh TLE elevation cache every 30 s per tracker.
+                    if _tle_prior_en and trk.burst_count >= 3:
+                        _cache_entry = _tle_el_cache.get(trk.sat_id)
+                        if _cache_entry is None or (time.monotonic() - _cache_entry[2]) > 30.0:
+                            _el_tle = _tle_predict_el(trk.cfo_hz, time.time())
+                            if _el_tle is not None:
+                                _prev_az = _cache_entry[0] if _cache_entry else 0.0
+                                _tle_el_cache[trk.sat_id] = (_prev_az, _el_tle, time.monotonic())
+                    _spec2d_prio = spec2d
+                    if _tle_prior_en:
+                        _c = _tle_el_cache.get(trk.sat_id)
+                        if _c is not None:
+                            _spec2d_prio = _apply_tle_el_prior(spec2d, cfg, _c[1], _tle_prior_sigma)
                     az_doa, el_doa, papr_doa = pick_doa_peak_uca_2d(
-                        spec2d, cfg, indoor=_indoor_tx,
+                        _spec2d_prio, cfg, indoor=_indoor_tx,
                         el_pref_hi=_el_pref_hi, el_pref_lo=_el_pref_lo,
                         phase_diffs=phase_diffs,
                     )
@@ -1054,8 +1198,16 @@ def _acq_loop(
                     S.burst_pre_idx = 0
                     S.burst_data_idx = max(0, min(int(_PRE_SAMPLES), dbg_len - 1))
                     S.phase_diffs = phase_diffs
+                    # Circular EMA for display (avoids ±180° wrap jumps).
+                    # α=0.80: τ ≈ 5 estimates ≈ 33 s — smooth enough to track
+                    # slow satellite geometry changes, low enough to suppress
+                    # single-burst noise.
+                    _PH_EMA = 0.80
+                    raw_phasors = np.exp(1j * np.radians(phase_diffs))
+                    S._phase_phasors = _PH_EMA * S._phase_phasors + (1.0 - _PH_EMA) * raw_phasors
+                    ph_smooth = np.degrees(np.angle(S._phase_phasors))
                     for i in range(4):
-                        S.phase_hist[i].append(float(phase_diffs[i]))
+                        S.phase_hist[i].append(float(ph_smooth[i]))
                     # Global spec2d: max over all active satellite trackers
                     if S.satellites:
                         S.spec2d = np.max([t.spec2d for t in S.satellites.values()], axis=0)
@@ -1074,6 +1226,8 @@ def _acq_loop(
                         S.rec_sat_cfo.append(float(cfo_hz))
                         S.rec_crb.append(float(crb_deg_))
                         S.rec_mdl_k.append(int(mdl_k))
+                        S.rec_sat_id.append(int(trk.sat_id))
+                        S.rec_spec2d.append(spec2d.astype(np.float32))
                         if S.rec_iq_enabled:
                             S.rec_X.append(X_cal[:, :_PRE_SAMPLES].copy())
 
@@ -1576,6 +1730,9 @@ def _save_recording(S: SimpleNamespace, out_dir: str, tag: str = "") -> None:
         # Cramér-Rao Bound and MDL source count per burst (Salama 2025 §8.2.1, §4.2.4)
         crb_az_deg = np.array(S.rec_crb),
         mdl_k      = np.array(S.rec_mdl_k),
+        # Per-estimate tracker id + raw MUSIC spectrum (not TLE-weighted)
+        sat_id     = np.array(S.rec_sat_id, dtype=np.int32),
+        spec2d     = np.array(S.rec_spec2d, dtype=np.float32),  # (N, n_el, n_az)
         freq_hz  = np.array([C.FREQ_HZ]),
     )
     np.savez_compressed(base + ".npz", **payload)
@@ -1635,6 +1792,9 @@ def main() -> None:
     p.add_argument("--out-dir", default=_DATA_DIR, metavar="DIR")
     p.add_argument("--no-rec",  action="store_true")
     p.add_argument("--save-iq", action="store_true")
+    p.add_argument("--max-time", type=float, default=0.0, metavar="SECONDS",
+                   help="Stop automatically after SECONDS of wall time (0 = no limit). "
+                        "Recording is saved on exit regardless.")
     p.add_argument("--no-plot", action="store_true",
                    help="Headless mode: run acquisition loop without opening the Qt GUI. "
                         "Useful for SSH sessions or automated test runs. "
@@ -1758,7 +1918,17 @@ def main() -> None:
     try:
         if args.no_plot:
             print("[HEADLESS] Acquisition running. Press Ctrl+C to stop.")
-            acq_thread.join()
+            if args.max_time > 0:
+                print(f"[HEADLESS] Auto-stop in {args.max_time:.0f} s.")
+                _t0_run = time.monotonic()
+                while acq_thread.is_alive():
+                    time.sleep(1.0)
+                    if time.monotonic() - _t0_run >= args.max_time:
+                        print(f"[HEADLESS] Max time {args.max_time:.0f}s reached — stopping.")
+                        S.running = False
+                        break
+            else:
+                acq_thread.join()
         else:
             _build_ui(S, cfg, args.algo, freq_hz)
     except KeyboardInterrupt:

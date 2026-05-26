@@ -565,6 +565,22 @@
             "problemMatcher": []
         },
         {
+            "label": "KrakenSDR: Iridium Raw Dataset — 60 min (headless + save IQ + spec2d)",
+            "detail": "Raccolta grezza 60 minuti: salva IQ preamble per burst (_iq.npz) + spec2d + sat_id per stima (.npz). Usare per ottimizzazione offline della pipeline (peak-picking, calibrazione, TLE prior). Ctrl+C per terminare anticipatamente: i dati vengono salvati automaticamente.",
+            "type": "shell",
+            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/iridium_burst_doa_runner.py --no-plot --save-iq --max-time 3600",
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            },
+            "problemMatcher": []
+        },
+        {
             "label": "KrakenSDR: Iridium Burst DoA Runner — 1626.270 MHz (GUI)",
             "detail": "DoA con GUI interattiva (skyplot + MUSIC 2D + phase plot). Usa parametri da config.py.",
             "type": "shell",
@@ -601,6 +617,22 @@
             "detail": "Runs offline DoA on a collected dataset and outputs per-burst estimates plus GT error summary when GT is available.",
             "type": "shell",
             "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/process_iridium_burst_dataset_offline.py --input ${input:iridiumDatasetFile} --algo ${input:iridiumOfflineAlgo}",
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "KrakenSDR: Iridium DoA — offline visualiser",
+            "detail": "Replay a .npz recording with interactive skyplot + Az/El/CFO/PAPR/Phase time-series and a time slider.",
+            "type": "shell",
+            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/offline_visualiser.py ${input:iridiumDatasetFile}",
             "options": {
                 "cwd": "${workspaceFolder}/krakenSDR/src"
             },

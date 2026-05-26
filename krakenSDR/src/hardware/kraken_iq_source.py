@@ -370,8 +370,22 @@ class KrakenIQSource:
             if frame is None:
                 continue
 
-            # Filter out non-DATA frames (calibration, dummy, etc.)
+            # Filter out non-DATA frames (calibration, dummy, ramp, etc.)
             if not self.last_header.is_data:
+                continue
+
+            # Reject frames while Heimdall has not yet completed sample-delay
+            # alignment (delay_sync_flag=0) or IQ phase calibration
+            # (iq_sync_flag=0).  These frames carry incoherent data and would
+            # corrupt DoA covariance estimates.
+            if (self.last_header.delay_sync_flag == 0
+                    or self.last_header.iq_sync_flag == 0):
+                continue
+
+            # Reject frames while the internal noise source is active
+            # (noise_source_state=1).  Noise injection contaminates any
+            # signal-of-interest captured in the same CPI.
+            if self.last_header.noise_source_state == 1:
                 continue
 
             self._frame_ctr += 1
