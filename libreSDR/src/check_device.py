@@ -10,8 +10,9 @@ Usage:
     python3 check_device.py [uri]
 
     URI examples:
-      ip:192.168.2.1   Ethernet (default -- ADALM-Pluto / LibreSDR)
-      ip:192.168.1.100 Custom Ethernet address
+      ip:192.168.1.10   Ethernet (default -- LibreSDR Rev.5)
+      ip:libre.local    mDNS alias (same device)
+      ip:192.168.2.1    ADALM-Pluto default (not LibreSDR)
       usb:1.3.5        USB (find URI with: iio_info -s)
       local:           Run directly on the Zynq ARM core
 
@@ -26,7 +27,7 @@ import subprocess
 
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-DEFAULT_URI = "ip:192.168.2.1"
+DEFAULT_URI = "ip:192.168.1.10"
 
 # Known PHY device names (depends on the board device tree)
 PHY_DEVICE_NAMES = [
@@ -166,7 +167,7 @@ class AD9363Checker:
 
         # TX LO
         try:
-            tx_lo = self.phy.find_channel("altvoltage1", output=True)
+            tx_lo = self.phy.find_channel("altvoltage1", True)
             if tx_lo:
                 freq_hz = int(tx_lo.attrs["frequency"].value)
                 print(f"  TX LO frequency:   {freq_hz / 1e6:.3f} MHz")
@@ -175,7 +176,7 @@ class AD9363Checker:
 
         # RX LO
         try:
-            rx_lo = self.phy.find_channel("altvoltage0", output=True)
+            rx_lo = self.phy.find_channel("altvoltage0", True)
             if rx_lo:
                 freq_hz = int(rx_lo.attrs["frequency"].value)
                 print(f"  RX LO frequency:   {freq_hz / 1e6:.3f} MHz")
@@ -184,7 +185,7 @@ class AD9363Checker:
 
         # TX channel attributes (attenuation, sample rate, bandwidth)
         try:
-            tx_ch = self.phy.find_channel("voltage0", output=True)
+            tx_ch = self.phy.find_channel("voltage0", True)
             if tx_ch:
                 atten = tx_ch.attrs.get("hardwaregain")
                 srate = tx_ch.attrs.get("sampling_frequency")
@@ -208,7 +209,7 @@ class AD9363Checker:
         print(f"  DDS Core: {self.dds.name}")
         print(f"{'─'*60}")
         for ch_name in ["TX1_I_F1", "TX1_I_F2", "TX1_Q_F1", "TX1_Q_F2"]:
-            ch = self.dds.find_channel(ch_name, output=True)
+            ch = self.dds.find_channel(ch_name, True)
             if ch:
                 try:
                     freq  = ch.attrs.get("frequency")

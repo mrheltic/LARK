@@ -501,7 +501,7 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
         color=C_TEXT, fontsize=9, y=0.98,
     )
 
-    # ── Funzione di aggiornamento ──────────────────────────────────────────────
+    # ── Update function ─────────────────────────────────────────────────────────
     def _update(_):
         with S.lock:
             az_s     = S.az_spec.copy()

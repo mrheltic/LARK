@@ -32,7 +32,6 @@ from burst_processing import (
 # ── Shared constants ──────────────────────────────────────────────────────────
 _FS        = 1_024_000.0    # KrakenSDR / Heimdall sample rate
 _TONE_HZ   = 3_125.0        # Iridium IRA preamble tone offset (Rs/8)
-_RNG       = np.random.default_rng(0xDEADBEEF)
 
 
 # =============================================================================

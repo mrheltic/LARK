@@ -33,7 +33,7 @@ sleep 2
 
 if ! pgrep -f 'indoor_1626\.py' >/dev/null 2>&1; then
     echo "[DoA] WARNING: indoor_1626.py TX not running."
-    echo "         For lab tests start: LibreSDR: Indoor 1626 MHz — TX IRA burst"
+    echo "         Start: scripts/run_indoor_pass_lab.sh  or  LibreSDR: Indoor 1626 MHz — TX"
 fi
 
 # Kill stale DoA instances (only one KrakenIQ client on port 5000)
@@ -46,13 +46,11 @@ fi
 export PYTHONUNBUFFERED=1
 export MPLBACKEND="${MPLBACKEND:-Qt5Agg}"
 export DISPLAY="${DISPLAY:-:0}"
+export LARK_ROOT
 
 cd "$SRC"
+# Pass-mode profile comes from config.py (INDOOR_TX_MODE=pass); do not override
+# --fd-max here or Doppler chirp will be gated out.
 exec "$VENV" -u apps/doa_iridium/iridium_burst_doa_runner.py \
     --freq 1626.270 \
-    --max-sats 1 \
-    --fd-max 2000 \
-    --multi 6 \
-    --snr-min -5 \
-    --papr-min 3 \
     "$@"

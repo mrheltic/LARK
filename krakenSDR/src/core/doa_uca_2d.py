@@ -38,6 +38,10 @@ __all__ = [
     "find_peak_uca_2d",
     "find_peaks_uca_2d",
     "pick_doa_peak_uca_2d",
+    "expected_uca_phase_diffs_deg",
+    "phase_residual_deg",
+    "doa_phase_fit_uca_2d",
+    "uca_synthetic_peak_spectrum",
     "extract_pilot_tone",
     "amplitude_normalize_channels",
     "doa_music_uca_2d",
@@ -176,7 +180,7 @@ class UcaConfig:
 
 
 # =============================================================================
-# Funzione di picco (compatibile con doa_algorithms_3d.find_peak_2d)
+# Peak-finding helpers (compatible with doa_algorithms_3d.find_peak_2d)
 # =============================================================================
 
 def find_peak_uca_2d(
@@ -305,6 +309,157 @@ def find_peaks_uca_2d(
     return results
 
 
+def _circular_az_sep_deg(a: float, b: float) -> float:
+    d = abs(a - b) % 360.0
+    return min(d, 360.0 - d)
+
+
+def expected_uca_phase_diffs_deg(
+    az_deg: float,
+    el_deg: float,
+    cfg: UcaConfig,
+) -> np.ndarray:
+    """Model inter-antenna phase diffs [°] relative to antenna 0."""
+    pos = cfg.positions
+    az_r = np.deg2rad(az_deg)
+    el_r = np.deg2rad(el_deg)
+    tau = 2.0 * np.pi * (
+        pos[:, 0] * np.cos(el_r) * np.sin(az_r)
+        + pos[:, 1] * np.cos(el_r) * np.cos(az_r)
+    )
+    tau -= tau[0]
+    return np.degrees(tau[1:])
+
+
+def phase_residual_deg(
+    phase_diffs: np.ndarray,
+    az_deg: float,
+    el_deg: float,
+    cfg: UcaConfig,
+) -> np.ndarray:
+    """Wrap measured − expected inter-antenna phases to (−180°, +180°]."""
+    expected = expected_uca_phase_diffs_deg(az_deg, el_deg, cfg)
+    return ((phase_diffs - expected + 180.0) % 360.0) - 180.0
+
+
+def _inter_antenna_phase_error_deg(
+    az_deg: float,
+    el_deg: float,
+    phase_diffs: np.ndarray,
+    cfg: UcaConfig,
+) -> float:
+    """Mean absolute error between measured and UCA-model inter-antenna phases."""
+    residual = phase_residual_deg(phase_diffs, az_deg, el_deg, cfg)
+    return float(np.mean(np.abs(residual)))
+
+
+def _resolve_uca_180_ambiguity(
+    az_deg: float,
+    el_deg: float,
+    *,
+    phase_diffs: np.ndarray | None = None,
+    cfg: UcaConfig | None = None,
+    az_hint_deg: float | None = None,
+    margin_deg: float = 5.0,
+    phase_min_margin_deg: float = 10.0,
+) -> float:
+    """Pick azimuth side θ vs θ+180° using phase fit, then tracker hint."""
+    az_mirror = (az_deg + 180.0) % 360.0
+    if (phase_diffs is not None and cfg is not None
+            and phase_diffs.size >= cfg.n_ant - 1):
+        err_d = _inter_antenna_phase_error_deg(az_deg, el_deg, phase_diffs, cfg)
+        err_m = _inter_antenna_phase_error_deg(az_mirror, el_deg, phase_diffs, cfg)
+        if err_m + phase_min_margin_deg < err_d:
+            return az_mirror
+        if err_d + phase_min_margin_deg < err_m:
+            return az_deg
+    if az_hint_deg is not None:
+        d_direct = _circular_az_sep_deg(az_deg, az_hint_deg)
+        d_mirror = _circular_az_sep_deg(az_mirror, az_hint_deg)
+        if d_mirror + margin_deg < d_direct:
+            return az_mirror
+    return az_deg
+
+
+def doa_phase_fit_uca_2d(
+    R: np.ndarray,
+    cfg: UcaConfig,
+    *,
+    az_hint_deg: float | None = None,
+    el_hint_deg: float | None = None,
+    az_window_deg: float = 45.0,
+    el_window_deg: float = 20.0,
+) -> tuple[float, float, float]:
+    """
+    Estimate (az, el) by minimising UCA inter-antenna phase mismatch.
+
+    Best for calibrated single-source indoor TX at low SNR; follows motion
+    faster than spectral peak-picking when MULTI_BURST_N is small.
+    Returns (az_deg, el_deg, mean_abs_phase_error_deg).
+    """
+    phase_diffs = np.degrees(np.angle(R[1:, 0]))
+    el_min = float(cfg.el_min_deg)
+    el_max = float(cfg.el_max_deg)
+
+    if az_hint_deg is not None:
+        az_c = float(az_hint_deg) % 360.0
+        az_vals = np.arange(az_c - az_window_deg, az_c + az_window_deg + 0.1, 2.0)
+        az_vals = np.unique(np.mod(az_vals, 360.0))
+    else:
+        az_vals = np.arange(0.0, 360.0, 4.0)
+
+    if el_hint_deg is not None:
+        el_c = float(el_hint_deg)
+        el_vals = np.arange(el_c - el_window_deg, el_c + el_window_deg + 0.1, 2.0)
+        el_vals = el_vals[(el_vals >= el_min) & (el_vals <= el_max)]
+        if el_vals.size == 0:
+            el_vals = np.array([el_c])
+    else:
+        el_vals = np.linspace(el_min, el_max, max(3, int((el_max - el_min) / 3.0) + 1))
+
+    best_err, best_az, best_el = 1e9, 0.0, el_min
+    for az in az_vals:
+        for el in el_vals:
+            err = _inter_antenna_phase_error_deg(float(az), float(el), phase_diffs, cfg)
+            if err < best_err:
+                best_err, best_az, best_el = err, float(az), float(el)
+
+    for az in np.arange(best_az - 4.0, best_az + 4.1, 0.5):
+        for el in np.arange(best_el - 4.0, best_el + 4.1, 0.5):
+            azw = float(az) % 360.0
+            elw = float(np.clip(el, el_min, el_max))
+            err = _inter_antenna_phase_error_deg(azw, elw, phase_diffs, cfg)
+            if err < best_err:
+                best_err, best_az, best_el = err, azw, elw
+
+    best_az = _resolve_uca_180_ambiguity(
+        best_az, best_el,
+        phase_diffs=phase_diffs, cfg=cfg,
+        az_hint_deg=az_hint_deg,
+    )
+    return best_az, best_el, float(best_err)
+
+
+def uca_synthetic_peak_spectrum(
+    cfg: UcaConfig,
+    az_deg: float,
+    el_deg: float,
+    *,
+    sigma_az_deg: float = 8.0,
+    sigma_el_deg: float = 6.0,
+) -> np.ndarray:
+    """Build a narrow 2D peak for GUI when DoA is computed without a full scan."""
+    az_grid = cfg.az_range_deg()
+    el_grid = cfg.el_range_deg()
+    AZ, EL = np.meshgrid(az_grid, el_grid)
+    d_az = np.abs(((AZ - az_deg + 180.0) % 360.0) - 180.0)
+    d_el = np.abs(EL - el_deg)
+    spec = -0.5 * ((d_az / max(sigma_az_deg, 1.0)) ** 2
+                   + (d_el / max(sigma_el_deg, 1.0)) ** 2)
+    spec -= float(np.max(spec))
+    return np.clip(spec, -40.0, 0.0).astype(np.float64)
+
+
 def pick_doa_peak_uca_2d(
     spec: np.ndarray,
     cfg: UcaConfig,
@@ -314,8 +469,14 @@ def pick_doa_peak_uca_2d(
     el_pref_lo: float = 8.0,
     phase_diffs: np.ndarray | None = None,
     az_hint_deg: float | None = None,
+    el_hint_deg: float | None = None,
     n_peaks: int = 4,
     min_sep_deg: float = 8.0,
+    phase_score_weight: float = 0.35,
+    az_hint_score_weight: float = 0.25,
+    el_hint_score_weight: float = 0.20,
+    mirror_margin_deg: float = 5.0,
+    mirror_phase_min_margin_deg: float = 10.0,
 ) -> tuple[float, float, float]:
     """
     Select the best (az, el, papr) from a 2D MUSIC spectrum.
@@ -329,19 +490,45 @@ def pick_doa_peak_uca_2d(
     Suppresses ceiling multipath peaks at el ≈ 60–80°.
     """
     if not indoor:
-        return find_peak_uca_2d(spec, cfg)
+        az_out, el_out, papr_out = find_peak_uca_2d(spec, cfg)
+        az_out = _resolve_uca_180_ambiguity(
+            az_out, el_out,
+            phase_diffs=phase_diffs, cfg=cfg,
+            az_hint_deg=az_hint_deg,
+            margin_deg=mirror_margin_deg,
+            phase_min_margin_deg=mirror_phase_min_margin_deg,
+        )
+        return az_out, el_out, papr_out
 
-    peaks = find_peaks_uca_2d(spec, cfg, n_peaks=n_peaks, min_sep_deg=min_sep_deg)
+    peaks = find_peaks_uca_2d(spec, cfg, n_peaks=max(n_peaks, 6),
+                              min_sep_deg=min_sep_deg)
     if not peaks:
         return find_peak_uca_2d(spec, cfg)
 
-    pos = cfg.positions
-    best: tuple[float, float, float] | None = None
-    best_score = -1e9
-
+    # Flat UCA MUSIC often produces an elevation ridge (same az, many el bins
+    # at equal PAPR).  Collapse to one candidate per ~10° azimuth sector,
+    # keeping the elevation with the best phase match in each sector.
+    az_bucket_deg = 10.0
+    sector_best: dict[int, tuple[float, float, float, float]] = {}
     for az, el, papr in peaks:
         if el > cfg.el_max_deg + 1.0:
             continue
+        bucket = int(round(az / az_bucket_deg))
+        ph_err = (_inter_antenna_phase_error_deg(az, el, phase_diffs, cfg)
+                  if phase_diffs is not None and phase_diffs.size >= cfg.n_ant - 1
+                  else 0.0)
+        prev = sector_best.get(bucket)
+        if prev is None or ph_err < prev[3] or (ph_err == prev[3] and papr > prev[2]):
+            sector_best[bucket] = (az, el, papr, ph_err)
+
+    candidates = [(v[0], v[1], v[2]) for v in sector_best.values()]
+    if not candidates:
+        candidates = peaks
+
+    best: tuple[float, float, float] | None = None
+    best_score = -1e9
+
+    for az, el, papr in candidates:
         score = papr
         if el > el_pref_hi:
             score -= 2.5 * (el - el_pref_hi)
@@ -349,29 +536,32 @@ def pick_doa_peak_uca_2d(
             score -= 0.6 * (el_pref_lo - el)
 
         if phase_diffs is not None and phase_diffs.size >= cfg.n_ant - 1:
-            az_r = np.deg2rad(az)
-            el_r = np.deg2rad(el)
-            tau = 2.0 * np.pi * (
-                pos[:, 0] * np.cos(el_r) * np.sin(az_r)
-                + pos[:, 1] * np.cos(el_r) * np.cos(az_r)
-            )
-            tau -= tau[0]
-            expected = np.degrees(tau[1:])
-            ph_err = float(np.mean(np.abs(
-                ((phase_diffs - expected + 180.0) % 360.0) - 180.0
-            )))
-            score -= 0.15 * ph_err
+            ph_err = _inter_antenna_phase_error_deg(az, el, phase_diffs, cfg)
+            score -= phase_score_weight * ph_err
 
         if az_hint_deg is not None:
-            d_az = abs(az - az_hint_deg) % 360.0
-            d_az = min(d_az, 360.0 - d_az)
-            score -= 0.10 * d_az
+            d_direct = _circular_az_sep_deg(az, az_hint_deg)
+            d_mirror = _circular_az_sep_deg((az + 180.0) % 360.0, az_hint_deg)
+            score -= az_hint_score_weight * min(d_direct, d_mirror)
+
+        if el_hint_deg is not None:
+            score -= el_hint_score_weight * abs(el - el_hint_deg)
 
         if score > best_score:
             best_score = score
             best = (az, el, papr)
 
-    return best if best is not None else peaks[0]
+    if best is None:
+        best = peaks[0]
+    az_out, el_out, papr_out = best
+    az_out = _resolve_uca_180_ambiguity(
+        az_out, el_out,
+        phase_diffs=phase_diffs, cfg=cfg,
+        az_hint_deg=az_hint_deg,
+        margin_deg=mirror_margin_deg,
+        phase_min_margin_deg=mirror_phase_min_margin_deg,
+    )
+    return az_out, el_out, papr_out
 
 
 # =============================================================================
@@ -490,7 +680,7 @@ def _circulant_smooth(R: np.ndarray) -> np.ndarray:
     """
     N = R.shape[0]
     k = np.arange(N)
-    # Vettore del primo lag (d[0]..d[N-1]) — media su tutti gli starting point
+    # First-lag vector (d[0]..d[N-1]) — average over all starting points
     d = np.empty(N, dtype=complex)
     for lag in range(N):
         d[lag] = np.mean(R[k, (k + lag) % N])
@@ -535,7 +725,7 @@ def _decor_cov(R: np.ndarray, mode: str) -> np.ndarray:
 
 
 # =============================================================================
-# 2D-MUSIC per UCA
+# 2D-MUSIC for UCA
 # =============================================================================
 
 def doa_music_uca_2d(
@@ -613,7 +803,7 @@ def doa_music_uca_2d(
 
 
 # =============================================================================
-# 2D-Bartlett (CBF) per UCA
+# 2D-Bartlett (CBF) for UCA
 # =============================================================================
 
 def doa_bartlett_uca_2d(
@@ -643,7 +833,7 @@ def doa_bartlett_uca_2d(
 
 
 # =============================================================================
-# 2D-Capon (MVDR) per UCA
+# 2D-Capon (MVDR) for UCA
 # =============================================================================
 
 def doa_capon_uca_2d(
@@ -793,7 +983,7 @@ def crb_azimuth_deg(
 
 
 # =============================================================================
-# EMA covariance accumulator per UCA
+# EMA covariance accumulator for UCA
 # =============================================================================
 
 class CovarianceAccumulatorUca:

@@ -172,6 +172,7 @@ def main() -> None:
             az_est, el_est = float(az_pk), float(el_pk)
             peak_metric = float(np.nanmax(p_norm))
         else:
+            az_est, el_est = float("nan"), float("nan")
             peak_metric = float(np.nanmax(P))
 
         row = {

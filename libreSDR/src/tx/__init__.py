@@ -307,14 +307,25 @@ def transmit_pass(
     print(f"  TX gain     : {gain_db:+.0f} dB")
 
     print("\n  Generating IQ ...")
-    iq_base, burst_log, _, _ = simulate_iridium_pass(
+    # Cyclic playback: start at closest approach (Doppler = 0) so the Kraken
+    # locks immediately; the pass ends at lower elevation with negative Doppler.
+    # On loop restart Doppler jumps back to 0 — the DoA runner allows this via
+    # INDOOR_TX_MODE=pass (CFO_TRACK_MAX_JUMP_HZ ≈ 25 kHz).
+    t_closest = 0.0 if cyclic else pass_dur_s / 2.0
+    iq_base, burst_log, doppler, _ = simulate_iridium_pass(
         duration_s=pass_dur_s,
         carrier_hz=float(freq_hz),
         max_elev_deg=max_elev_deg,
         snr_db=snr_db,
         sat_id=sat_id,
         beam_id=beam_id,
+        t_closest=t_closest,
     )
+    if burst_log:
+        d0 = burst_log[0]["doppler_hz"]
+        d1 = burst_log[-1]["doppler_hz"]
+        print(f"  Doppler span: {d0/1e3:+.1f} … {d1/1e3:+.1f} kHz  "
+              f"(t_ca={t_closest:.0f}s, cyclic={'yes' if cyclic else 'no'})")
     print(f"  {len(burst_log)} bursts generated, "
           f"{len(iq_base)} samples ({len(iq_base) / _IRA_BASE_RATE:.1f} s @ 250 kHz)")
 
@@ -347,7 +358,8 @@ def transmit_pass(
         # loop=cyclic repeats the full pass buffer from the beginning each
         # time, so the complete Doppler chirp envelope plays back on every
         # cycle rather than only the first 1 s (old cyclic behaviour).
-        sdr.transmit_streaming(iq_tx, loop=cyclic)
+        loop_guard_s = 0.5 if cyclic else 0.0
+        sdr.transmit_streaming(iq_tx, loop=cyclic, loop_guard_s=loop_guard_s)
 
     print("Done.")
 

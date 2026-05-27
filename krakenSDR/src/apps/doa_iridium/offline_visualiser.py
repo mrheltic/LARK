@@ -20,7 +20,6 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(os.path.dirname(_HERE))
 if _SRC not in sys.path: sys.path.insert(0, _SRC)
 if _HERE not in sys.path: sys.path.insert(0, _HERE)
-import config as C
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 BG    = "#1a1d27"; BG2   = "#21253a"; BG3  = "#2a2f47"

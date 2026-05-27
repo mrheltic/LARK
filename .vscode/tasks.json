@@ -88,22 +88,6 @@
             "problemMatcher": []
         },
         {
-            "label": "KrakenSDR: Iridium — DoA L-band (multi-channel)",
-            "detail": "DoA on Iridium bursts with MUSIC + Doppler tracking. Requires Heimdall active.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa/doa_runner.py",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "dependsOn": "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": []
-        },
-        {
             "label": "KrakenSDR: Run test suite",
             "detail": "Unit tests for DoA algorithms (MUSIC, ESPRIT, Capon, ML). No hardware needed.",
             "type": "shell",
@@ -152,360 +136,8 @@
             "problemMatcher": []
         },
         {
-            "label": "KrakenSDR: Space DoA — Collect bursts",
-            "detail": "Opens config dialog, connects to Heimdall, gates Iridium bursts from all 5 antennas, saves .npz/.json for offline 3D DoA. Requires Heimdall already running.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/space_collector.py",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Space DoA — Real-time (2D-MUSIC)",
-            "detail": "Real-time 3D DoA with sky plot + 8-panel display. Opens config dialog; supports BURST (Iridium gated) or CW mode. Requires Heimdall already running.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/space_doa_realtime.py",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Space DoA — Playback (offline)",
-            "detail": "Opens a .npz capture from space_collector or the realtime recorder and replays the full 2D DoA pipeline offline.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/space_doa_playback.py",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Iridium Pass Predict — compare DoA vs TLE",
-            "detail": "Loads a .npz recording, runs DoA pipeline, downloads Iridium TLE catalogue, and compares observed vs predicted satellite positions.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/iridium_pass_predict.py",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Iridium — visible satellites NOW",
-            "detail": "Shows currently visible Iridium NEXT satellites with Az/El/Doppler (auto-detects GPS position).",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/iridium_pass_predict.py --predict-now",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Iridium — predict passes (next 2h)",
-            "detail": "Predicts all Iridium NEXT passes above 10° for the next 2 hours.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/iridium_pass_predict.py --predict-window 2",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: 868 MHz UCA — DoA 2D real-time (MUSIC)",
-            "detail": "2D-MUSIC (azimuth + elevation) on the 5-element UCA at 868 MHz. Requires Heimdall active and LibreSDR beacon transmitting.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_realtime.py",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: 868 MHz UCA — DoA 2D real-time (Capon)",
-            "detail": "2D-Capon (MVDR) on the 5-element UCA at 868 MHz. Less sensitive to source-count errors than MUSIC.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_realtime.py --algo capon",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: 868 MHz UCA — DoA 2D real-time + record (MUSIC)",
-            "detail": "2D-MUSIC on the 5-element UCA at 868 MHz with continuous .npz recording to recordings/doa_868/. Auto-saves checkpoint every 300 frames. Requires Heimdall + LibreSDR pilot-tone beacon.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_realtime.py --out-dir ${workspaceFolder}/recordings/doa_868",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "LibreSDR: TX 868 MHz — pilot-tone beacon (+100 kHz, -15 dB)",
-            "detail": "Transmits a CW pilot tone at LO+100 kHz (868.1+0.1 MHz) at -15 dB via AD9363. Matches KrakenSDR PILOT_TONE_OFFSET_HZ=100000. Stop with Ctrl+C.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx/cw.py --freq 868100000 --pilot-offset 100000 --gain -15",
-            "options": {
-                "cwd": "${workspaceFolder}/libreSDR/src"
-            },
-            "group": "test",
-            "isBackground": true,
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": false
-            },
-            "problemMatcher": {
-                "pattern": {
-                    "regexp": "^(.*)$",
-                    "message": 1
-                },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": "LibreSDR",
-                    "endsPattern": "TX active|Transmitting"
-                }
-            }
-        },
-        {
-            "label": "KrakenSDR: 868 MHz UCA — DoA BURST (IRA preamble gate)",
-            "detail": "Burst-gated 2D-MUSIC: detects IRA π/4-DQPSK bursts from LibreSDR tx_868_gui.py, extracts preamble tone at +3125 Hz (Rs/8), runs per-burst DoA. Requires Heimdall + LibreSDR in BURST mode.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_burst.py",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: 868 MHz UCA — DoA BURST demo (no hardware)",
-            "detail": "Synthetic IRA burst at az=45° — tests burst DoA pipeline without hardware.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_test_868/doa_test_868_burst.py --demo",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "LibreSDR: TX 868 MHz — GUI BURST (IRA π/4-DQPSK)",
-            "detail": "Apre la GUI LibreSDR in modalità BURST IRA. Trasmette slot IRA π/4-DQPSK (preamble+dati) ogni 90 ms. Usare con 'DoA BURST'. Richiede hardware AD9363.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx/gui.py --mode ira",
-            "options": {
-                "cwd": "${workspaceFolder}/libreSDR/src"
-            },
-            "group": "test",
-            "isBackground": true,
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            },
-            "problemMatcher": {
-                "pattern": { "regexp": "^(.*)$", "message": 1 },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": "LibreSDR 868",
-                    "endsPattern": "GUI closed|Done\\."
-                }
-            }
-        },
-        {
-            "label": "LibreSDR: TX 868 MHz — GUI BURST demo (no hardware)",
-            "detail": "GUI loopback sintetica in modalità IRA — nessun hardware richiesto. Utile per testare la catena TX+DoA senza AD9363.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx/gui.py --demo --mode ira",
-            "options": {
-                "cwd": "${workspaceFolder}/libreSDR/src"
-            },
-            "group": "test",
-            "isBackground": true,
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            },
-            "problemMatcher": {
-                "pattern": { "regexp": "^(.*)$", "message": 1 },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": "LibreSDR 868",
-                    "endsPattern": "GUI closed|Done\\."
-                }
-            }
-        },
-        {
-            "label": "LibreSDR: TX 868 MHz — CW cyclic (DoA beacon)",
-            "detail": "Transmits a continuous pure carrier tone at 868.1 MHz via AD9363 DMA loop. Use as reference beacon for UCA DoA testing. Stop with Ctrl+C.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx/cw.py --freq 868100000",
-            "options": {
-                "cwd": "${workspaceFolder}/libreSDR/src"
-            },
-            "group": "test",
-            "isBackground": true,
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": false
-            },
-            "problemMatcher": {
-                "pattern": {
-                    "regexp": "^(.*)$",
-                    "message": 1
-                },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": "LibreSDR TX",
-                    "endsPattern": "TX active|Transmitting"
-                }
-            }
-        },
-        {
-            "label": "LibreSDR: TX 868 MHz — Headless IRA burst (no GUI)",
-            "detail": "Transmits authentic Iridium IRA π/4-DQPSK bursts at 868 MHz via AD9363. No display required — use over SSH. Loops forever until Ctrl+C. Pair with 'DoA BURST' task. Requires hardware AD9363.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx/ira.py --freq 868100000 --cyclic",
-            "options": {
-                "cwd": "${workspaceFolder}/libreSDR/src"
-            },
-            "group": "test",
-            "isBackground": true,
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": false
-            },
-            "problemMatcher": {
-                "pattern": { "regexp": "^(.*)$", "message": 1 },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": "Iridium IRA burst TX",
-                    "endsPattern": "Done\\.|Stop requested"
-                }
-            }
-        },
-        {
-            "label": "KrakenSDR: Calibration — auto (collect + train + validate)",
-            "detail": "Full NN calibration pipeline on one or more recordings. Fetches satellite Az/El from CelesTrak, trains MLP, and produces report + plots. Accepts a single .npz file, multiple files (space-separated), or a directory.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py auto ${input:calibInput}",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "new"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Calibration — collect dataset",
-            "detail": "Extract phase-diff features + ground-truth labels from .npz recordings. Accepts single file, multiple files, or directory.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py collect ${input:calibInput}",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Calibration — train model",
-            "detail": "Train MLP on a collected calibration dataset.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py train ${input:calibDataset}",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "new"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Calibration — phase offsets (direct MUSIC fix)",
-            "detail": "Stima i phase offset per canale dal GT TLE. Salva phase_offsets_latest.json che viene caricato automaticamente all'avvio di space_doa_realtime.py.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/space/calibration_run.py phase-cal ${input:calibInput}",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "new"
-            },
-            "problemMatcher": []
-        },
-
-        {
             "label": "KrakenSDR: Calibrate HW phase offsets — TX from North 0° (1626 MHz)",
-            "detail": "Calibrazione hardware UCA: posiziona l'antenna 0 del KrakenSDR a Nord geografico, posiziona il LibreSDR TX a Nord (az=0°) a 1–3 m. Avvia prima 'LibreSDR: Indoor 1626 MHz — TX IRA burst'. Questo task raccoglie ~120 s di burst, calcola i phase offset per canale e li scrive automaticamente in config.py. Riavvia il DoA dopo.",
+            "detail": "UCA hardware calibration: place antenna 0 facing geographic north, place the LibreSDR TX to the north (az=0°) at 1-3 m. Start 'LibreSDR: Indoor 1626 MHz — TX IRA burst' first. Collects ~120 s of bursts, computes per-channel phase offsets and writes them to config.py. Restart the DoA runner after.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_iridium/iridium_burst_doa_runner.py --freq 1626.270 --max-sats 1 --calibrate 0.0 --no-plot --no-rec",
             "options": {
@@ -519,12 +151,11 @@
             },
             "problemMatcher": []
         },
-
         {
             "label": "LibreSDR: Indoor 1626 MHz — TX IRA burst (lab DoA)",
-            "detail": "Transmits IRA π/4-DQPSK bursts at 1626.270 MHz at −40 dB (higher power → better indoor SNR, dominates multipath at 1–2 m). Safety guard rejects gain > −20 dB. Ctrl+C to stop.",
+            "detail": "Simulates an Iridium NEXT satellite indoors: full LEO pass with Doppler −28→+28 kHz, 45° elevation, 90 s cycle. Gain −50 dB gives ~20 dB SNR at 1-3 m. Increase to −40 dB if bursts are not detected. Stop with Ctrl+C.",
             "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 tx/indoor_1626.py --gain -45 --cyclic",
+            "command": "${workspaceFolder}/.venv/bin/python3 tx/indoor_1626.py --mode pass --gain -50 --elev 45 --dur 90 --cyclic",
             "options": {
                 "cwd": "${workspaceFolder}/libreSDR/src"
             },
@@ -544,12 +175,11 @@
                 }
             }
         },
-
         {
             "label": "KrakenSDR: Iridium Burst DoA Runner — 1626.270 MHz (headless)",
-            "detail": "DoA su IRA burst a 1626.270 MHz senza GUI. Attende Heimdall, usa parametri da config.py. Output [DIAG] ogni 10s.",
+            "detail": "DoA on IRA bursts at 1626.270 MHz, no GUI. Waits for Heimdall, reads parameters from config.py and the selected scenario. Prints [DIAG] every 10 s.",
             "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/iridium_burst_doa_runner.py --no-plot",
+            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/iridium_burst_doa_runner.py --no-plot --scenario ${input:iridiumScenario}",
             "options": {
                 "cwd": "${workspaceFolder}/krakenSDR/src"
             },
@@ -565,10 +195,10 @@
             "problemMatcher": []
         },
         {
-            "label": "KrakenSDR: Iridium Raw Dataset — 60 min (headless + save IQ + spec2d)",
-            "detail": "Raccolta grezza 60 minuti: salva IQ preamble per burst (_iq.npz) + spec2d + sat_id per stima (.npz). Usare per ottimizzazione offline della pipeline (peak-picking, calibrazione, TLE prior). Ctrl+C per terminare anticipatamente: i dati vengono salvati automaticamente.",
+            "label": "KrakenSDR: Iridium Burst DoA Runner — 1626.270 MHz (GUI)",
+            "detail": "DoA with interactive GUI (skyplot + 2D MUSIC + phase plot). Reads parameters from config.py and the selected scenario.",
             "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/iridium_burst_doa_runner.py --no-plot --save-iq --max-time 3600",
+            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/iridium_burst_doa_runner.py --scenario ${input:iridiumScenario}",
             "options": {
                 "cwd": "${workspaceFolder}/krakenSDR/src"
             },
@@ -581,10 +211,10 @@
             "problemMatcher": []
         },
         {
-            "label": "KrakenSDR: Iridium Burst DoA Runner — 1626.270 MHz (GUI)",
-            "detail": "DoA con GUI interattiva (skyplot + MUSIC 2D + phase plot). Usa parametri da config.py.",
+            "label": "KrakenSDR: Iridium Raw Dataset — 30 min (headless + save IQ + spec2d)",
+            "detail": "30-minute raw collection: saves IQ preamble per burst (_iq.npz) + spec2d + sat_id per estimate (.npz). Use for offline pipeline optimisation (peak-picking, calibration). Ctrl+C to stop early; data is saved automatically.",
             "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/iridium_burst_doa_runner.py",
+            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/iridium_burst_doa_runner.py --no-plot --save-iq --max-time 1800 --scenario ${input:iridiumScenario}",
             "options": {
                 "cwd": "${workspaceFolder}/krakenSDR/src"
             },
@@ -598,7 +228,7 @@
         },
         {
             "label": "KrakenSDR: Iridium Dataset — collect 5ch bursts",
-            "detail": "Collects burst windows from all 5 antennas using the same burst detector/tone estimator as iridium_burst_doa_runner.py, then annotates TLE-based ground truth.",
+            "detail": "Collects burst windows from all 5 antennas using the same burst detector/tone estimator as iridium_burst_doa_runner.py.",
             "type": "shell",
             "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/collect_iridium_burst_dataset.py --max-time-s ${input:iridiumCollectSeconds} --max-bursts ${input:iridiumCollectBursts}",
             "options": {
@@ -614,7 +244,7 @@
         },
         {
             "label": "KrakenSDR: Iridium Dataset — offline DoA processing",
-            "detail": "Runs offline DoA on a collected dataset and outputs per-burst estimates plus GT error summary when GT is available.",
+            "detail": "Runs offline DoA on a collected dataset and outputs per-burst estimates plus error summary when ground truth is available.",
             "type": "shell",
             "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/process_iridium_burst_dataset_offline.py --input ${input:iridiumDatasetFile} --algo ${input:iridiumOfflineAlgo}",
             "options": {
@@ -645,8 +275,24 @@
             "problemMatcher": []
         },
         {
-            "label": "LARK: Indoor 1626 MHz — laboratorio completo (Heimdall + TX + DoA)",
-            "detail": "Avvio in sequenza: 1) Heimdall DAQ 1626 MHz, 2) LibreSDR TX −60 dB, 3) DoA GUI. Usa questo per un test da zero.",
+            "label": "KrakenSDR: Iridium — validate pipeline (known TX position)",
+            "detail": "Runs the full diagnostic suite on a collected dataset: phase diff vs theory, DoA RMSE/bias, CRB ratio, eigenvalue rank, per-channel power balance. Provide TX azimuth and elevation as ground truth.",
+            "type": "shell",
+            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/validate_pipeline.py ${input:iridiumDatasetFile} --az ${input:validateAz} --el ${input:validateEl} --algo ${input:iridiumOfflineAlgo} --save-pdf ${input:iridiumDatasetFile}_report.pdf",
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "LARK: Indoor 1626 MHz — full lab setup (Heimdall + TX + DoA)",
+            "detail": "Sequential startup: 1) Heimdall DAQ at 1626 MHz, 2) LibreSDR TX −50 dB simulated LEO pass (Doppler ±28 kHz), 3) DoA GUI with indoor_pass scenario.",
             "dependsOn": [
                 "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
                 "LibreSDR: Indoor 1626 MHz — TX IRA burst (lab DoA)",
@@ -665,20 +311,15 @@
             "type": "promptString"
         },
         {
-            "id": "calibInput",
-            "description": "Recording(s) for calibration — single .npz, space-separated .npz files, or a directory. File naming: kraken_space_raw_* (collector) / kraken_space_doa_* (realtime DoA). Default: all recordings/ folder.",
-            "default": "../../recordings/",
-            "type": "promptString"
-        },
-        {
-            "id": "calibDataset",
-            "description": "Calibration dataset .npz (from collect step)",
-            "default": "krakenSDR/calibration/calibration_dataset.npz",
-            "type": "promptString"
+            "id": "iridiumScenario",
+            "description": "Operational scenario (indoor_ira | indoor_pass | outdoor)",
+            "default": "outdoor",
+            "type": "pickString",
+            "options": ["indoor_ira", "indoor_pass", "outdoor"]
         },
         {
             "id": "iridiumCollectSeconds",
-            "description": "Max collection time in seconds (0 means unlimited)",
+            "description": "Max collection time in seconds (0 = unlimited)",
             "default": "120",
             "type": "promptString"
         },
@@ -698,6 +339,19 @@
             "id": "iridiumOfflineAlgo",
             "description": "Offline DoA algorithm",
             "default": "music",
+            "type": "pickString",
+            "options": ["music", "capon", "bartlett", "phase-fit"]
+        },
+        {
+            "id": "validateAz",
+            "description": "Known TX azimuth from geographic North [°]",
+            "default": "0",
+            "type": "promptString"
+        },
+        {
+            "id": "validateEl",
+            "description": "Known TX elevation above horizon [°]",
+            "default": "25",
             "type": "promptString"
         }
     ]

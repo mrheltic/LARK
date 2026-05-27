@@ -423,6 +423,7 @@ class Ad9363:
         samples: np.ndarray,
         chunk_size: int = HW_BUF_MAX,
         loop: bool = False,
+        loop_guard_s: float = 0.0,
     ) -> None:
         """
         Stream a large IQ buffer to the DAC in sequential non-cyclic chunks.
@@ -439,22 +440,42 @@ class Ad9363:
         Doppler/amplitude envelope of a simulated satellite pass plays back
         from the beginning on every cycle.
 
+        All chunks are zero-padded to ``chunk_size`` so pyadi-iio keeps a
+        fixed DMA buffer length across loop iterations (the final partial
+        chunk would otherwise crash on pass 2 with "Cannot change buffer
+        length on the fly").
+
         Args:
-            samples:    Complex64 IQ array (arbitrary length).
-            chunk_size: DMA chunk size in samples (default HW_BUF_MAX ≈ 1 s).
-            loop:       If True, repeat the whole buffer until Ctrl+C.
+            samples:       Complex64 IQ array (arbitrary length).
+            chunk_size:    DMA chunk size in samples (default HW_BUF_MAX ≈ 1 s).
+            loop:          If True, repeat the whole buffer until Ctrl+C.
+            loop_guard_s:  Silence [s] inserted between loop iterations (0 = none).
         """
         sdr = self._sdr
         sdr.tx_cyclic_buffer = False
         n_total   = len(samples)
         dur_s     = n_total / float(DEFAULT_SAMPLE_RATE)
-        chunks    = [samples[i : i + chunk_size]
-                     for i in range(0, n_total, chunk_size)]
+        raw_chunks = [samples[i : i + chunk_size]
+                      for i in range(0, n_total, chunk_size)]
+        # Pad every chunk to a fixed DMA length (critical for loop=True).
+        chunks: list[np.ndarray] = [
+            self._pad_chunk(raw, chunk_size, samples.dtype) for raw in raw_chunks
+        ]
         n_chunks  = len(chunks)
+        guard_n   = int(round(loop_guard_s * DEFAULT_SAMPLE_RATE))
+        guard_chunks: list[np.ndarray] = []
+        if guard_n > 0:
+            guard = np.zeros(guard_n, dtype=samples.dtype)
+            for i in range(0, guard_n, chunk_size):
+                guard_chunks.append(
+                    self._pad_chunk(guard[i : i + chunk_size], chunk_size, samples.dtype)
+                )
 
         if loop:
             print(f"  Streaming {n_total} samples ({dur_s:.1f} s) "
                   f"in {n_chunks} chunk(s), looping until Ctrl+C ...")
+            if guard_n > 0:
+                print(f"  Loop guard: {loop_guard_s:.1f} s silence between passes")
         else:
             print(f"  Streaming {n_total} samples ({dur_s:.1f} s) "
                   f"in {n_chunks} chunk(s) ...")
@@ -465,6 +486,7 @@ class Ad9363:
                 pass_n += 1
                 if loop and pass_n > 1:
                     print(f"\n  [Pass {pass_n}]", end=" ", flush=True)
+                    _release_tx_buffer(sdr)
                 for i, chunk in enumerate(chunks):
                     if n_chunks > 1:
                         pct = int(i / n_chunks * 100)
@@ -484,6 +506,9 @@ class Ad9363:
                                 flush=True,
                             )
                         raise
+                if loop and guard_chunks:
+                    for gchunk in guard_chunks:
+                        sdr.tx(gchunk)
                 if not loop:
                     break
         except KeyboardInterrupt:
@@ -493,6 +518,14 @@ class Ad9363:
         if n_chunks > 1:
             print()
         print("  TX streaming complete.")
+
+    @staticmethod
+    def _pad_chunk(chunk: np.ndarray, chunk_size: int, dtype) -> np.ndarray:
+        if len(chunk) == chunk_size:
+            return chunk
+        out = np.zeros(chunk_size, dtype=dtype)
+        out[: len(chunk)] = chunk
+        return out
 
     # -- Context manager -----------------------------------------------------
 

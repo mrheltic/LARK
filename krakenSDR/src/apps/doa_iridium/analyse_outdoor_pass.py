@@ -63,22 +63,21 @@ def main():
                   f"PAPR={np.median(p):.0f}dB  n={e-s}")
 
     # Save summary
-    if args.out or True:
-        out_path = args.out if args.out else args.input.replace('.npz', '_analysis.json')
-        import json
-        summary = {
-            "file": os.path.basename(args.input),
-            "bursts": int(n), "duration_s": float(dur),
-            "az_median": float(np.median(az)), "az_std": float(np.std(az)),
-            "el_median": float(np.median(el)), "el_std": float(np.std(el)),
-            "el_peak": float(el[peak_idx]), "t_peak_s": float(t[peak_idx] - t[0]),
-            "cfo_range_hz": [float(np.min(cfo)), float(np.max(cfo))],
-            "papr_median": float(np.median(papr)),
-            "phase_stability": [float(x) for x in np.std(phase, axis=0)],
-        }
-        with open(out_path, 'w') as f:
-            json.dump(summary, f, indent=2)
-        print(f"\nSummary saved: {out_path}")
+    import json
+    out_path = args.out if args.out else args.input.replace('.npz', '_analysis.json')
+    summary = {
+        "file": os.path.basename(args.input),
+        "bursts": int(n), "duration_s": float(dur),
+        "az_median": float(np.median(az)), "az_std": float(np.std(az)),
+        "el_median": float(np.median(el)), "el_std": float(np.std(el)),
+        "el_peak": float(el[peak_idx]), "t_peak_s": float(t[peak_idx] - t[0]),
+        "cfo_range_hz": [float(np.min(cfo)), float(np.max(cfo))],
+        "papr_median": float(np.median(papr)),
+        "phase_stability": [float(x) for x in np.std(phase, axis=0)],
+    }
+    with open(out_path, 'w') as f:
+        json.dump(summary, f, indent=2)
+    print(f"\nSummary saved: {out_path}")
 
 if __name__ == "__main__":
     main()

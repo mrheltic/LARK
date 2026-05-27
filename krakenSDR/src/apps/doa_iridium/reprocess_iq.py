@@ -17,9 +17,8 @@ sys.path.insert(0, _HERE)
 import config as C
 from core.doa_uca_2d import (
     UcaConfig, doa_music_uca_2d, doa_capon_uca_2d, doa_bartlett_uca_2d,
-    pick_doa_peak_uca_2d, find_peaks_uca_2d,
+    pick_doa_peak_uca_2d,
     extract_pilot_tone, amplitude_normalize_channels,
-    eigenvalue_spread_uca_db,
 )
 from core.doa_algorithms import apply_phase_correction as _apply_phase_correction
 from burst_processing import compute_mf_covariance as _compute_mf_covariance_api
@@ -38,7 +37,8 @@ def main():
     args = p.parse_args()
 
     d = np.load(args.input, allow_pickle=True)
-    X_all = d['X']  # (N, 5, pre_samples)
+    # Accept both the old _iq.npz key ('X') and the merged runner key ('bursts')
+    X_all = d['bursts'] if 'bursts' in d else d['X']  # (N, n_ant, pre_samples)
     n_total, n_ant, pre_samples = X_all.shape
     print(f"Loaded {n_total} IQ windows ({n_ant} antennas, {pre_samples} samples)")
 
@@ -70,14 +70,18 @@ def main():
     R_batch = []
     doppler_gate = float(getattr(C, "DOPPLER_GATE_HZ", 0))
 
-    # Use original CFO if companion .npz exists
-    orig_path = args.input.replace('_iq.npz', '.npz')
+    # Use CFO from the same file if available (merged runner format), else look for companion
     orig_cfo = None
-    if os.path.exists(orig_path) and orig_path != args.input:
-        orig = np.load(orig_path, allow_pickle=True)
-        if 'sat_cfo_hz' in orig and len(orig['sat_cfo_hz']) == n_total:
-            orig_cfo = orig['sat_cfo_hz']
-            print(f"Using original CFO from {os.path.basename(orig_path)}")
+    if 'sat_cfo_hz' in d and len(d['sat_cfo_hz']) == n_total:
+        orig_cfo = d['sat_cfo_hz']
+        print("Using CFO from dataset file (sat_cfo_hz)")
+    else:
+        orig_path = args.input.replace('_iq.npz', '.npz')
+        if os.path.exists(orig_path) and orig_path != args.input:
+            orig = np.load(orig_path, allow_pickle=True)
+            if 'sat_cfo_hz' in orig and len(orig['sat_cfo_hz']) == n_total:
+                orig_cfo = orig['sat_cfo_hz']
+                print(f"Using original CFO from {os.path.basename(orig_path)}")
 
     out_az, out_el, out_papr, out_snr, out_cfo = [], [], [], [], []
     out_t, out_phase, out_R = [], [], []
@@ -177,7 +181,8 @@ def main():
         print("ERROR: No estimates produced. Try --snr-min -10 or --papr-min 1")
         sys.exit(1)
 
-    out_path = args.out if args.out else args.input.replace('_iq.npz', '_reprocessed.npz')
+    _default_out = args.input.replace('_iq.npz', '_reprocessed.npz').replace('.npz', '_reprocessed.npz') if '_reprocessed' not in args.input else args.input
+    out_path = args.out if args.out else _default_out
     np.savez_compressed(
         out_path,
         az_deg=np.array(out_az), el_deg=np.array(out_el),

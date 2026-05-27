@@ -1,0 +1,344 @@
+{
+  "input": "/home/mrheltic/Documents/GitHub/LARK/krakenSDR/data/doa_iridium/doa_iridium_20260527_155621_autosave.npz",
+  "n_R": 919,
+  "multi_burst_n": 4,
+  "music_decorr": "none",
+  "live_recorded": {
+    "az_median_deg": 353.3291434293306,
+    "az_std_deg": 1.7299357714677768,
+    "el_median_deg": 11.059117663645141,
+    "el_std_deg": 4.391288427861432,
+    "segments": [
+      {
+        "quarter": 1,
+        "t_start_s": 0.0,
+        "t_end_s": 30.040443897247314,
+        "az_median_deg": 355.0313014140115,
+        "az_std_deg": 1.6399737109896455,
+        "el_median_deg": 9.007094932829764,
+        "el_std_deg": 3.3942713759403373
+      },
+      {
+        "quarter": 2,
+        "t_start_s": 30.200863361358643,
+        "t_end_s": 62.39009714126587,
+        "az_median_deg": 354.1918081947273,
+        "az_std_deg": 1.73769101968415,
+        "el_median_deg": 11.15476423876122,
+        "el_std_deg": 3.5317283876766985
+      },
+      {
+        "quarter": 3,
+        "t_start_s": 62.51342415809631,
+        "t_end_s": 93.88738965988159,
+        "az_median_deg": 353.0175248496763,
+        "az_std_deg": 1.068863511936285,
+        "el_median_deg": 12.766249851189528,
+        "el_std_deg": 4.280535225684602
+      },
+      {
+        "quarter": 4,
+        "t_start_s": 94.01869511604309,
+        "t_end_s": 127.68334341049194,
+        "az_median_deg": 352.2126877063886,
+        "az_std_deg": 1.3835193056112642,
+        "el_median_deg": 12.476786689054105,
+        "el_std_deg": 5.110959663163395
+      }
+    ]
+  },
+  "algorithms": {
+    "music": {
+      "n_valid": 458,
+      "status": "ok",
+      "az_median_deg": 353.39670282884606,
+      "az_std_deg": 1.9494588945506088,
+      "az_range_deg": [
+        346.52272963391596,
+        358.51263862584386
+      ],
+      "el_median_deg": 10.500331324262715,
+      "el_std_deg": 5.693751765271265,
+      "el_range_deg": [
+        5.0,
+        24.675955605804013
+      ],
+      "papr_median_db": 10.681362449301126,
+      "segment_drift": [
+        {
+          "quarter": 1,
+          "t_start_s": 0.0,
+          "t_end_s": 31.571592571959712,
+          "az_median_deg": 354.9413076265879,
+          "az_std_deg": 1.912651414636166,
+          "el_median_deg": 7.15839379566124,
+          "el_std_deg": 4.2144030335130065
+        },
+        {
+          "quarter": 2,
+          "t_start_s": 31.85098719649033,
+          "t_end_s": 63.70197439298066,
+          "az_median_deg": 354.3411511003635,
+          "az_std_deg": 2.2418926156517744,
+          "el_median_deg": 8.441693390144493,
+          "el_std_deg": 5.325474823966078
+        },
+        {
+          "quarter": 3,
+          "t_start_s": 63.98136901751128,
+          "t_end_s": 95.552961589471,
+          "az_median_deg": 353.1468042123804,
+          "az_std_deg": 1.0482942031101596,
+          "el_median_deg": 13.157646455177515,
+          "el_std_deg": 5.638536053913401
+        },
+        {
+          "quarter": 4,
+          "t_start_s": 95.8323562140016,
+          "t_end_s": 127.68334341049194,
+          "az_median_deg": 352.3512403249918,
+          "az_std_deg": 1.6493301090744652,
+          "el_median_deg": 12.559135494068197,
+          "el_std_deg": 5.9778040245466455
+        }
+      ],
+      "responsiveness_score": 8.589319961112368
+    },
+    "capon": {
+      "n_valid": 458,
+      "status": "ok",
+      "az_median_deg": 353.59689586294195,
+      "az_std_deg": 1.8027248339881008,
+      "az_range_deg": [
+        347.0661671515214,
+        358.5843146129208
+      ],
+      "el_median_deg": 10.088240881732565,
+      "el_std_deg": 5.52264251300854,
+      "el_range_deg": [
+        5.0,
+        23.85292853878245
+      ],
+      "papr_median_db": 1.5981695703906418,
+      "segment_drift": [
+        {
+          "quarter": 1,
+          "t_start_s": 0.0,
+          "t_end_s": 31.571592571959712,
+          "az_median_deg": 354.20750657220646,
+          "az_std_deg": 1.7790072702876254,
+          "el_median_deg": 5.970599872462557,
+          "el_std_deg": 4.370176065729127
+        },
+        {
+          "quarter": 2,
+          "t_start_s": 31.85098719649033,
+          "t_end_s": 63.70197439298066,
+          "az_median_deg": 354.03163764444577,
+          "az_std_deg": 2.054078323194969,
+          "el_median_deg": 5.9706030634095235,
+          "el_std_deg": 4.487160256312631
+        },
+        {
+          "quarter": 3,
+          "t_start_s": 63.98136901751128,
+          "t_end_s": 95.552961589471,
+          "az_median_deg": 353.3842317392563,
+          "az_std_deg": 1.1303822627396387,
+          "el_median_deg": 12.974880240339493,
+          "el_std_deg": 5.558992427500886
+        },
+        {
+          "quarter": 4,
+          "t_start_s": 95.8323562140016,
+          "t_end_s": 127.68334341049194,
+          "az_median_deg": 352.5157724145583,
+          "az_std_deg": 1.7180758732320562,
+          "el_median_deg": 12.970598511991522,
+          "el_std_deg": 5.497620250566076
+        }
+      ],
+      "responsiveness_score": 8.696014525525106
+    },
+    "bartlett": {
+      "n_valid": 458,
+      "status": "ok",
+      "az_median_deg": 353.50504314584236,
+      "az_std_deg": 1.8298292484566154,
+      "az_range_deg": [
+        346.904896788663,
+        358.5628679557789
+      ],
+      "el_median_deg": 10.088240449562592,
+      "el_std_deg": 5.564311217920245,
+      "el_range_deg": [
+        5.0,
+        23.441167907210335
+      ],
+      "papr_median_db": 1.480589542743409,
+      "segment_drift": [
+        {
+          "quarter": 1,
+          "t_start_s": 0.0,
+          "t_end_s": 31.571592571959712,
+          "az_median_deg": 354.5338215183243,
+          "az_std_deg": 1.8035558737727801,
+          "el_median_deg": 6.382358321965592,
+          "el_std_deg": 4.32612152709087
+        },
+        {
+          "quarter": 2,
+          "t_start_s": 31.85098719649033,
+          "t_end_s": 63.70197439298066,
+          "az_median_deg": 354.192520274949,
+          "az_std_deg": 2.099120127773936,
+          "el_median_deg": 6.794122156698698,
+          "el_std_deg": 4.6362781879917625
+        },
+        {
+          "quarter": 3,
+          "t_start_s": 63.98136901751128,
+          "t_end_s": 95.552961589471,
+          "az_median_deg": 353.38106720875214,
+          "az_std_deg": 1.0617956549524206,
+          "el_median_deg": 12.859114240942043,
+          "el_std_deg": 5.617838455252257
+        },
+        {
+          "quarter": 4,
+          "t_start_s": 95.8323562140016,
+          "t_end_s": 127.68334341049194,
+          "az_median_deg": 352.47263592942113,
+          "az_std_deg": 1.6675892660379645,
+          "el_median_deg": 12.558830270013289,
+          "el_std_deg": 5.5420070178847345
+        }
+      ],
+      "responsiveness_score": 8.537941507879637
+    },
+    "phase-fit": {
+      "n_valid": 458,
+      "status": "ok",
+      "az_median_deg": 352.91,
+      "az_std_deg": 5.22060442012175,
+      "az_range_deg": [
+        0.41000000000000014,
+        359.91
+      ],
+      "el_median_deg": 8.409090909090907,
+      "el_std_deg": 5.833982075405449,
+      "el_range_deg": [
+        5.0,
+        25.0
+      ],
+      "papr_median_db": 3.3430425532118626,
+      "segment_drift": [
+        {
+          "quarter": 1,
+          "t_start_s": 0.0,
+          "t_end_s": 31.571592571959712,
+          "az_median_deg": 350.91,
+          "az_std_deg": 5.639613213995991,
+          "el_median_deg": 5.0,
+          "el_std_deg": 2.926951014815825
+        },
+        {
+          "quarter": 2,
+          "t_start_s": 31.85098719649033,
+          "t_end_s": 63.70197439298066,
+          "az_median_deg": 351.41,
+          "az_std_deg": 5.442434853486378,
+          "el_median_deg": 6.9090909090909065,
+          "el_std_deg": 3.851019724582146
+        },
+        {
+          "quarter": 3,
+          "t_start_s": 63.98136901751128,
+          "t_end_s": 95.552961589471,
+          "az_median_deg": 354.91,
+          "az_std_deg": 4.393079090662383,
+          "el_median_deg": 13.772727272727273,
+          "el_std_deg": 6.431859843665879
+        },
+        {
+          "quarter": 4,
+          "t_start_s": 95.8323562140016,
+          "t_end_s": 127.68334341049194,
+          "az_median_deg": 353.91,
+          "az_std_deg": 4.208205473785656,
+          "el_median_deg": 13.954545454545453,
+          "el_std_deg": 6.104157283890987
+        }
+      ],
+      "responsiveness_score": 12.954545454545453
+    },
+    "root-music": {
+      "n_valid": 458,
+      "status": "ok",
+      "az_median_deg": 353.91,
+      "az_std_deg": 4.787584631316314,
+      "az_range_deg": [
+        3.41,
+        353.91
+      ],
+      "el_median_deg": 5.0,
+      "el_std_deg": 0.0,
+      "el_range_deg": [
+        5.0,
+        5.0
+      ],
+      "papr_median_db": -4.343041611137754e-11,
+      "segment_drift": [
+        {
+          "quarter": 1,
+          "t_start_s": 0.0,
+          "t_end_s": 31.571592571959712,
+          "az_median_deg": 353.91,
+          "az_std_deg": 4.329535989769447,
+          "el_median_deg": 5.0,
+          "el_std_deg": 0.0
+        },
+        {
+          "quarter": 2,
+          "t_start_s": 31.85098719649033,
+          "t_end_s": 63.70197439298066,
+          "az_median_deg": 353.91,
+          "az_std_deg": 3.799822971423584,
+          "el_median_deg": 5.0,
+          "el_std_deg": 0.0
+        },
+        {
+          "quarter": 3,
+          "t_start_s": 63.98136901751128,
+          "t_end_s": 95.552961589471,
+          "az_median_deg": 353.91,
+          "az_std_deg": 4.751990758560359,
+          "el_median_deg": 5.0,
+          "el_std_deg": 0.0
+        },
+        {
+          "quarter": 4,
+          "t_start_s": 95.8323562140016,
+          "t_end_s": 127.68334341049194,
+          "az_median_deg": 353.91,
+          "az_std_deg": 5.4458796331974,
+          "el_median_deg": 5.0,
+          "el_std_deg": 0.0
+        }
+      ],
+      "responsiveness_score": 0.0
+    },
+    "unitary-esprit": {
+      "n_valid": 0,
+      "status": "failed"
+    },
+    "mfba-music": {
+      "n_valid": 0,
+      "status": "failed"
+    }
+  },
+  "recommendation": {
+    "best_responsive_algo": "phase-fit",
+    "note": "music/capon/bartlett are nearly identical on UCA. phase-fit follows motion faster when calibrated. root-music/unitary-esprit/mfba-music are experimental/broken on this HW."
+  }
+}

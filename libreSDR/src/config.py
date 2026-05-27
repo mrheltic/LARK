@@ -73,3 +73,32 @@ PILOT_TONE_OFFSET_HZ: int = 100_000
 # -- Connection reliability ----------------------------------------------------
 CONNECT_RETRIES:   int   = 3
 CONNECT_TIMEOUT_S: float = 5.0
+
+# =============================================================================
+# TX Scenario Profiles  (used by tx/indoor_1626.py --mode <scenario>)
+# Priority: CLI flag > explicit script variable > profile default.
+# =============================================================================
+TX_SCENARIO_PROFILES: dict = {
+    # Static IRA preamble — antenna pointing fixed, CFO ≈ 0 Hz.
+    # Use this for phase-calibration and static DoA validation indoors.
+    "ira": dict(
+        MODE        = "ira",
+        FREQ_HZ     = IRIDIUM_RING_ALERT_HZ,   # 1626.270 MHz
+        GAIN_DB     = -50.0,                    # -50 dB attenuation (very low power)
+        ELEV_DEG    = 25.0,                     # not used; kept for record
+        DUR_S       = 0,                        # infinite (cyclic)
+        CYCLIC      = True,
+        DESCRIPTION = "Static IRA preamble, CFO ≈ 0 Hz — indoor phase/DoA cal",
+    ),
+    # Simulated LEO pass — Doppler chirp ±28 kHz over 90 s.
+    # Matches a typical Iridium pass with elevation ≈ 45°.
+    "pass": dict(
+        MODE        = "pass",
+        FREQ_HZ     = IRIDIUM_RING_ALERT_HZ,
+        GAIN_DB     = -50.0,
+        ELEV_DEG    = 45.0,
+        DUR_S       = 90,                       # 90 s chirp sweep
+        CYCLIC      = True,
+        DESCRIPTION = "Simulated LEO pass, Doppler ±28 kHz in 90 s, elev 45°",
+    ),
+}
