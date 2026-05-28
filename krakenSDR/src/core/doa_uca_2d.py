@@ -581,8 +581,14 @@ def extract_pilot_tone(
     out-of-band interference by:
 
         1. FFT every channel snapshot (N-point).
-        2. Zero all bins outside  [tone_hz − bw_hz/2 … tone_hz + bw_hz/2].
+        2. Apply a Hann-windowed soft spectral mask around tone_hz ± bw_hz/2.
         3. IFFT → narrowband IQ, preserving inter-antenna phase.
+
+    The mask uses a raised-cosine (Hann) taper over the outer 25 % of the
+    half-bandwidth as the transition band.  This gives ~32 dB sidelobe
+    rejection vs ~13 dB for a rectangular gate (PySDR filters chapter),
+    strongly reducing DQPSK data energy (which starts ~4 kHz from the
+    preamble tone) from bleeding into the 8 kHz passband used for MUSIC.
 
     Effective SNR gain = 10 · log10(sample_rate / bw_hz)  [dB].
     At 1.024 MSPS with bw_hz=10 kHz → +20 dB noise rejection.
@@ -609,12 +615,25 @@ def extract_pilot_tone(
     """
     N     = X.shape[1]
     freqs = np.fft.fftfreq(N, d=1.0 / sample_rate)          # (N,) Hz
-    mask  = np.abs(freqs - tone_hz) <= bw_hz * 0.5
 
-    X_fft          = np.fft.fft(X, axis=1)
-    X_gated        = np.zeros_like(X_fft)
-    X_gated[:, mask] = X_fft[:, mask]
-    return np.fft.ifft(X_gated, axis=1).astype(X.dtype)
+    # Hann-windowed soft spectral mask (PySDR filters chapter).
+    # Raised-cosine taper over the outer 25 % of the half-bandwidth.
+    half_bw  = bw_hz * 0.5
+    taper_bw = 0.25 * half_bw
+    dist     = np.abs(freqs - tone_hz)
+    in_pass  = dist <= (half_bw - taper_bw)
+    in_taper = (dist > (half_bw - taper_bw)) & (dist <= half_bw)
+    w_spec   = np.where(
+        in_pass, 1.0,
+        np.where(
+            in_taper,
+            0.5 * (1.0 + np.cos(np.pi * (dist - (half_bw - taper_bw)) / taper_bw)),
+            0.0,
+        ),
+    ).astype(complex)
+
+    X_fft = np.fft.fft(X, axis=1)
+    return np.fft.ifft(X_fft * w_spec, axis=1).astype(X.dtype)
 
 
 # =============================================================================
@@ -863,10 +882,10 @@ def doa_capon_uca_2d(
     eps    = 1e-4 * max(ev_max, 1e-20)
     R      = R + eps * np.eye(M, dtype=complex)
 
-    try:
-        R_inv = np.linalg.inv(R)
-    except np.linalg.LinAlgError:
-        R_inv = np.eye(M, dtype=complex)
+    # PySDR DoA chapter: "pseudo-inverse tends to work better than a true
+    # inverse".  pinv handles any residual near-singularity after diagonal
+    # loading without the dangerous identity-matrix fallback.
+    R_inv = np.linalg.pinv(R)
 
     A  = cfg.get_steering_matrix()           # (M, N_grid)
     Qa = R_inv @ A                           # (M, N_grid)

@@ -147,9 +147,12 @@ def scan_preamble_tones(
     if N < 128:
         return [(nom_tone_hz, 0.0)]
 
-    nfft  = max(128, 1 << int(np.floor(np.log2(N))))
-    win   = np.blackman(nfft)
-    Spec  = np.abs(np.fft.fft(iq[:nfft] * win, n=nfft)) ** 2
+    # Zero-pad to the next power of 2 >= N (PySDR frequency-domain chapter:
+    # zero-padding interpolates the DFT for finer peak localisation).
+    # For the typical preamble window (N=2621): nfft 2048→4096, 500→250 Hz/bin.
+    nfft  = max(128, 1 << int(np.ceil(np.log2(max(N, 2)))))
+    win   = np.blackman(N)
+    Spec  = np.abs(np.fft.fft(iq[:N] * win, n=nfft)) ** 2
     freqs = np.fft.fftfreq(nfft, 1.0 / fs)
 
     Spec  = np.fft.fftshift(Spec)
@@ -272,9 +275,14 @@ def apply_bpf_and_normalize(
 
     Steps:
       1. Extract first ``pre_samples`` columns of X_win.
-      2. FFT-gate around ``tone_hz ± bpf_bw_hz/2``.
+      2. Apply Hann-windowed soft spectral mask around ``tone_hz ± bpf_bw_hz/2``.
       3. IFFT → narrowband IQ preserving inter-antenna phase.
       4. Normalize each channel to unit RMS (cancels gain imbalance).
+
+    The mask uses a raised-cosine (Hann) taper over the outer 25 % of the
+    half-bandwidth as a transition band (PySDR filters chapter).  This gives
+    ~32 dB sidelobe rejection vs ~13 dB for a rectangular gate, reducing
+    out-of-band interference leakage into the passband.
 
     Parameters
     ----------
@@ -292,14 +300,28 @@ def apply_bpf_and_normalize(
         raise ValueError(
             f"X_win has {X_win.shape[1]} columns, need {pre_samples}"
         )
-    X_seg  = X_win[:, :pre_samples]
-    N      = pre_samples
-    freqs  = np.fft.fftfreq(N, d=1.0 / fs)
-    mask   = np.abs(freqs - tone_hz) <= bpf_bw_hz * 0.5
-    X_fft  = np.fft.fft(X_seg, axis=1)
-    X_gated = np.zeros_like(X_fft)
-    X_gated[:, mask] = X_fft[:, mask]
-    X_nb   = np.fft.ifft(X_gated, axis=1).astype(X_win.dtype)
+    X_seg = X_win[:, :pre_samples]
+    N     = pre_samples
+    freqs = np.fft.fftfreq(N, d=1.0 / fs)
 
-    rms    = np.sqrt(np.mean(np.abs(X_nb) ** 2, axis=1, keepdims=True))
+    # Hann-windowed soft spectral mask (PySDR filters chapter).
+    # Raised-cosine taper over the outer 25 % of the half-bandwidth.
+    half_bw  = bpf_bw_hz * 0.5
+    taper_bw = 0.25 * half_bw
+    dist     = np.abs(freqs - tone_hz)
+    in_pass  = dist <= (half_bw - taper_bw)
+    in_taper = (dist > (half_bw - taper_bw)) & (dist <= half_bw)
+    w_spec   = np.where(
+        in_pass, 1.0,
+        np.where(
+            in_taper,
+            0.5 * (1.0 + np.cos(np.pi * (dist - (half_bw - taper_bw)) / taper_bw)),
+            0.0,
+        ),
+    ).astype(complex)
+
+    X_fft = np.fft.fft(X_seg, axis=1)
+    X_nb  = np.fft.ifft(X_fft * w_spec, axis=1).astype(X_win.dtype)
+
+    rms = np.sqrt(np.mean(np.abs(X_nb) ** 2, axis=1, keepdims=True))
     return X_nb / (rms + 1e-20)
