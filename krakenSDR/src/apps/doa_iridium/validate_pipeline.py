@@ -397,6 +397,8 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
 
     # ──────────────────────────────────────────────────────────────────────────
     # TEST 5 — Eigenvalue profile (subspace rank check)
+    # Use BPF + phase-cal + amplitude-normalised covariance (same as TEST 3)
+    # so that hardware gain imbalance does not artificially inflate the rank.
     # ──────────────────────────────────────────────────────────────────────────
     print("── TEST 5: Eigenvalue profile (subspace rank) ────────────────────")
     n_check = min(200, n_bursts)
@@ -405,8 +407,14 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
     rankN_count = 0
     eigval_matrix = []
     for i in range(n_check):
-        R = bursts[i] @ bursts[i].conj().T / n_samp
-        eigs = np.sort(np.linalg.eigvalsh(R).real)[::-1]
+        tone_hz_i = _tone_nom + float(cfo_hz[i])
+        Xpre_i    = bursts[i, :, :_pre]
+        Xp_i      = extract_pilot_tone(Xpre_i, _fs, tone_hz_i, bw_hz=_bw_hz)
+        if _has_cal:
+            Xp_i = _apply_phase_corr(Xp_i, _phase_offs)
+        Xp_i  = amplitude_normalize_channels(Xp_i)
+        R     = (Xp_i @ Xp_i.conj().T) / max(1, Xp_i.shape[1])
+        eigs  = np.sort(np.linalg.eigvalsh(R).real)[::-1]
         eigval_matrix.append(eigs / eigs[0])   # normalised
         # MDL-like rank: count eigenvalues > 10% of max
         rank = int(np.sum(eigs > 0.1 * eigs[0]))
