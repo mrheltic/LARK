@@ -33,12 +33,15 @@ for _p in (_SRC, _HERE, _REPO):
         sys.path.insert(0, _p)
 
 # ── Local config & core imports ──────────────────────────────────────────────
-from core.iridium_dataset_utils import load_local_config
+from core.iridium_dataset_utils import load_local_config, build_uca_cfg_from_config
 
 C = load_local_config(_HERE)
 
 from core.doa_uca_2d import doa_music_uca_2d, doa_capon_uca_2d, doa_bartlett_uca_2d
-from core.doa_uca_2d import pick_doa_peak_uca_2d
+from core.doa_uca_2d import pick_doa_peak_uca_2d, UcaConfig
+
+# Build UcaConfig from loaded config (needed for DoA calls)
+_doa_cfg, _az_grid, _el_grid = build_uca_cfg_from_config(C, UcaConfig)
 
 # ── Matplotlib (non-interactive backend if no display) ───────────────────────
 import matplotlib
@@ -253,8 +256,8 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
         if i < n_multi - 1:
             continue                               # not enough bursts yet
         try:
-            spec2d = _run_doa(X, C, algo)
-            az_i, el_i, papr_i = pick_doa_peak_uca_2d(spec2d, C)
+            spec2d = _run_doa(X, _doa_cfg, algo)
+            az_i, el_i, papr_i = pick_doa_peak_uca_2d(spec2d, _doa_cfg)
             az_est.append(az_i)
             el_est.append(el_i)
             papr_est.append(papr_i)
