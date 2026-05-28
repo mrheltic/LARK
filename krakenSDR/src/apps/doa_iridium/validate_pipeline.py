@@ -39,6 +39,8 @@ C = load_local_config(_HERE)
 
 from core.doa_uca_2d import doa_music_uca_2d, doa_capon_uca_2d, doa_bartlett_uca_2d
 from core.doa_uca_2d import pick_doa_peak_uca_2d, UcaConfig
+from core.doa_uca_2d import extract_pilot_tone, amplitude_normalize_channels
+from core.doa_algorithms import apply_phase_correction as _apply_phase_corr
 
 # Build UcaConfig from loaded config (needed for DoA calls)
 _doa_cfg, _az_grid, _el_grid = build_uca_cfg_from_config(C, UcaConfig)
@@ -88,17 +90,25 @@ def _uca_phase_theory(az_deg: float, el_deg: float, cfg) -> np.ndarray:
     return dphi - dphi[0]   # relative to antenna 0
 
 
-def _run_doa(X: np.ndarray, cfg, algo: str = "music") -> np.ndarray:
+def _run_doa(X: np.ndarray, cfg, algo: str = "music",
+             R_in: np.ndarray | None = None) -> np.ndarray:
     """
-    Run DoA on a multi-burst IQ window matrix X (shape: n_ant, n_samp).
+    Run DoA on preprocessed IQ X (n_ant, n_samp), optionally using a
+    pre-accumulated covariance R_in (n_ant, n_ant).
+
+    When R_in is supplied, X is only used as a fallback for algorithms that
+    need the raw samples (e.g. Bartlett when R_in is not accepted); the
+    covariance used by MUSIC/Capon is R_in.
+
     Returns spec2d (n_el, n_az).
     """
-    algo = algo.lower()
+    algo   = algo.lower()
+    decorr = getattr(C, "MUSIC_DECORR", "none")
     if algo == "capon":
-        return doa_capon_uca_2d(X, cfg)
+        return doa_capon_uca_2d(X, cfg, R_in=R_in, decorr=decorr)
     if algo == "bartlett":
-        return doa_bartlett_uca_2d(X, cfg)
-    return doa_music_uca_2d(X, cfg)
+        return doa_bartlett_uca_2d(X, cfg, R_in=R_in)
+    return doa_music_uca_2d(X, cfg, R_in=R_in, decorr=decorr)
 
 
 def _compute_crb_azimuth(snr_linear: float, n_snapshots: int,
@@ -172,6 +182,23 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
 
     print(f"[INFO] {n_bursts} bursts, {n_ant} antennas, {n_samp} samples/burst\n")
 
+    # ── Preprocessing constants (shared by TEST 2 & 3) ───────────────────────
+    # Phase calibration offsets stored in config (auto-updated by --calibrate)
+    _phase_offs = list(getattr(C, "CHANNEL_PHASE_OFFSETS_DEG", [0.0] * n_ant))
+    _has_cal    = any(o != 0.0 for o in _phase_offs)
+    # Iridium IRA preamble tone = Rs/8 = 25000/8 = 3125 Hz above LO
+    _tone_nom   = 3125.0
+    # ADC sample rate (stored in dataset or from config)
+    _fs         = (float(data["sample_rate_hz"][0]) if "sample_rate_hz" in data
+                   else float(getattr(C, "SAMPLE_RATE_HZ", 1_024_000.0)))
+    # Preamble window length in samples (stored in dataset or IRA default)
+    _pre        = (int(data["pre_samples"][0]) if "pre_samples" in data else 2621)
+    # BPF bandwidth around the pilot tone
+    _bw_hz      = float(getattr(C, "PREAMBLE_BPF_BW_HZ", 8_000.0))
+    # Whether this is an indoor scenario (Doppler gate active → indoor peak scoring)
+    _fd_gate    = float(getattr(C, "DOPPLER_GATE_HZ", 0.0))
+    _indoor     = _fd_gate > 0.0
+
     # ──────────────────────────────────────────────────────────────────────────
     # TEST 1 — Burst quality
     # ──────────────────────────────────────────────────────────────────────────
@@ -196,14 +223,16 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
     # ──────────────────────────────────────────────────────────────────────────
     print("── TEST 2: Phase difference — measured vs theoretical ────────────")
     # Compute per-burst phase difference of each antenna relative to antenna 0
-    # using the preamble IQ (last quarter of burst window, dominated by preamble tone)
-    q = n_samp // 4
-    # Cross-correlate: phase(ant_k) - phase(ant_0) = angle(X_k · X_0*)
+    # using BPF-filtered preamble IQ (same extraction used by the DoA pipeline).
+    # This gives ~20 dB better noise rejection vs. raw IQ cross-correlation.
     dphi_meas = np.zeros((n_bursts, n_ant))
     for b in range(n_bursts):
-        ref = bursts[b, 0, -q:]
+        tone_hz_b = _tone_nom + float(cfo_hz[b])
+        Xpre_b    = bursts[b, :, :_pre]
+        Xp_b      = extract_pilot_tone(Xpre_b, _fs, tone_hz_b, bw_hz=_bw_hz)
+        ref_b     = Xp_b[0]
         for k in range(n_ant):
-            dphi_meas[b, k] = np.angle(np.dot(bursts[b, k, -q:], ref.conj()))
+            dphi_meas[b, k] = np.angle(np.dot(Xp_b[k], ref_b.conj()))
     dphi_meas -= dphi_meas[:, 0:1]   # relative to ant 0
 
     # Calibration offsets applied by the runner
@@ -251,13 +280,52 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
     el_est   = []
     papr_est = []
 
+    # Running-average covariance accumulation (same approach as offline processor)
+    R_acc = None
+    n_acc = 0
+
     for i in range(n_bursts):
-        X = bursts[i]                              # (n_ant, n_samp)
-        if i < n_multi - 1:
-            continue                               # not enough bursts yet
+        X = bursts[i]                                # (n_ant, n_samp)
+
+        # ── 1. Identify preamble tone using stored CFO ────────────────────
+        tone_hz = _tone_nom + float(cfo_hz[i])
+        Xpre    = X[:, :_pre]                        # preamble window only
+
+        # ── 2. BPF narrowband extraction (≈+20 dB noise rejection) ───────
+        Xp = extract_pilot_tone(Xpre, _fs, tone_hz, bw_hz=_bw_hz)
+
+        # ── 3. Hardware phase calibration ─────────────────────────────────
+        #    Without this the steering matrix won't match the hardware-offset
+        #    covariance and MUSIC will peak at the wrong direction.
+        if _has_cal:
+            Xp = _apply_phase_corr(Xp, _phase_offs)
+
+        # ── 4. Per-channel amplitude normalisation ────────────────────────
+        #    Cancels the 6–7 dB hardware gain imbalance seen in TEST 6.
+        Xp = amplitude_normalize_channels(Xp)
+
+        # ── 5. Running-average covariance accumulation ────────────────────
+        R_inst = (Xp @ Xp.conj().T) / max(1, Xp.shape[1])
+        if R_acc is None:
+            R_acc = R_inst
+            n_acc = 1
+        else:
+            R_acc = (R_acc * n_acc + R_inst) / (n_acc + 1)
+            n_acc += 1
+
+        if n_acc < n_multi:
+            continue                                 # warm-up phase
+
+        # ── 6. DoA with accumulated covariance ────────────────────────────
         try:
-            spec2d = _run_doa(X, _doa_cfg, algo)
-            az_i, el_i, papr_i = pick_doa_peak_uca_2d(spec2d, _doa_cfg)
+            # Phase diffs from R_acc[*,0] used for indoor 180°-ambiguity resolution
+            phase_diffs = np.degrees(np.angle(R_acc[1:, 0]))
+            spec2d = _run_doa(Xp, _doa_cfg, algo, R_in=R_acc)
+            az_i, el_i, papr_i = pick_doa_peak_uca_2d(
+                spec2d, _doa_cfg,
+                indoor=_indoor,
+                phase_diffs=phase_diffs,
+            )
             az_est.append(az_i)
             el_est.append(el_i)
             papr_est.append(papr_i)

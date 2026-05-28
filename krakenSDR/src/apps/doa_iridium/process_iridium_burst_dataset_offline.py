@@ -45,6 +45,7 @@ from core.doa_uca_2d import (
     amplitude_normalize_channels,
     extract_pilot_tone,
 )
+from core.doa_algorithms import apply_phase_correction as _apply_phase_correction
 from burst_processing import compute_mf_covariance as _compute_mf_covariance_api
 
 
@@ -88,6 +89,10 @@ def main() -> None:
     tone_hz_nom = float(dib._PREAMBLE_TONE_HZ)
     pre_samples = int(data["pre_samples"][0]) if "pre_samples" in data else int(dib._PRE_SAMPLES)
 
+    # Phase calibration (applied per-burst to align with steering matrix)
+    _phase_offs = list(getattr(C, "CHANNEL_PHASE_OFFSETS_DEG", [0.0] * 5))
+    _has_cal    = any(o != 0.0 for o in _phase_offs)
+
     R_acc = None
     n_acc = 0
 
@@ -124,6 +129,8 @@ def main() -> None:
             continue
 
         Xp = extract_pilot_tone(Xpre, fs, tone_hz)
+        if _has_cal:
+            Xp = _apply_phase_correction(Xp, _phase_offs)
         Xp = amplitude_normalize_channels(Xp)
 
         coh = compute_phase_coherence(Xp)
