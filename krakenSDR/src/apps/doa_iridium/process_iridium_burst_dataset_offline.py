@@ -168,7 +168,7 @@ def main() -> None:
         )
 
         if P.ndim == 2:
-            az_pk, el_pk, p_norm = pick_doa_peak_uca_2d(P, az_grid, el_grid)
+            az_pk, el_pk, p_norm = pick_doa_peak_uca_2d(P, cfg)
             az_est, el_est = float(az_pk), float(el_pk)
             peak_metric = float(np.nanmax(p_norm))
         else:

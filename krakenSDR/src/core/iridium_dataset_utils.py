@@ -31,6 +31,22 @@ def bootstrap_paths(file_path: str, include_repo_root: bool = False) -> tuple[st
     return here, src, repo_root
 
 
+def _apply_scenario_profile(C) -> None:
+    """Apply SCENARIO_PROFILES[SCENARIO] to C module.
+
+    Mirrors the runner's _load_scenario_profile logic so that scenario-specific
+    variables (e.g. DOPPLER_GATE_HZ) are accessible as top-level module attrs.
+    Only sets attributes that are NOT already defined at the top level of the
+    config (explicit overrides take priority over scenario defaults).
+    """
+    scenario = getattr(C, "SCENARIO", "indoor_ira")
+    profiles = getattr(C, "SCENARIO_PROFILES", {})
+    profile = profiles.get(scenario, profiles.get("indoor_ira", {}))
+    for key, default in profile.items():
+        if not hasattr(C, key.upper()):
+            setattr(C, key.upper(), default)
+
+
 def load_local_config(here: str):
     """Load apps/doa_iridium/config.py explicitly, avoiding module-name collisions."""
     cfg_path = os.path.join(here, "config.py")
@@ -38,6 +54,7 @@ def load_local_config(here: str):
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
     spec.loader.exec_module(module)
+    _apply_scenario_profile(module)
     return module
 
 
@@ -122,11 +139,16 @@ def extract_tone_and_cfo(
     tone_hz_nom: float,
     min_snr_db: float,
 ) -> SimpleNamespace | None:
-    peaks = dib._scan_doppler_peaks(
+    from apps.doa_iridium.burst_processing import scan_preamble_tones  # replaces removed dib._scan_doppler_peaks
+    # Mirror the runner logic: when DOPPLER_GATE_HZ > 0 (indoor static TX),
+    # use a narrow scan window to avoid spurious out-of-band peaks.
+    _fd_gate = float(getattr(C, "DOPPLER_GATE_HZ", 0.0))
+    _scan_bw = _fd_gate if _fd_gate > 0 else float(getattr(C, "DOPPLER_SCAN_BW_HZ", 45_000))
+    peaks = scan_preamble_tones(
         x_pre,
         fs,
         nom_tone_hz=tone_hz_nom,
-        scan_bw_hz=float(getattr(C, "DOPPLER_SCAN_BW_HZ", 45_000)),
+        scan_bw_hz=_scan_bw,
         n_peaks=1,
         min_sep_hz=float(getattr(C, "SAT_MIN_SEP_HZ", 5_000)),
         min_snr_db=float(min_snr_db),

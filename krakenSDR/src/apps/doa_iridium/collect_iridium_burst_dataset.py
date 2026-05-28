@@ -142,7 +142,9 @@ def main() -> None:
             frame_buf_len = 0
             n_total = X_stream.shape[1]
 
-            burst_starts = dib._detect_bursts(X_stream[0], threshold_factor=3.0)
+            burst_starts = dib.detect_energy_bursts(
+                X_stream[0], fs, threshold_factor=3.0
+            )
             for b_start in burst_starts:
                 b_end = min(b_start + window_samples, n_total)
                 if b_end - b_start < pre_samples:
@@ -163,6 +165,10 @@ def main() -> None:
                     if X_win.shape[1] < pre_samples:
                         continue
 
+                # Reject truncated windows (edge of batch) — ensures uniform shape
+                if X_win.shape[1] < window_samples:
+                    continue
+
                 tone_info = extract_tone_and_cfo(
                     dib=dib,
                     C=C,
@@ -172,6 +178,10 @@ def main() -> None:
                     min_snr_db=float(args.tone_snr_min),
                 )
                 if tone_info is None:
+                    continue
+
+                # Reject scan_preamble_tones fallback (nom_tone_hz, 0.0) — no valid peak found
+                if tone_info.tone_snr_db < args.tone_snr_min:
                     continue
 
                 if args.fd_max > 0 and abs(tone_info.cfo_hz) > args.fd_max:

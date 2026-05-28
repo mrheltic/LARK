@@ -168,7 +168,7 @@ def scan_preamble_tones(
     results: list[tuple[float, float]] = []
     for _ in range(n_peaks):
         idx = int(np.argmax(Sb))
-        snr = 10.0 * np.log10(float(Sb[idx]) / noise_floor)
+        snr = 10.0 * np.log10(max(float(Sb[idx]), 1e-30) / noise_floor)
         if snr < min_snr_db:
             break
         results.append((float(fb[idx]), float(snr)))

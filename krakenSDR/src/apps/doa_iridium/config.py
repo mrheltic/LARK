@@ -78,11 +78,11 @@ NUM_SIGNALS = 1
 # Hardware calibration  (auto-updated by:  python3 iridium_burst_doa_runner.py --calibrate AZ)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-CHANNEL_PHASE_OFFSETS_DEG = [0.0, 96.03, -109.16, -114.57, 97.87]  # auto-cal 2026-05-27 15:53 — 208 bursts (24 snapshots) az=0.0° el=25.0°
-CAL_REFERENCE_AZ_DEG = 0.00   # TX direction used in the last calibration [°]
-CAL_REFERENCE_EL_DEG = 25.00  # TX elevation used in the last calibration [°]
-DOA_AZ_OFFSET_DEG    = -6.09  # Residual azimuth correction after HW calibration [°]
-DOA_EL_OFFSET_DEG    = -15.00 # Residual elevation correction after HW calibration [°]
+CHANNEL_PHASE_OFFSETS_DEG = [0.0, 92.82, -111.97, -110.02, 95.09]  # auto-cal 2026-05-28 10:03 from 314 bursts (26 snapshots) az=0.0° el=25.0°
+DOA_AZ_OFFSET_DEG = 0.82   # frame offset from --calibrate (do not edit manually)
+DOA_EL_OFFSET_DEG = -1.03  # frame offset from --calibrate (do not edit manually)
+CAL_REFERENCE_AZ_DEG = 0.00
+CAL_REFERENCE_EL_DEG = 25.00
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DoA grid / display  (fixed — independent of scenario)

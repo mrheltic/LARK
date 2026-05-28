@@ -39,7 +39,6 @@ C = load_local_config(_HERE)
 
 from core.doa_uca_2d import doa_music_uca_2d, doa_capon_uca_2d, doa_bartlett_uca_2d
 from core.doa_uca_2d import pick_doa_peak_uca_2d
-from core.covariance  import running_covariance_update
 
 # ── Matplotlib (non-interactive backend if no display) ───────────────────────
 import matplotlib
@@ -249,13 +248,8 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
     el_est   = []
     papr_est = []
 
-    # Process in sliding windows of n_multi bursts
-    R_avg = None
-    alpha = float(getattr(C, "COV_ALPHA", 0.93))
-
     for i in range(n_bursts):
         X = bursts[i]                              # (n_ant, n_samp)
-        R_avg = running_covariance_update(X, R_avg, alpha=alpha)
         if i < n_multi - 1:
             continue                               # not enough bursts yet
         try:
