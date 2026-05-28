@@ -428,7 +428,7 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
     t_s = (timestamps_ms[n_multi - 1:] - timestamps_ms[0]) / 1e3
     minlen2 = min(len(t_s), len(az_est))
     ax.plot(t_s[:minlen2], az_est[:minlen2], color="#4fc3f7", lw=1.0, label="AZ est")
-    if has_gt:
+    if has_gt and np.any(valid):
         ax.plot(t_s[:minlen2], gt_az_slice[:minlen2][valid[:minlen2]], color="#ff7043",
                 lw=1.0, linestyle="--", label="AZ GT")
     ax.set_xlabel("Time [s]"); ax.set_ylabel("Azimuth [°]")
@@ -438,7 +438,7 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
     # 5. EL estimate over time
     ax = _ax(1, 2)
     ax.plot(t_s[:minlen2], el_est[:minlen2], color="#80cbc4", lw=1.0)
-    if has_gt:
+    if has_gt and np.any(valid):
         ax.axhline(float(np.mean(gt_el_slice[:minlen2])), color="#ff7043", lw=1.5,
                    linestyle="--", label="EL GT")
     ax.set_xlabel("Time [s]"); ax.set_ylabel("Elevation [°]")
