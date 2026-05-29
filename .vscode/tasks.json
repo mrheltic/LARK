@@ -291,6 +291,22 @@
             "problemMatcher": []
         },
         {
+            "label": "KrakenSDR: Iridium — collect + validate pipeline",
+            "detail": "Sequential pipeline: 1) collect 5ch bursts from Heimdall, 2) run validate_pipeline on the new dataset with known TX az/el. Requires Heimdall + LibreSDR TX running. Saves dataset .npz/.json and validation report PDF.",
+            "type": "shell",
+            "command": "LARK_ROOT=${workspaceFolder} COLLECT_SECONDS=${input:iridiumCollectSeconds} COLLECT_BURSTS=${input:iridiumCollectBursts} VALIDATE_AZ=${input:validateAz} VALIDATE_EL=${input:validateEl} ALGO=${input:iridiumOfflineAlgo} bash ${workspaceFolder}/krakenSDR/src/scripts/run_collect_and_validate.sh",
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            },
+            "problemMatcher": []
+        },
+        {
             "label": "LARK: Indoor 1626 MHz — full lab setup (Heimdall + TX + DoA)",
             "detail": "Sequential startup: 1) Heimdall DAQ at 1626 MHz, 2) LibreSDR TX −50 dB simulated LEO pass (Doppler ±28 kHz), 3) DoA GUI with indoor_pass scenario.",
             "dependsOn": [
@@ -351,7 +367,7 @@
         {
             "id": "validateEl",
             "description": "Known TX elevation above horizon [°]",
-            "default": "25",
+            "default": "60",
             "type": "promptString"
         }
     ]

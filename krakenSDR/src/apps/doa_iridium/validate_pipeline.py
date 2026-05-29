@@ -66,27 +66,41 @@ def _uca_phase_theory(az_deg: float, el_deg: float, cfg) -> np.ndarray:
     """
     Return theoretical inter-element phase differences [rad] for a UCA.
 
-    Phase of antenna k relative to antenna 0:
-        Δφ_k = (2π R/λ) · [cos(φ_k)·sin(θ)·cos(φ_src) + sin(φ_k)·sin(θ)·sin(φ_src)]
-    where θ = elevation, φ_src = azimuth, φ_k = physical angle of antenna k.
+    For a plane wave arriving from direction (az, el) — elevation measured
+    from the horizon (el=0 = horizon, el=90 = zenith) — the phase advance at
+    antenna k relative to the origin is:
 
-    Returns an array of length N_ANTENNAS with Δφ[0] = 0.
+        τ_k = 2π · (p_E · cos(el) · sin(az) + p_N · cos(el) · cos(az))
+
+    where p_E = R·sin(φ_k), p_N = R·cos(φ_k) are the East/North coordinates
+    in wavelengths, and cos(el) is the horizontal projection of the unit
+    direction vector (NOT sin(el), which is the vertical/up component).
+
+    This formula is identical to UcaConfig.get_steering_matrix() and to
+    expected_uca_phase_diffs_deg() in doa_uca_2d.py.
+
+    Returns an array of length N_ANTENNAS with Δφ[0] = 0 [rad].
     """
-    n  = int(cfg.N_ANTENNAS)
-    R  = float(cfg.RADIUS_LAMBDA)          # radius in wavelengths
-    ccw = bool(getattr(cfg, "ANT_CCW", False))
-    off = float(getattr(cfg, "ANT0_OFFSET_DEG", 0.0))
+    n   = int(getattr(cfg, "N_ANTENNAS", getattr(cfg, "n_ant", 5)))
+    R   = float(getattr(cfg, "RADIUS_LAMBDA", getattr(cfg, "radius_lambda", 0.4253)))
+    ccw = bool(getattr(cfg, "ANT_CCW", getattr(cfg, "ant_ccw", False)))
+    off = float(getattr(cfg, "ANT0_OFFSET_DEG", getattr(cfg, "ant0_offset_deg", 0.0)))
 
     az_rad = np.deg2rad(az_deg)
     el_rad = np.deg2rad(el_deg)
 
-    # Physical angle of antenna k around the circle [rad]
-    sign = -1.0 if ccw else 1.0
+    sign  = -1.0 if ccw else 1.0
     phi_k = np.deg2rad(off) + sign * 2 * np.pi * np.arange(n) / n
 
-    dphi = 2 * np.pi * R * np.sin(el_rad) * (
-        np.cos(phi_k) * np.cos(az_rad) + np.sin(phi_k) * np.sin(az_rad)
-    )
+    # East and North positions in wavelengths
+    p_e = R * np.sin(phi_k)
+    p_n = R * np.cos(phi_k)
+
+    # Horizontal direction cosines: cos(el) projects onto the array plane
+    u_e = np.cos(el_rad) * np.sin(az_rad)
+    u_n = np.cos(el_rad) * np.cos(az_rad)
+
+    dphi = 2 * np.pi * (p_e * u_e + p_n * u_n)
     return dphi - dphi[0]   # relative to antenna 0
 
 
@@ -198,6 +212,10 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
     # Whether this is an indoor scenario (Doppler gate active → indoor peak scoring)
     _fd_gate    = float(getattr(C, "DOPPLER_GATE_HZ", 0.0))
     _indoor     = _fd_gate > 0.0
+    _el_pref_lo = float(getattr(C, "INDOOR_EL_PREF_MIN_DEG", 8.0))
+    _el_pref_hi = float(getattr(C, "INDOOR_EL_PREF_MAX_DEG", 35.0))
+    _cal_az     = float(getattr(C, "CAL_REFERENCE_AZ_DEG", 0.0)) if has_gt else None
+    _cal_el     = float(getattr(C, "CAL_REFERENCE_EL_DEG", 25.0)) if has_gt else None
 
     # ──────────────────────────────────────────────────────────────────────────
     # TEST 1 — Burst quality
@@ -212,10 +230,42 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
     print(f"  Tone SNR  : mean={snr_mean:+6.1f} dB  std={snr_std:.1f} dB")
     print(f"  CFO       : mean={cfo_mean:+8.1f} Hz  std={cfo_std:.1f} Hz")
     print(f"  Low-SNR (<6 dB): {low_snr}/{n_bursts} ({100*low_snr/n_bursts:.1f}%)")
+    # Static IRA TX: CFO should stay within a few hundred Hz.  Large spread usually
+    # means the tone scanner locked to spurious peaks (often when CH0 ADC clips).
+    _ira_static = _indoor and str(getattr(C, "INDOOR_TX_MODE", "")).lower() == "ira"
+    if _ira_static:
+        _cfo_thr = min(800.0, float(getattr(C, "DOPPLER_GATE_HZ", 3000.0)))
+        _cfo_bad = int(np.sum(np.abs(cfo_hz) > _cfo_thr))
+        print(f"  |CFO|>{_cfo_thr:.0f} Hz (IRA static): {_cfo_bad}/{n_bursts} "
+              f"({100*_cfo_bad/n_bursts:.1f}%)")
+        if _cfo_bad / max(n_bursts, 1) > 0.25:
+            print("  [WARN] Many bursts have spurious CFO — lower RX gain (avoid CH0 "
+                  "clipping) or tighten collector --fd-max.")
     if snr_mean < 8.0:
         print("  [WARN] Low mean SNR — consider increasing TX gain by 5 dB")
-    if cfo_std > 5000.0:
-        print(f"  [WARN] High CFO spread (std={cfo_std:.0f} Hz) — possible multiple satellites or TX drift")
+    if cfo_std > 500.0 and _ira_static:
+        print(f"  [WARN] High CFO spread (std={cfo_std:.0f} Hz) for static IRA TX — "
+              f"check RX gain / tone detection, not satellite Doppler.")
+    elif cfo_std > 5000.0:
+        print(f"  [WARN] High CFO spread (std={cfo_std:.0f} Hz) — possible multiple "
+              f"satellites or TX drift")
+    print()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TEST 1b — ADC headroom (detect saturation on reference channel)
+    # ──────────────────────────────────────────────────────────────────────────
+    _clip_thr = 0.95
+    clip_frac = np.mean(np.abs(bursts[:, :, :_pre]) > _clip_thr, axis=(0, 2))
+    print("── TEST 1b: ADC headroom ─────────────────────────────────────────")
+    for k in range(n_ant):
+        print(f"  CH{k} samples |IQ|>{_clip_thr}: {100*clip_frac[k]:.1f}%")
+    if clip_frac[0] > 0.05:
+        print(f"  [WARN] CH0 clipping ({100*clip_frac[0]:.0f}%) — reduce GAIN_DB in "
+              f"config.py (try 38–40 dB).  Clipping corrupts tone/CFO and phase.")
+    elif float(np.max(clip_frac)) > 0.01:
+        print("  [INFO] Minor clipping on one or more channels.")
+    else:
+        print("  [OK]   No significant ADC clipping detected.")
     print()
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -248,22 +298,57 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
         gt_el_val = float(np.mean(gt_el_arr)) if has_gt else float(gt_el)
         dphi_theory = _uca_phase_theory(gt_az_val, gt_el_val, C)
         print(f"  Theory (AZ={gt_az_val:.1f}°, EL={gt_el_val:.1f}°):")
-        print(f"  {'Ant':>4}  {'Theory [°]':>12}  {'Measured [°]':>13}  {'Residual [°]':>13}  {'std [°]':>8}")
+        print(f"  {'Ant':>4}  {'Theory [°]':>12}  {'Measured [°]':>13}  {'Bias [°]':>10}  {'circ σ [°]':>10}")
+        bias_deg = []
+        circ_std_deg = []
         for k in range(n_ant):
-            m   = np.degrees(np.mean(_wrap180(dphi_corrected[:, k] - dphi_theory[k])))
-            s   = np.degrees(np.std(dphi_corrected[:, k]))
+            res_k = _wrap180(dphi_corrected[:, k] - dphi_theory[k])
+            m   = np.degrees(np.mean(res_k))
+            # Circular std: robust to ±180° wraps unlike linear np.std
+            r_vec = np.exp(1j * np.deg2rad(np.degrees(res_k)))
+            R_len = max(float(np.abs(np.mean(r_vec))), 1e-9)
+            s   = np.degrees(np.sqrt(-2.0 * np.log(R_len)))
             th  = np.degrees(dphi_theory[k])
             mm  = np.degrees(np.mean(dphi_corrected[:, k]))
-            print(f"  {k:>4}  {th:>+12.1f}  {mm:>+13.1f}  {m:>+13.1f}  {s:>8.1f}")
+            print(f"  {k:>4}  {th:>+12.1f}  {mm:>+13.1f}  {m:>+10.1f}  {s:>10.1f}")
+            if k > 0:
+                bias_deg.append(abs(m))
+                circ_std_deg.append(s)
         print()
-        residual_rms = np.degrees(np.sqrt(np.mean(
-            _wrap180(dphi_corrected[:, 1:] - dphi_theory[np.newaxis, 1:])**2
-        )))
-        print(f"  Phase residual RMS: {residual_rms:.1f}°")
-        if residual_rms > 15.0:
-            print("  [WARN] Large phase residual — calibration may be inaccurate or multipath present.")
-        elif residual_rms < 5.0:
-            print("  [OK]   Phase residual within calibration tolerance.")
+        bias_mean = float(np.mean(bias_deg)) if bias_deg else 0.0
+        circ_mean = float(np.mean(circ_std_deg)) if circ_std_deg else 0.0
+        print(f"  Per-burst calibration bias (mean |Δ|): {bias_mean:.1f}°")
+        print(f"  Per-burst circular σ (multipath jitter): {circ_mean:.1f}°")
+
+        # Cumulative covariance phase — same quantity MUSIC uses after averaging
+        R_cum = None
+        n_cum = 0
+        for b in range(n_bursts):
+            tone_hz_b = _tone_nom + float(cfo_hz[b])
+            Xp_b = extract_pilot_tone(bursts[b, :, :_pre], _fs, tone_hz_b, bw_hz=_bw_hz)
+            if _has_cal:
+                Xp_b = _apply_phase_corr(Xp_b, _phase_offs)
+            Xp_b = amplitude_normalize_channels(Xp_b)
+            R_i = (Xp_b @ Xp_b.conj().T) / max(1, Xp_b.shape[1])
+            if R_cum is None:
+                R_cum = R_i
+                n_cum = 1
+            else:
+                R_cum = (R_cum * n_cum + R_i) / (n_cum + 1)
+                n_cum += 1
+        rms_cum = float(np.degrees(np.sqrt(np.mean(
+            _wrap180(np.angle(R_cum[1:, 0]) - dphi_theory[np.newaxis, 1:])**2
+        ))))
+        print(f"  Cumulative-R phase RMS (MUSIC input): {rms_cum:.1f}°")
+        if bias_mean < 5.0 and rms_cum < 15.0:
+            print("  [OK]   Calibration bias low; cumulative phase matches theory.")
+        elif bias_mean < 5.0:
+            print("  [INFO] Calibration OK on average; per-burst jitter is multipath — "
+                  "TEST 3 cumulative averaging compensates.")
+        elif rms_cum > 15.0:
+            print("  [WARN] Large cumulative phase error — re-run --calibrate or check geometry.")
+        if circ_mean > 30.0 and bias_mean < 5.0:
+            print("  [INFO] High per-burst σ with low bias is normal indoors (rank≥2 subspace).")
     else:
         print("  (No GT — showing measured mean phase per antenna)")
         for k in range(n_ant):
@@ -273,14 +358,24 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
     print()
 
     # ──────────────────────────────────────────────────────────────────────────
-    # TEST 3 — DoA estimation: RMSE and bias
+    # TEST 3 — DoA estimation: cumulative covariance (best for offline)
+    #
+    # For a stationary TX the growing covariance average over all collected
+    # bursts suppresses multipath far better than any sliding window, so this
+    # uses a pure cumulative average (not the DoaEstimator's sliding window).
+    # DoaEstimator (core/iridium_doa_pipeline.py) is used in the runner where
+    # a sliding window is required for a moving satellite.
+    #
+    # Results are in the raw MUSIC frame (no DOA_AZ/EL_OFFSET applied).
+    # The --az / --el GT angles you pass should match the raw MUSIC frame.
     # ──────────────────────────────────────────────────────────────────────────
     print("── TEST 3: Offline DoA estimation ────────────────────────────────")
     az_est   = []
     el_est   = []
     papr_est = []
 
-    # Running-average covariance accumulation (same approach as offline processor)
+    # Cumulative running-average covariance (same approach as the original
+    # validate_pipeline — proven to give the best offline results).
     R_acc = None
     n_acc = 0
 
@@ -291,20 +386,17 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
         tone_hz = _tone_nom + float(cfo_hz[i])
         Xpre    = X[:, :_pre]                        # preamble window only
 
-        # ── 2. BPF narrowband extraction (≈+20 dB noise rejection) ───────
+        # ── 2. BPF narrowband extraction ─────────────────────────────────
         Xp = extract_pilot_tone(Xpre, _fs, tone_hz, bw_hz=_bw_hz)
 
         # ── 3. Hardware phase calibration ─────────────────────────────────
-        #    Without this the steering matrix won't match the hardware-offset
-        #    covariance and MUSIC will peak at the wrong direction.
         if _has_cal:
             Xp = _apply_phase_corr(Xp, _phase_offs)
 
         # ── 4. Per-channel amplitude normalisation ────────────────────────
-        #    Cancels the 6–7 dB hardware gain imbalance seen in TEST 6.
         Xp = amplitude_normalize_channels(Xp)
 
-        # ── 5. Running-average covariance accumulation ────────────────────
+        # ── 5. Cumulative covariance accumulation ─────────────────────────
         R_inst = (Xp @ Xp.conj().T) / max(1, Xp.shape[1])
         if R_acc is None:
             R_acc = R_inst
@@ -318,13 +410,16 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
 
         # ── 6. DoA with accumulated covariance ────────────────────────────
         try:
-            # Phase diffs from R_acc[*,0] used for indoor 180°-ambiguity resolution
             phase_diffs = np.degrees(np.angle(R_acc[1:, 0]))
             spec2d = _run_doa(Xp, _doa_cfg, algo, R_in=R_acc)
             az_i, el_i, papr_i = pick_doa_peak_uca_2d(
                 spec2d, _doa_cfg,
                 indoor=_indoor,
+                el_pref_lo=_el_pref_lo,
+                el_pref_hi=_el_pref_hi,
                 phase_diffs=phase_diffs,
+                az_hint_deg=_cal_az,
+                el_hint_deg=_cal_el,
             )
             az_est.append(az_i)
             el_est.append(el_i)
@@ -440,13 +535,29 @@ def analyse(dataset_path: str, gt_az: float | None, gt_el: float | None,
     # TEST 6 — Per-channel power balance (health check)
     # ──────────────────────────────────────────────────────────────────────────
     print("── TEST 6: Per-channel power balance ─────────────────────────────")
-    pwr = np.mean(np.abs(bursts)**2, axis=(0, 2))   # (n_ant,) mean power
+    pwr = np.mean(np.abs(bursts[:, :, :_pre])**2, axis=(0, 2))   # raw preamble IQ
     pwr_db = 10 * np.log10(pwr / pwr[0] + 1e-30)
-    print(f"  Power relative to channel 0 [dB]:")
+    print(f"  Raw preamble power relative to CH0 [dB]:")
     for k in range(n_ant):
         bar = "█" * int(max(0, 20 + pwr_db[k]))
         flag = " [WARN] large imbalance — check cable/connector" if abs(pwr_db[k]) > 6.0 else ""
         print(f"    CH{k}: {pwr_db[k]:+5.1f} dB  {bar}{flag}")
+    if clip_frac[0] > 0.05:
+        print("  [INFO] Raw balance is misleading when CH0 clips — CH0 looks artificially "
+              "strong.  After BPF+normalize all channels are equalised for DoA.")
+    else:
+        # Post-BPF balance (what the DoA pipeline actually uses)
+        pwr_bpf = np.zeros(n_ant)
+        n_bal = min(100, n_bursts)
+        for i in range(n_bal):
+            tone_hz_i = _tone_nom + float(cfo_hz[i])
+            Xp_i = extract_pilot_tone(bursts[i, :, :_pre], _fs, tone_hz_i, bw_hz=_bw_hz)
+            Xp_i = amplitude_normalize_channels(Xp_i)
+            pwr_bpf += np.mean(np.abs(Xp_i)**2, axis=1)
+        pwr_bpf /= n_bal
+        pwr_bpf_db = 10 * np.log10(pwr_bpf / pwr_bpf[0] + 1e-30)
+        print(f"  Post-BPF normalised power [dB] (first {n_bal} bursts): "
+              + "  ".join(f"CH{k}={pwr_bpf_db[k]:+.1f}" for k in range(n_ant)))
     print()
 
     # ══════════════════════════════════════════════════════════════════════════

@@ -45,7 +45,7 @@ SCENARIO = "indoor_ira"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 FREQ_HZ = 1_626_270_000      # Iridium Ring Alert channel (1626.270 MHz)
-GAIN_DB = 40                  # RTL-SDR gain [dB].  Outdoor 38–42; reduce to 35 if ADC saturates.
+GAIN_DB = 40                  # RTL-SDR gain [dB].  CH0 clips above ~42 dB indoor; max=49 only if no ADC saturation.
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UCA geometry
@@ -78,11 +78,11 @@ NUM_SIGNALS = 1
 # Hardware calibration  (auto-updated by:  python3 iridium_burst_doa_runner.py --calibrate AZ)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-CHANNEL_PHASE_OFFSETS_DEG = [0.0, 92.82, -111.97, -110.02, 95.09]  # auto-cal 2026-05-28 10:03 from 314 bursts (26 snapshots) az=0.0° el=25.0°
-DOA_AZ_OFFSET_DEG = 0.82   # frame offset from --calibrate (do not edit manually)
-DOA_EL_OFFSET_DEG = -1.03  # frame offset from --calibrate (do not edit manually)
+CHANNEL_PHASE_OFFSETS_DEG = [0.0, 54.95, 137.24, 133.58, 48.31]  # auto-cal 2026-05-29 11:37 from 65 bursts (13 snapshots) az=0.0° el=60.0°
+DOA_AZ_OFFSET_DEG = 0.00   # frame offset from --calibrate (do not edit manually)
+DOA_EL_OFFSET_DEG = 0.00   # reset: offsets 126/20 were from fb-decorr + el_max=40 clipping
 CAL_REFERENCE_AZ_DEG = 0.00
-CAL_REFERENCE_EL_DEG = 25.00
+CAL_REFERENCE_EL_DEG = 60.00
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DoA grid / display  (fixed — independent of scenario)
@@ -115,13 +115,13 @@ SCENARIO_PROFILES: dict[str, dict] = {
         EL_SMOOTH_ALPHA              = 0.65,
         COV_ALPHA                    = 0.95,
         ENERGY_DETECT_THRESHOLD      = 3.0,
-        INDOOR_EL_MAX_DEG            = 40.0,
-        INDOOR_EL_PREF_MAX_DEG       = 35.0,
-        INDOOR_EL_PREF_MIN_DEG       = 8.0,
+        INDOOR_EL_MAX_DEG            = 75.0,   # tilted array: TX at ~60° elevation
+        INDOOR_EL_PREF_MAX_DEG       = 70.0,
+        INDOOR_EL_PREF_MIN_DEG       = 45.0,
         AZ_OUTLIER_ENABLED           = True,
-        AZ_OUTLIER_MAX_DEV_DEG       = 22.0,
+        AZ_OUTLIER_MAX_DEV_DEG       = 30.0,   # wider tolerance for indoor multipath
         AZ_OUTLIER_MIN_HISTORY       = 8,
-        AZ_OUTLIER_RELOCK_STREAK     = 20,
+        AZ_OUTLIER_RELOCK_STREAK     = 40,    # was 20; wait longer before relock
         PHASE_COHERENCE_ENABLED      = False,
         GATE_RELOCK_BYPASS_BURSTS    = 12,
         DOPPLER_XZ_ENABLED           = False,

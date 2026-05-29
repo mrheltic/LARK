@@ -104,3 +104,6 @@ paper/parsed/
 paper/images/
 *.npz
 *.wav
+*.pdf
+*.json
+*.png
