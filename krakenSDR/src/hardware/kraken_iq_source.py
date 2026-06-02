@@ -466,6 +466,8 @@ class KrakenIQSource:
                         pass  # OK silently
                     else:
                         print(f"[KrakenIQ] ctrl reply: {status!r}")
+                except OSError:
+                    pass  # socket closed during reconnect — harmless
                 except Exception as exc:
                     print(f"[KrakenIQ] ctrl err: {exc}")
 
