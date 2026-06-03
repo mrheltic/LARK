@@ -1,0 +1,73 @@
+id: lark_iridium_tone_scanner
+label: Iridium Tone Scanner
+category: '[LARK]'
+flags: [python, cmake]
+
+parameters:
+-   id: cpi_size
+    label: CPI Size
+    dtype: int
+    default: '131072'
+-   id: fs
+    label: Sample Rate (Hz)
+    dtype: float
+    default: '1024000.0'
+-   id: n_ant
+    label: Num Antennas
+    dtype: int
+    default: '5'
+-   id: tone_nom_hz
+    label: Nominal Tone (Hz)
+    dtype: float
+    default: '3125.0'
+-   id: scan_bw_hz
+    label: Scan Bandwidth (Hz)
+    dtype: float
+    default: '3000.0'
+-   id: n_peaks
+    label: Num Peaks
+    dtype: int
+    default: '3'
+-   id: min_sep_hz
+    label: Min Separation (Hz)
+    dtype: float
+    default: '1000.0'
+-   id: min_snr_db
+    label: Min SNR (dB)
+    dtype: float
+    default: '2.0'
+-   id: dc_guard_hz
+    label: DC Guard (Hz)
+    dtype: float
+    default: '200.0'
+
+inputs:
+-   label: in
+    domain: stream
+    dtype: complex
+    vlen: ${ cpi_size }
+    multiplicity: ${ n_ant }
+-   label: burst_info
+    domain: message
+    optional: true
+
+outputs:
+-   label: tone_info
+    domain: message
+    optional: true
+
+templates:
+    imports: from lark import iridium_tone_scanner
+    make: |-
+        lark.iridium_tone_scanner(
+            cpi_size=${cpi_size},
+            fs=${fs},
+            n_ant=${n_ant},
+            tone_nom_hz=${tone_nom_hz},
+            scan_bw_hz=${scan_bw_hz},
+            n_peaks=${n_peaks},
+            min_sep_hz=${min_sep_hz},
+            min_snr_db=${min_snr_db},
+            dc_guard_hz=${dc_guard_hz})
+
+file_format: 1

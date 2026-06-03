@@ -29,7 +29,7 @@ from config_hw import *   # noqa: F401, F403  (HEIMDALL_HOST/PORT, SAMPLE_RATE_H
 
 SCENARIO = "indoor_ira"
 # "indoor_ira"  — Static TX (LibreSDR --mode ira, CFO ≈ 0 Hz).
-#                 Long averaging (32 bursts ≈ 4 s), Doppler gate ±3 kHz.
+#                 Single burst DoA, Doppler gate ±3 kHz.
 #                 Use with:  python3 tx/indoor_1626.py --mode ira --gain -50 --cyclic
 #
 # "indoor_pass" — TX simulates LEO pass (LibreSDR --mode pass, Doppler chirp ±28 kHz).
@@ -45,7 +45,7 @@ SCENARIO = "indoor_ira"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 FREQ_HZ = 1_626_270_000      # Iridium Ring Alert channel (1626.270 MHz)
-GAIN_DB = 40                  # RTL-SDR gain [dB].  CH0 clips above ~42 dB indoor; max=49 only if no ADC saturation.
+GAIN_DB = 40                  # RTL-SDR gain [dB]. Indoor: 40-45; outdoor: 35-37.
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UCA geometry
@@ -106,7 +106,9 @@ SCENARIO_PROFILES: dict[str, dict] = {
     "indoor_ira": dict(
         INDOOR_TX_MODE               = "ira",
         MAX_SATELLITES               = 1,
-        MULTI_BURST_N                = 32,
+        MULTI_BURST_N                = 1,        # SINGLE-BURST: indoor multipath destroys
+                                                  # rank-1 structure even with N=2 (2026-06-02).
+                                                  # Tracker EMA (α=0.88) provides temporal smoothing.
         DOPPLER_GATE_HZ              = 3_000,
         CFO_TRACK_MAX_JUMP_HZ        = 2_500,
         PAPR_INST_MIN_DB             = 3.0,
@@ -122,7 +124,7 @@ SCENARIO_PROFILES: dict[str, dict] = {
         AZ_OUTLIER_MAX_DEV_DEG       = 30.0,   # wider tolerance for indoor multipath
         AZ_OUTLIER_MIN_HISTORY       = 8,
         AZ_OUTLIER_RELOCK_STREAK     = 40,    # was 20; wait longer before relock
-        PHASE_COHERENCE_ENABLED      = False,
+        PHASE_COHERENCE_ENABLED      = True,
         GATE_RELOCK_BYPASS_BURSTS    = 12,
         DOPPLER_XZ_ENABLED           = False,
         IRA_SCAN_OFFSETS_HZ          = [0],
@@ -182,15 +184,15 @@ SCENARIO_PROFILES: dict[str, dict] = {
     "outdoor": dict(
         INDOOR_TX_MODE               = "pass",   # "pass" signals no Doppler gate; real satellite
         MAX_SATELLITES               = 3,
-        MULTI_BURST_N                = 4,
+        MULTI_BURST_N                = 2,        # outdoor signals weak → reduce stack to avoid corruption
         DOPPLER_GATE_HZ              = 0,
         CFO_TRACK_MAX_JUMP_HZ        = 2_500,
-        PAPR_INST_MIN_DB             = 4.0,
+        PAPR_INST_MIN_DB             = 2.5,      # lowered: outdoor weak signals have lower PAPR
         SNR_INST_MIN_DB              = -5.0,
         AZ_SMOOTH_ALPHA              = 0.45,
         EL_SMOOTH_ALPHA              = 0.45,
         COV_ALPHA                    = 0.93,
-        ENERGY_DETECT_THRESHOLD      = 6.0,
+        ENERGY_DETECT_THRESHOLD      = 2.0,   # outdoor signals ~-31dB need low threshold
         INDOOR_EL_MAX_DEG            = 90.0,
         INDOOR_EL_PREF_MAX_DEG       = 85.0,
         INDOOR_EL_PREF_MIN_DEG       = 5.0,
@@ -204,10 +206,11 @@ SCENARIO_PROFILES: dict[str, dict] = {
         DOPPLER_XZ_MIN_ABS_HZ        = 2000.0,
         DOPPLER_XZ_MIN_JUMP_HZ       = 4000.0,
         DOPPLER_XZ_DEADTIME_S        = 30.0,
-        # Empirical IRA channel offsets (outdoor session 2026-05-27):
+        # Empirical IRA channel offsets (outdoor session 2026-05-27 / 2026-06-02):
         IRA_SCAN_OFFSETS_HZ          = [
-            -148_000, -107_000, -65_000, -23_000, +19_000, +60_000,
-            +102_000, +143_000, +185_000, +227_000, +268_000, +310_000, +352_000,
+            -210_000, -148_000, -107_000, -65_000, -23_000, +19_000,
+            +60_000, +102_000, +143_000, +185_000, +227_000, +268_000,
+            +310_000, +352_000,
         ],
         SAT_MIN_SEP_HZ               = 8_000,
         SAT_TIMEOUT_S                = 12.0,

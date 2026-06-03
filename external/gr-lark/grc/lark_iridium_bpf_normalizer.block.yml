@@ -1,0 +1,53 @@
+id: lark_iridium_bpf_normalizer
+label: Iridium BPF Normalizer
+category: '[LARK]'
+flags: [python, cmake]
+
+parameters:
+-   id: cpi_size
+    label: CPI Size
+    dtype: int
+    default: '131072'
+-   id: fs
+    label: Sample Rate (Hz)
+    dtype: float
+    default: '1024000.0'
+-   id: n_ant
+    label: Num Antennas
+    dtype: int
+    default: '5'
+-   id: pre_samples
+    label: Preamble Samples
+    dtype: int
+    default: '2621'
+-   id: bpf_bw_hz
+    label: BPF Bandwidth (Hz)
+    dtype: float
+    default: '8000.0'
+
+inputs:
+-   label: in
+    domain: stream
+    dtype: complex
+    vlen: ${ cpi_size }
+    multiplicity: ${ n_ant }
+-   label: tone_info
+    domain: message
+    optional: true
+
+outputs:
+-   label: bpf_output
+    domain: message
+    optional: true
+
+templates:
+    imports: from lark import iridium_bpf_normalizer
+    make: |-
+        lark.iridium_bpf_normalizer(
+            cpi_size=${cpi_size},
+            fs=${fs},
+            n_ant=${n_ant},
+            pre_samples=${pre_samples},
+            bpf_bw_hz=${bpf_bw_hz})
+
+file_format: 1

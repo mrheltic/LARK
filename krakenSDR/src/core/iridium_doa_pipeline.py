@@ -216,16 +216,23 @@ class DoaEstimator:
         # Each window was acquired at a slightly different CFO; re-phase them
         # all to the current CFO before stacking so the CW preamble tone adds
         # coherently across the whole window (critical for LEO Doppler drift).
-        X_parts = []
-        for x_h, cfo_h in zip(self._X_buf, self._cfo_buf):
-            d_cfo = float(cfo_hz) - cfo_h
-            if abs(d_cfo) > 30.0:
-                rot = np.exp(-2j * np.pi * d_cfo / c.fs * self._t_vec)
-                X_parts.append(x_h * rot)
-            else:
-                X_parts.append(x_h)
-        X_big = np.hstack(X_parts)                       # (n_ant, N * n_bursts)
-        R_avg = (X_big @ X_big.conj().T) / X_big.shape[1]
+        # When n_bursts == 1 there is nothing to align; R_avg = R_inst directly.
+        if c.n_bursts == 1:
+            R_avg = self._R_buf[0]
+            X_big = self._X_buf[0]
+        else:
+            X_parts = []
+            for x_h, cfo_h in zip(self._X_buf, self._cfo_buf):
+                d_cfo = float(cfo_hz) - cfo_h
+                if abs(d_cfo) > 30.0:
+                    # rot = exp(+j·2π·Δf·t)  rotates the historical burst
+                    # from its old CFO to the current CFO so they stack coherently.
+                    rot = np.exp(2j * np.pi * d_cfo / c.fs * self._t_vec)
+                    X_parts.append(x_h * rot)
+                else:
+                    X_parts.append(x_h)
+            X_big = np.hstack(X_parts)                       # (n_ant, N * n_bursts)
+            R_avg = (X_big @ X_big.conj().T) / X_big.shape[1]
 
         # ── 7. 2D-MUSIC ────────────────────────────────────────────────────────
         cfg_use = c.cfg

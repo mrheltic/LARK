@@ -115,6 +115,7 @@ def scan_preamble_tones(
     min_sep_hz: float = 5_000.0,
     min_snr_db: float = 3.0,
     dc_guard_hz: float = 500.0,
+    prefer_nom: bool = False,
 ) -> list[tuple[float, float]]:
     """
     FFT scan for CW preamble tones in a burst window.
@@ -134,22 +135,25 @@ def scan_preamble_tones(
     nom_tone_hz  : Centre of the search band [Hz].
     scan_bw_hz   : Half-bandwidth of the search band [Hz].
     n_peaks      : Maximum number of peaks to return.
-    min_sep_hz   : Minimum frequency separation between returned peaks [Hz].
+    min_sep_hz   : Minimum frequency separation between returned peaks.
     min_snr_db   : Minimum SNR above the median floor to accept a peak [dB].
     dc_guard_hz  : Exclusion zone around DC [Hz].
+    prefer_nom   : If True, sort peaks by proximity to nom_tone_hz instead of
+                   pure power.  Useful when a weak TX tone is near nom_tone_hz
+                   but stronger satellite tones exist elsewhere in the band.
 
     Returns
     -------
-    peaks : list of (tone_hz, snr_db), sorted by decreasing power.
+    peaks : list of (tone_hz, snr_db).
+            If prefer_nom is False (default), sorted by decreasing power.
+            If prefer_nom is True, sorted by proximity to nom_tone_hz with
+            a power-weighted penalty so that very weak tones are still rejected.
             Falls back to [(nom_tone_hz, 0.0)] when no valid peak is found.
     """
     N = len(iq)
     if N < 128:
         return [(nom_tone_hz, 0.0)]
 
-    # Zero-pad to the next power of 2 >= N (PySDR frequency-domain chapter:
-    # zero-padding interpolates the DFT for finer peak localisation).
-    # For the typical preamble window (N=2621): nfft 2048→4096, 500→250 Hz/bin.
     nfft  = max(128, 1 << int(np.ceil(np.log2(max(N, 2)))))
     win   = np.blackman(N)
     Spec  = np.abs(np.fft.fft(iq[:N] * win, n=nfft)) ** 2
@@ -169,15 +173,25 @@ def scan_preamble_tones(
     noise_floor = float(np.median(Sb)) + 1e-20
 
     results: list[tuple[float, float]] = []
+    Sb_work = Sb.copy()
     for _ in range(n_peaks):
-        idx = int(np.argmax(Sb))
-        snr = 10.0 * np.log10(max(float(Sb[idx]), 1e-30) / noise_floor)
+        idx = int(np.argmax(Sb_work))
+        snr = 10.0 * np.log10(max(float(Sb_work[idx]), 1e-30) / noise_floor)
         if snr < min_snr_db:
             break
         results.append((float(fb[idx]), float(snr)))
-        Sb[np.abs(fb - fb[idx]) < min_sep_hz] = 0.0
+        Sb_work[np.abs(fb - fb[idx]) < min_sep_hz] = 0.0
 
-    return results if results else [(nom_tone_hz, 0.0)]
+    if not results:
+        return [(nom_tone_hz, 0.0)]
+
+    if prefer_nom and len(results) > 1:
+        snr_max = max(snr for _, snr in results)
+        results.sort(
+            key=lambda p: abs(p[0] - nom_tone_hz) - 0.5 * (p[1] / snr_max) * scan_bw_hz
+        )
+
+    return results
 
 
 # =============================================================================

@@ -1,0 +1,121 @@
+id: lark_iridium_doa_estimator
+label: Iridium DOA Estimator
+category: '[LARK]'
+flags: [python, cmake]
+
+parameters:
+-   id: n_ant
+    label: Num Antennas
+    dtype: int
+    default: '5'
+-   id: radius_lambda
+    label: UCA Radius (lambda)
+    dtype: float
+    default: '0.4253'
+-   id: ant0_offset_deg
+    label: Ant0 Offset (deg)
+    dtype: float
+    default: '0.0'
+-   id: ant_ccw
+    label: Antenna CCW
+    dtype: bool
+    default: 'False'
+-   id: n_az
+    label: Azimuth Grid Points
+    dtype: int
+    default: '360'
+-   id: n_el
+    label: Elevation Grid Points
+    dtype: int
+    default: '86'
+-   id: el_min_deg
+    label: Min Elevation (deg)
+    dtype: float
+    default: '5.0'
+-   id: el_max_deg
+    label: Max Elevation (deg)
+    dtype: float
+    default: '90.0'
+-   id: algorithm
+    label: DOA Algorithm
+    dtype: enum
+    options: [MUSIC, CAPON, BARTLETT, PHASE-FIT]
+    default: MUSIC
+-   id: num_signals
+    label: Expected Signals
+    dtype: int
+    default: '1'
+-   id: phase_offsets_deg
+    label: Phase Offsets (deg)
+    dtype: string
+    default: '"0.0,54.95,137.24,133.58,48.31"'
+-   id: cov_alpha
+    label: Cov EMA Alpha
+    dtype: float
+    default: '0.93'
+-   id: az_ema_alpha
+    label: Azimuth EMA Alpha
+    dtype: float
+    default: '0.88'
+-   id: el_ema_alpha
+    label: Elevation EMA Alpha
+    dtype: float
+    default: '0.65'
+-   id: snr_min_db
+    label: Min SNR (dB)
+    dtype: float
+    default: '-3.0'
+-   id: papr_min_db
+    label: Min PAPR (dB)
+    dtype: float
+    default: '3.0'
+-   id: music_decorr
+    label: MUSIC Decorrelation
+    dtype: enum
+    options: [none, fb, circulant, both]
+    default: fb
+
+inputs:
+-   label: covariance
+    domain: message
+
+outputs:
+-   label: azimuth
+    domain: message
+    optional: true
+-   label: elevation
+    domain: message
+    optional: true
+-   label: snr
+    domain: message
+    optional: true
+-   label: spectrum
+    domain: message
+    optional: true
+-   label: burst_detected
+    domain: message
+    optional: true
+
+templates:
+    imports: from lark import iridium_doa_estimator
+    make: |-
+        lark.iridium_doa_estimator(
+            n_ant=${n_ant},
+            radius_lambda=${radius_lambda},
+            ant0_offset_deg=${ant0_offset_deg},
+            ant_ccw=${ant_ccw},
+            n_az=${n_az},
+            n_el=${n_el},
+            el_min_deg=${el_min_deg},
+            el_max_deg=${el_max_deg},
+            algorithm=${algorithm},
+            num_signals=${num_signals},
+            phase_offsets_deg=[float(x) for x in ${phase_offsets_deg}.split(',')],
+            cov_alpha=${cov_alpha},
+            az_ema_alpha=${az_ema_alpha},
+            el_ema_alpha=${el_ema_alpha},
+            snr_min_db=${snr_min_db},
+            papr_min_db=${papr_min_db},
+            music_decorr=${music_decorr})
+
+file_format: 1

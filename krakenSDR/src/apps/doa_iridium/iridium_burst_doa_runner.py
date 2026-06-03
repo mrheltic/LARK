@@ -1111,22 +1111,32 @@ def _acq_loop(
                 if len(trk.R_batch) < _multi_n:
                     continue
 
-                # ── Sample covariance from Doppler-aligned preamble IQ ───────
-                # Re-align every burst in the sliding window to the current CFO
-                # before stacking.  Pass-sim Doppler (≈±28 kHz) drifts hundreds
-                # of Hz across N×90 ms; misaligned stacks collapse MUSIC PAPR.
-                _t_align = np.arange(_bpf_guard, _bpf_guard + _n_pre, dtype=np.float64)
-                X_parts: list[np.ndarray] = []
-                for x_hist, cfo_hist in zip(trk.X_batch, trk.cfo_batch):
-                    d_cfo = float(cfo_hz) - float(cfo_hist)
-                    if abs(d_cfo) > 30.0:
-                        rot = np.exp(-2j * np.pi * d_cfo / _fs * _t_align)
-                        X_parts.append(x_hist * rot)
-                    else:
-                        X_parts.append(x_hist)
-                X_big = np.hstack(X_parts)
-                R_avg = (X_big @ X_big.conj().T) / X_big.shape[1]
-                phase_diffs = np.degrees(np.angle(R_avg[1:, 0]))
+                # ── Covariance for DoA ──────────────────────────────────────────
+                # When MULTI_BURST_N == 1 there is nothing to stack; using the
+                # matched-filter covariance R_inst (rank-1) avoids destroying
+                # the clean CW structure with sample-covariance noise / multipath.
+                # For N > 1 we Doppler-align the stack and build a sample cov.
+                if _multi_n == 1:
+                    R_avg = R_inst
+                    X_big = X_pre
+                    phase_diffs = np.degrees(np.angle(R_inst[1:, 0]))
+                else:
+                    _t_align = np.arange(_bpf_guard, _bpf_guard + _n_pre,
+                                         dtype=np.float64)
+                    X_parts: list[np.ndarray] = []
+                    for x_hist, cfo_hist in zip(trk.X_batch, trk.cfo_batch):
+                        d_cfo = float(cfo_hz) - float(cfo_hist)
+                        if abs(d_cfo) > 30.0:
+                            # rot = exp(+j·2π·Δf·t)  rotates the historical burst
+                            # from its old CFO to the current CFO so they stack
+                            # coherently.
+                            rot = np.exp(2j * np.pi * d_cfo / _fs * _t_align)
+                            X_parts.append(x_hist * rot)
+                        else:
+                            X_parts.append(x_hist)
+                    X_big = np.hstack(X_parts)
+                    R_avg = (X_big @ X_big.conj().T) / X_big.shape[1]
+                    phase_diffs = np.degrees(np.angle(R_avg[1:, 0]))
                 try:
                     _az_hint, _el_hint = _pick_doa_hints(trk, _has_cal, _az_pick_hint_min)
                     _ph_w = _indoor_phase_w if snr >= _phase_snr_min else 0.0

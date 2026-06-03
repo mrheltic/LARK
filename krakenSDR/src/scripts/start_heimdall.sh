@@ -33,7 +33,7 @@ SYNTHETIC=0
 
 # ── Resolve LARK root ────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LARK_ROOT="${LARK_ROOT:-$(dirname "$(dirname "$SCRIPT_DIR")")}"
+LARK_ROOT="${LARK_ROOT:-$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")}"
 
 # ── Acquire sudo credentials once ───────────────────────────────────────────
 # Firmware (chrt -f 99, hw_controller.py) and cleanup of root-owned processes
@@ -175,7 +175,7 @@ find_fw() {
     # fallback: any dir with daq_start_sm.sh (even without binaries)
     for d in "${candidates[@]}"; do
         if [[ -f "$d/daq_start_sm.sh" ]]; then
-            warn "Firmware at $d has no compiled binaries — run: make -C $d/_daq_core"
+            warn "Firmware at $d has no compiled binaries — run: make -C $d/_daq_core" >&2
             echo "$d"; return 0
         fi
     done
@@ -350,9 +350,10 @@ for i in $(seq 1 "$MAX_WAIT"); do
     sleep 1
     if _port_listening 5000; then
         # iq_server opens port 5000 before delay_sync completes STATE_IQ_CAL.
-        # A short sleep avoids the client receiving CAL/DUMMY frames at startup.
-        echo " listening! Stabilising (5s for noise-source calibration)..."
-        sleep 5
+        # At 1626 MHz (L-band) with gain 33.8 dB, calibration takes ~5-10 s.
+        # At other frequencies or higher gain, allow up to 15 s for safety.
+        echo " listening! Stabilising (15s for calibration)..."
+        sleep 15
         ok "Heimdall ready after ${i}s — port 5000 open."
         break
     fi

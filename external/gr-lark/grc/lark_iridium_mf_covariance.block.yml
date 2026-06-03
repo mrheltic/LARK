@@ -1,0 +1,47 @@
+id: lark_iridium_mf_covariance
+label: Iridium MF Covariance
+category: '[LARK]'
+flags: [python, cmake]
+
+parameters:
+-   id: n_ant
+    label: Num Antennas
+    dtype: int
+    default: '5'
+-   id: pre_samples
+    label: Preamble Samples
+    dtype: int
+    default: '2621'
+-   id: bpf_guard
+    label: BPF Guard Samples
+    dtype: int
+    default: '128'
+-   id: fs
+    label: Sample Rate (Hz)
+    dtype: float
+    default: '1024000.0'
+-   id: phase_offsets_deg
+    label: Phase Offsets (deg)
+    dtype: string
+    default: '"0.0,54.95,137.24,133.58,48.31"'
+
+inputs:
+-   label: bpf_output
+    domain: message
+
+outputs:
+-   label: covariance
+    domain: message
+    optional: true
+
+templates:
+    imports: from lark import iridium_mf_covariance
+    make: |-
+        lark.iridium_mf_covariance(
+            n_ant=${n_ant},
+            pre_samples=${pre_samples},
+            bpf_guard=${bpf_guard},
+            fs=${fs},
+            phase_offsets_deg=[float(x) for x in ${phase_offsets_deg}.split(',')])
+
+file_format: 1
