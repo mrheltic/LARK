@@ -1,0 +1,99 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Iridium DOA — configuration file
+#
+# All values can be overridden from the command line:
+#   python3 run_doa.py --config doa_config.toml --gain 36.4 --algo capon
+#
+# Frequency and gain are the two parameters you'll tweak most often.
+# Leave everything else at defaults unless you have a specific reason to change.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[hardware]
+daq_ip    = "localhost"    # Heimdall DAQ server IP
+port      = 5000           # IQ data port
+ctrl_port = 5001           # control port
+
+freq_mhz  = 1626.27        # Iridium simplex ring alerts (most active uplink)
+                            # Other channels: 1626.104, 1621.5, 1623.5 MHz
+
+gain_db   = 30.0           # IF gain — increase if weak signal, decrease if saturating
+
+# Internal timing (rarely need changing)
+cpi_size       = 131072    # Kraken CPI length (Heimdall default)
+pre_samples    = 2621      # IRA preamble length in samples at 1.024 MSPS (= 64 sym × 8)
+window_samples = 3000      # burst window extracted from each CPI
+bpf_guard      = 128       # samples to skip after BPF (filter impulse-response ringing)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+[array]
+n_ant           = 5        # number of antennas (KrakenSDR supports up to 5)
+
+radius_lambda   = 0.4253   # UCA radius in wavelengths
+                            # Taoglas patch antennas at 1626 MHz: ~λ/2 → 0.5
+                            # measured from IQ calibration: 0.4253
+
+ant0_offset_deg = 0.0      # mechanical rotation of antenna 0 from geographic North [°, CW]
+                            # measure with compass; set once per deployment
+
+ant_ccw         = false    # true if your array is wired counter-clockwise
+                            # (check with a known-direction test source)
+
+use_phase_cal = false      # false = skip phase correction (DOA spectrum only)
+                            # true  = apply cal_file offsets before DOA
+
+cal_file = ""              # path to calibration .npz with "phase_offsets_deg" (n_ant,)
+                            # only used when use_phase_cal = true
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+[algorithm]
+algo = "music"             # DOA algorithm: music | capon | bartlett
+                            # music  → best resolution, needs good calibration
+                            # capon  → robust to interference, slightly smoother
+                            # bartlett → most robust, lowest resolution
+
+mode = "indoor"           # detection profile: outdoor | indoor
+                            # outdoor: wide Doppler search (±45 kHz), higher thresholds
+                            # indoor:  narrow search (±3 kHz), lower thresholds
+
+n_az  = 360                # azimuth grid points (0–360°);  step = 360/n_az = 1°
+n_el  = 86                 # elevation grid points (5–90°); step ≈ 1°
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+[thresholds]
+# Detection quality gates — raise if you get false positives, lower if you miss bursts
+snr_min_db   = 3.0         # minimum covariance SINR to process a burst [dB]
+papr_min_db  = 2.0         # minimum MUSIC peak-to-average to output a result [dB]
+
+# EMA smoothing — closer to 1 = more inertia (smoother but slower to react)
+cov_alpha    = 0.93        # covariance EMA memory  (0 = stateless, 1 = freeze)
+az_ema_alpha = 0.88        # azimuth output smoothing
+el_ema_alpha = 0.65        # elevation output smoothing (less inertia: el changes faster)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+[output]
+json_file = ""             # write JSON lines to this file in addition to stdout
+                            # e.g. json_file = "/tmp/doa_results.jsonl"
+                            # empty = stdout only
+
+debug_dir = ""             # save intermediate arrays per pipeline stage
+                            # e.g. debug_dir = "/tmp/doa_debug"
+                            # creates per frame: 00_raw_iq.npy … 07_doa_result.json
+                            # empty = disabled
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+[recording]
+enabled = false             # save raw Kraken IQ + DOA spectra to disk
+dir = ""                   # output base dir (empty = krakenSDR/data/doa_iridium)
+record_raw = true          # save every CPI frame in raw_iq.npz
+checkpoint_s = 60          # flush checkpoint every N seconds (0 = only at exit)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+[ui]
+update_interval_ms = 300   # matplotlib animation refresh rate [ms]
+history_len        = 120   # number of recent DOA estimates shown in history plot

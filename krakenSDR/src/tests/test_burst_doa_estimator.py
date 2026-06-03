@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-test_gr_doa_estimator.py — Unit tests for UCA 2D DOA estimation (core Python, no GR).
+test_burst_doa_estimator.py — Unit tests for UCA 2D DOA estimation.
 
 Tests doa_music_uca_2d, doa_bartlett_uca_2d, doa_capon_uca_2d,
 find_peak_uca_2d, doa_phase_fit_uca_2d from core.doa_uca_2d.
 
 Run:
-    python3 -m pytest krakenSDR/src/tests/test_gr_doa_estimator.py -v
+    python3 -m pytest krakenSDR/src/tests/test_burst_doa_estimator.py -v
 """
 
 from __future__ import annotations

@@ -275,22 +275,6 @@
             "problemMatcher": []
         },
         {
-            "label": "KrakenSDR: Iridium — validate pipeline (known TX position)",
-            "detail": "Runs the full diagnostic suite on a collected dataset: phase diff vs theory, DoA RMSE/bias, CRB ratio, eigenvalue rank, per-channel power balance. Provide TX azimuth and elevation as ground truth.",
-            "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/validate_pipeline.py ${input:iridiumDatasetFile} --az ${input:validateAz} --el ${input:validateEl} --algo ${input:iridiumOfflineAlgo} --save-pdf ${input:iridiumDatasetFile}_report.pdf",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            },
-            "problemMatcher": []
-        },
-        {
             "label": "KrakenSDR: Iridium — collect + validate pipeline",
             "detail": "Sequential pipeline: 1) collect 5ch bursts from Heimdall, 2) run validate_pipeline on the new dataset with known TX az/el. Requires Heimdall + LibreSDR TX running. Saves dataset .npz/.json and validation report PDF.",
             "type": "shell",
@@ -306,15 +290,20 @@
             },
             "problemMatcher": []
         },
-        {
-            "label": "LARK: Indoor 1626 MHz — full lab setup (Heimdall + TX + DoA)",
-            "detail": "Sequential startup: 1) Heimdall DAQ at 1626 MHz, 2) LibreSDR TX −50 dB simulated LEO pass (Doppler ±28 kHz), 3) DoA GUI with indoor_pass scenario.",
-            "dependsOn": [
-                "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
-                "LibreSDR: Indoor 1626 MHz — TX IRA burst (lab DoA)",
-                "KrakenSDR: Iridium Burst DoA Runner — 1626.270 MHz (GUI)"
-            ],
-            "dependsOrder": "sequence",
+         {
+            "label": "KrakenSDR: Iridium — collect + validate pipeline (GUI)",
+            "detail": "Same as the previous task but runs the DoA runner with the GUI enabled.",
+            "type": "shell",
+            "command": "LARK_ROOT=${workspaceFolder} COLLECT_SECONDS=${input:iridiumCollectSeconds} COLLECT_BURSTS=${input:iridiumCollectBursts} VALIDATE_AZ=${input:validateAz} VALIDATE_EL=${input:validateEl} ALGO=${input:iridiumOfflineAlgo} bash ${workspaceFolder}/krakenSDR/src/scripts/run_collect_and_validate.sh --gui",
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            },
             "problemMatcher": []
         }
     ],

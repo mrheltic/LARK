@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-test_gr_tone_scanner.py — Unit tests for preamble tone scanning (core Python, no GR).
+test_burst_tone_scanner.py — Unit tests for preamble tone scanning.
 
-Tests scan_preamble_tones() from apps.doa_iridium.burst_processing.
+Tests scan_preamble_tones() from apps.doa_iridium_grc.lark.burst_processing.
 
 Run:
-    python3 -m pytest krakenSDR/src/tests/test_gr_tone_scanner.py -v
+    python3 -m pytest krakenSDR/src/tests/test_burst_tone_scanner.py -v
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ if _SRC not in sys.path:
 import numpy as np
 import pytest
 
-from apps.doa_iridium.burst_processing import scan_preamble_tones
+from apps.doa_iridium_grc.lark.burst_processing import scan_preamble_tones
 
 FS = 1_024_000.0
 TONE_HZ = 3_125.0

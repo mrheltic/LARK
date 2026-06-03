@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-test_gr_burst_energy.py — Unit tests for burst energy detection (core Python, no GR).
+test_burst_energy.py — Unit tests for burst energy detection.
 
-Tests detect_energy_bursts() from apps.doa_iridium.burst_processing with
-Iridium L-band parameters (1.024 MSPS, CW tone at 3125 Hz).
+Tests detect_energy_bursts() from apps.doa_iridium_grc.lark.burst_processing.
 
 Run:
-    python3 -m pytest krakenSDR/src/tests/test_gr_burst_energy.py -v
+    python3 -m pytest krakenSDR/src/tests/test_burst_energy.py -v
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ if _SRC not in sys.path:
 import numpy as np
 import pytest
 
-from apps.doa_iridium.burst_processing import detect_energy_bursts
+from apps.doa_iridium_grc.lark.burst_processing import detect_energy_bursts
 
 FS = 1_024_000.0
 TONE_HZ = 3_125.0

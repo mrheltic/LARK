@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-test_gr_doa_pipeline.py — Integration test for full burst → DOA pipeline (core Python, no GR).
+test_burst_doa_pipeline.py — Integration test for full burst → DOA pipeline.
 
-End-to-end test: burst detection → tone scan → BPF → MF covariance → DOA estimation.
-Uses synthetic Iridium L-band signal with UCA 5-element array.
+End-to-end: burst detection → tone scan → BPF → MF covariance → DOA estimation.
 
 Run:
-    python3 -m pytest krakenSDR/src/tests/test_gr_doa_pipeline.py -v
+    python3 -m pytest krakenSDR/src/tests/test_burst_doa_pipeline.py -v
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ if _SRC not in sys.path:
 import numpy as np
 import pytest
 
-from apps.doa_iridium.burst_processing import (
+from apps.doa_iridium_grc.lark.burst_processing import (
     detect_energy_bursts,
     scan_preamble_tones,
     apply_bpf_and_normalize,

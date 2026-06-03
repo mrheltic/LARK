@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-test_gr_bpf_normalizer.py — Unit tests for BPF extraction + normalization (core Python, no GR).
+test_burst_bpf.py — Unit tests for BPF extraction + normalization.
 
-Tests apply_bpf_and_normalize() from apps.doa_iridium.burst_processing.
+Tests apply_bpf_and_normalize() from apps.doa_iridium_grc.lark.burst_processing.
 
 Run:
-    python3 -m pytest krakenSDR/src/tests/test_gr_bpf_normalizer.py -v
+    python3 -m pytest krakenSDR/src/tests/test_burst_bpf.py -v
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ if _SRC not in sys.path:
 import numpy as np
 import pytest
 
-from apps.doa_iridium.burst_processing import apply_bpf_and_normalize
+from apps.doa_iridium_grc.lark.burst_processing import apply_bpf_and_normalize
 
 FS = 1_024_000.0
 TONE_HZ = 3_125.0

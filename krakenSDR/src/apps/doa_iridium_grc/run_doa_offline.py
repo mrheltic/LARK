@@ -1,388 +1,561 @@
 #!/usr/bin/env python3
 """
-run_doa_offline.py — Offline Iridium burst DoA from captured data.
+run_doa_offline.py — Offline Iridium DOA from recorded data.
 
-Processes pre-recorded .npz or .cf32 files through the LARK DOA pipeline
-without any GNU Radio dependency.
-
-Input formats:
-  .npz: file with arrays 'ch0'..'ch4' (or 'ant0'..'ant4'), each 1D complex64
-  .cf32: 5 separate files, raw interleaved I/Q (complex64) binary
+Supported inputs
+──────────────────
+  session_.../raw_iq.npz   Raw Kraken CPI recording  X: (N, 5, cpi_size)
+  *_iq.npz                 Pre-segmented burst windows  (N, 5, 2621)
+  *.npz                    Multi-channel CPI (ch0..ch4)
+  *.wav / *.cf32           Single-channel — burst/tone detection only
 
 Usage:
-    python3 run_doa_offline.py capture.npz [options]
-    python3 run_doa_offline.py --files ch0.cf32 ch1.cf32 ch2.cf32 ch3.cf32 ch4.cf32 [options]
-    python3 run_doa_offline.py capture.npz --gui
-    python3 run_doa_offline.py capture.npz --save-spectrum spec_output.npz
+    python3 run_doa_offline.py data/doa_iridium/session_20260603_120000/raw_iq.npz
+    python3 run_doa_offline.py data/doa_iridium/doa_iridium_20260527_100712_iq.npz
+    python3 run_doa_offline.py recordings/baseband_1626270000Hz_10-35-33_27-05-2026.wav
+    python3 run_doa_offline.py file.npz --mode outdoor --max-bursts 50 --debug-dir /tmp/dbg
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+import time
+
 import numpy as np
 
-_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SRC  = os.path.normpath(os.path.join(_HERE, "..", ".."))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from core.doa_uca_2d import (
-    UcaConfig, doa_music_uca_2d, doa_bartlett_uca_2d, doa_capon_uca_2d,
-    doa_phase_fit_uca_2d, find_peak_uca_2d, amplitude_normalize_channels,
-    eigenvalue_spread_uca_db, snr_uca_db,
+from apps.doa_iridium_grc.run_doa import (  # noqa: E402
+    _PROFILES,
+    _apply_cli,
+    _load_cal,
+    load_config,
+    parse_args as _live_parse_args,
 )
+from apps.doa_iridium_grc.lark.burst_processing import (
+    apply_bpf_and_normalize,
+    compute_mf_covariance,
+    detect_energy_bursts,
+    scan_preamble_tones,
+)
+from apps.doa_iridium_grc.lark.pipeline_debug import PipelineDebugSaver
 from core.doa_algorithms import apply_phase_correction
-from apps.doa_iridium.burst_processing import (
-    detect_energy_bursts, scan_preamble_tones,
-    compute_mf_covariance, apply_bpf_and_normalize,
+from core.doa_uca_2d import (
+    UcaConfig,
+    doa_bartlett_uca_2d,
+    doa_capon_uca_2d,
+    doa_music_uca_2d,
+    find_peak_uca_2d,
 )
 
-_ALGO_MAP = {
-    "MUSIC": doa_music_uca_2d,
-    "BARTLETT": doa_bartlett_uca_2d,
-    "CAPON": doa_capon_uca_2d,
-    "PHASE-FIT": None,
-}
 
-_MODE_PROFILES = {
-    "indoor": dict(
-        tone_nom_hz=3125.0, scan_bw_hz=3_000.0, bpf_bw_hz=8_000.0,
-        dc_guard_hz=200.0, min_snr_db=2.0, min_sep_hz=1_000.0,
-        energy_threshold=3.0, prefer_nom=False,
-    ),
-    "outdoor": dict(
-        tone_nom_hz=3125.0, scan_bw_hz=45_000.0, bpf_bw_hz=15_000.0,
-        dc_guard_hz=500.0, min_snr_db=3.0, min_sep_hz=5_000.0,
-        energy_threshold=2.0, prefer_nom=False,
-    ),
-    "indoor_tx": dict(
-        tone_nom_hz=0.0, scan_bw_hz=5_000.0, bpf_bw_hz=4_000.0,
-        dc_guard_hz=0.0, min_snr_db=2.0, min_sep_hz=500.0,
-        energy_threshold=3.0, prefer_nom=True,
-    ),
-}
+FS = 1_024_000.0
 
 
-def load_npz(path, n_ant=5):
-    data = np.load(path)
-    arrays = []
-    for i in range(n_ant):
-        for key in [f"ch{i}", f"ant{i}"]:
-            if key in data:
-                arr = data[key]
-                if arr.dtype != np.complex64:
-                    arr = arr.astype(np.complex64)
-                arrays.append(arr.flatten())
-                break
-        else:
-            raise ValueError(f"Missing channel {i} in {path} (tried ch{i}, ant{i})")
-    return np.stack(arrays)
-
-
-def load_cf32_files(paths, n_ant=5):
-    arrays = []
-    for p in paths:
-        arr = np.fromfile(p, dtype=np.complex64)
-        arrays.append(arr)
-    min_len = min(len(a) for a in arrays)
-    return np.stack([a[:min_len] for a in arrays[:n_ant]])
-
-
-def process_frame(X, cfg, phase_offs, profile, fs, pre_samples, bpf_guard,
-                  window_samples, cov_alpha, az_alpha, el_alpha,
-                  snr_min, papr_min, algo, state):
-    n_ant = X.shape[0]
-
-    ch0 = X[0, :]
-    burst_starts = detect_energy_bursts(
-        ch0, fs, energy_window=256,
-        threshold_factor=profile["energy_threshold"],
-        min_gap_samples=int(0.045 * fs),
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Offline Iridium DOA from recordings",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    if not burst_starts:
-        return None
+    p.add_argument("input", help="Path to .npz, .wav, .cf32, or .iq file")
+    p.add_argument("--config", default=os.path.join(_HERE, "doa_config.toml"))
+    p.add_argument("--mode", choices=["indoor", "outdoor"])
+    p.add_argument("--algo", choices=["music", "capon", "bartlett"])
+    p.add_argument("--cal-file", metavar="PATH")
+    p.add_argument("--phase-offs", metavar="DEG_LIST",
+                   help="Comma-separated phase offsets (overrides cal-file)")
+    p.add_argument("--snr-min", type=float, default=-5.0,
+                   help="Minimum SINR gate [dB] (default -5 for pre-segmented recordings)")
+    p.add_argument("--papr-min", type=float, default=None,
+                   help="Minimum PAPR gate [dB] (default: from config)")
+    p.add_argument("--max-bursts", type=int, default=0,
+                   help="Limit bursts processed (0 = all)")
+    p.add_argument("--out", metavar="FILE", help="Write results JSONL to file")
+    p.add_argument("--debug-dir", metavar="DIR")
+    p.add_argument("--save-doa", metavar="FILE",
+                   help="Write doa_music.npz (spec2d + Kraken-style doa_az)")
+    p.add_argument("--phase-cal", action="store_true",
+                   help="Enable hardware phase calibration")
+    p.add_argument("--verbose", action="store_true")
+    return p.parse_args(argv)
 
-    burst_start = burst_starts[0]
-    burst_end = min(burst_start + window_samples, X.shape[1])
-    if burst_end - burst_start < pre_samples + bpf_guard:
-        return None
+
+def _build_uca(cfg: dict) -> UcaConfig:
+    arr = cfg["array"]
+    alg = cfg["algorithm"]
+    return UcaConfig(
+        n_ant=arr["n_ant"], radius_lambda=arr["radius_lambda"],
+        n_az=alg["n_az"], n_el=alg["n_el"],
+        el_min_deg=5.0, el_max_deg=90.0,
+        ant0_offset_deg=arr["ant0_offset_deg"],
+        ant_ccw=arr["ant_ccw"],
+        num_expected_signals=1,
+    )
+
+
+def _phase_offsets(cfg: dict, args: argparse.Namespace) -> list[float]:
+    n = cfg["array"]["n_ant"]
+    if not cfg["array"].get("use_phase_cal", False) and not args.phase_cal:
+        return [0.0] * n
+    if args.phase_offs:
+        offs = [float(x) for x in args.phase_offs.split(",")]
+    else:
+        offs = _load_cal(cfg["array"].get("cal_file", ""), n)
+    if all(o == 0.0 for o in offs) and not cfg["array"].get("cal_file"):
+        legacy = os.path.join(_SRC, "apps", "doa_iridium", "config.py")
+        if os.path.isfile(legacy):
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("doa_iridium_cfg", legacy)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            offs = list(getattr(mod, "CHANNEL_PHASE_OFFSETS_DEG", offs))
+    offs = (offs + [0.0] * n)[:n]
+    return [float(x) for x in offs]
+
+
+def _run_doa_on_window(
+    X_win: np.ndarray,
+    *,
+    cfg: dict,
+    profile: dict,
+    uca: UcaConfig,
+    phase_offs: list[float],
+    algo: str,
+    thr: dict,
+    state: dict,
+    burst_idx: int,
+    debug_dir: str = "",
+    spec_out: list | None = None,
+) -> dict | None:
+    """Process one burst window (n_ant, N) through stages 2–7."""
+    hw = cfg["hardware"]
+    pre_samples = hw["pre_samples"]
+    window_samples = min(hw["window_samples"], X_win.shape[1])
+    bpf_guard = hw["bpf_guard"]
+    has_cal = any(o != 0.0 for o in phase_offs)
+        # Pre-segmented _iq.npz windows are often exactly pre_samples long
+        if X_win.shape[1] < bpf_guard + 512:
+            return None
+        pre_samples = X_win.shape[1] - bpf_guard
+        window_samples = X_win.shape[1]
+
+    dbg = PipelineDebugSaver(debug_dir, burst_idx) if debug_dir else None
+    if dbg and dbg.enabled:
+        dbg.save("raw_iq", X_win)
 
     tones = scan_preamble_tones(
-        ch0[burst_start:burst_end], fs, profile["tone_nom_hz"],
-        scan_bw_hz=profile["scan_bw_hz"], n_peaks=3,
-        min_sep_hz=profile["min_sep_hz"],
+        X_win[0], FS,
+        nom_tone_hz=profile["tone_nom_hz"],
+        scan_bw_hz=profile["scan_bw_hz"],
         min_snr_db=profile["min_snr_db"],
         dc_guard_hz=profile["dc_guard_hz"],
-        prefer_nom=profile.get("prefer_nom", False),
     )
     if not tones:
         return None
-
-    tone_hz = tones[0][0]
-    X_win = X[:, burst_start:burst_end]
-    if X_win.shape[1] < window_samples:
-        return None
+    tone_hz, _ = tones[0]
+    if dbg and dbg.enabled:
+        dbg.save("tones", [{"tone_hz": float(t), "snr_db": float(s)} for t, s in tones])
 
     try:
         X_bpf = apply_bpf_and_normalize(
-            X_win, window_samples, fs, tone_hz, profile["bpf_bw_hz"]
+            X_win[:, :window_samples], window_samples, FS, tone_hz, profile["bpf_bw_hz"]
         )
     except ValueError:
         return None
 
-    X_cal = apply_phase_correction(X_bpf, phase_offs)
+    n_pre_eff = min(pre_samples, X_bpf.shape[1] - bpf_guard)
+    if n_pre_eff < 512:
+        return None
+
+    X_cal = apply_phase_correction(X_bpf, phase_offs) if has_cal else X_bpf
+    if dbg and dbg.enabled:
+        dbg.save("bpf", X_bpf)
+        dbg.save("phase_corrected", X_cal)
 
     try:
-        R_mf, y_mf, snr_db = compute_mf_covariance(
-            X_cal, tone_hz, fs, pre_samples, bpf_guard
+        R_mf, _, snr_db = compute_mf_covariance(
+            X_cal, tone_hz, FS, n_pre_eff, bpf_guard
         )
     except ValueError:
         return None
 
-    if snr_db < snr_min:
+    if snr_db < thr["snr_min_db"]:
         return None
 
-    if state["R_ema"] is None:
-        state["R_ema"] = R_mf.copy()
-    else:
-        state["R_ema"] = cov_alpha * state["R_ema"] + (1 - cov_alpha) * R_mf
-
-    algo_fn = _ALGO_MAP.get(algo)
-    if algo == "PHASE-FIT":
-        az_est, el_est, _ = doa_phase_fit_uca_2d(
-            state["R_ema"], cfg,
-            az_hint_deg=state.get("az_ema"),
-            el_hint_deg=state.get("el_ema"),
-        )
-        papr = 0.0
-        spec = None
-    elif algo_fn is not None:
-        if algo == "CAPON":
-            spec = algo_fn(X_cal, cfg, R_in=state["R_ema"], decorr="none")
-        else:
-            spec = algo_fn(X_cal, cfg, R_in=state["R_ema"])
-        az_est, el_est, papr = find_peak_uca_2d(spec, cfg)
-        if papr < papr_min:
-            return None
-    else:
-        spec = doa_music_uca_2d(X_cal, cfg, R_in=state["R_ema"])
-        az_est, el_est, papr = find_peak_uca_2d(spec, cfg)
-        if papr < papr_min:
-            return None
-
-    if state.get("az_ema") is None:
-        state["az_ema"] = az_est
-        state["el_ema"] = el_est
-    else:
-        d_az = ((az_est - state["az_ema"] + 180) % 360) - 180
-        state["az_ema"] += az_alpha * d_az
-        state["az_ema"] %= 360.0
-        state["el_ema"] += el_alpha * (el_est - state["el_ema"])
-
-    state["n_bursts"] += 1
-
-    return dict(
-        az=state["az_ema"], el=state["el_ema"],
-        snr=snr_db, papr=papr,
-        tone=tone_hz, doppler=tone_hz - profile["tone_nom_hz"],
-        spec=spec, R=state["R_ema"],
+    cov_alpha = thr["cov_alpha"]
+    R_ema = state.get("R_ema")
+    R_ema = R_mf.copy() if R_ema is None else (
+        cov_alpha * R_ema + (1.0 - cov_alpha) * R_mf
     )
+    state["R_ema"] = R_ema
+
+    if dbg and dbg.enabled:
+        dbg.save("R_mf", R_mf)
+        dbg.save("R_ema", R_ema)
+
+    algo_u = algo.upper()
+    if algo_u == "CAPON":
+        spec = doa_capon_uca_2d(X_cal, uca, R_in=R_ema, decorr="none")
+    elif algo_u == "BARTLETT":
+        spec = doa_bartlett_uca_2d(X_cal, uca, R_in=R_ema)
+    else:
+        spec = doa_music_uca_2d(X_cal, uca, R_in=R_ema)
+
+    az_raw, el_raw, papr = find_peak_uca_2d(spec, uca)
+    if papr < thr["papr_min_db"]:
+        return None
+
+    az_alpha = thr["az_ema_alpha"]
+    el_alpha = thr["el_ema_alpha"]
+    az_ema = state.get("az_ema")
+    el_ema = state.get("el_ema")
+    if az_ema is None:
+        az_ema, el_ema = az_raw, el_raw
+    else:
+        d_az = ((az_raw - az_ema + 180.0) % 360.0) - 180.0
+        az_ema = (az_ema + az_alpha * d_az) % 360.0
+        el_ema += el_alpha * (el_raw - el_ema)
+    state["az_ema"] = az_ema
+    state["el_ema"] = el_ema
+    state["n"] = state.get("n", 0) + 1
+
+    result = {
+        "n": state["n"],
+        "burst_idx": burst_idx,
+        "az": round(az_ema, 1),
+        "el": round(el_ema, 1),
+        "az_raw": round(az_raw, 1),
+        "el_raw": round(el_raw, 1),
+        "snr_db": round(snr_db, 1),
+        "papr_db": round(float(papr), 1),
+        "cfo_hz": round(tone_hz - profile["tone_nom_hz"], 0),
+        "tone_hz": round(tone_hz, 1),
+        "algo": algo_u,
+    }
+    if dbg and dbg.enabled:
+        dbg.save("spec2d", spec)
+        dbg.save("doa_result", result)
+    if spec_out is not None:
+        spec_out.append(np.asarray(spec, dtype=np.float32))
+    return result
 
 
-def parse_args():
-    p = argparse.ArgumentParser(
-        description="Offline Iridium burst DoA from captured data")
-    p.add_argument("input", nargs="?", help="Input .npz file")
-    p.add_argument("--files", nargs=5, metavar="CF32",
-                   help="5 separate .cf32 channel files")
-    p.add_argument("--freq", type=float, default=1626.27e6,
-                   help="Center frequency [Hz]")
-    p.add_argument("--fs", type=float, default=1_024_000.0,
-                   help="Effective sample rate [Hz]")
-    p.add_argument("--n-ant", type=int, default=5)
-    p.add_argument("--radius", type=float, default=0.4253)
-    p.add_argument("--ant0-offset", type=float, default=0.0)
-    p.add_argument("--ccw", action="store_true")
-    p.add_argument("--algo", type=str, default="MUSIC",
-                   choices=["MUSIC", "CAPON", "BARTLETT", "PHASE-FIT"])
-    p.add_argument("--mode", type=str, default="indoor",
-                   choices=["indoor", "outdoor", "indoor_tx"])
-    p.add_argument("--cpi-size", type=int, default=131072,
-                   help="Frame size to process [samples]")
-    p.add_argument("--n-frames", type=int, default=0,
-                   help="Max frames to process (0=all)")
-    p.add_argument("--n-az", type=int, default=360)
-    p.add_argument("--n-el", type=int, default=86)
-    p.add_argument("--el-min", type=float, default=5.0)
-    p.add_argument("--el-max", type=float, default=90.0)
-    p.add_argument("--phase-offs", type=str,
-                   default="0.0,54.95,137.24,133.58,48.31")
-    p.add_argument("--pre-samples", type=int, default=2621)
-    p.add_argument("--bpf-guard", type=int, default=128)
-    p.add_argument("--window-samples", type=int, default=3000)
-    p.add_argument("--threshold", type=float, default=3.0)
-    p.add_argument("--snr-min", type=float, default=-3.0)
-    p.add_argument("--papr-min", type=float, default=3.0)
-    p.add_argument("--cov-alpha", type=float, default=0.93)
-    p.add_argument("--az-alpha", type=float, default=0.88)
-    p.add_argument("--el-alpha", type=float, default=0.65)
-    p.add_argument("--tone-nom", type=float, default=None)
-    p.add_argument("--scan-bw", type=float, default=None)
-    p.add_argument("--bpf-bw", type=float, default=None)
-    p.add_argument("--gui", action="store_true", help="Show matplotlib display")
-    p.add_argument("--save-spectrum", type=str, default=None,
-                   help="Save DOA spectra to .npz")
-    p.add_argument("--verbose", action="store_true")
-    return p.parse_args()
+def _save_doa_music(path: str, specs: list[np.ndarray], results: list[dict], cfg: dict) -> None:
+    """Write Kraken-style doa_music.npz from offline processing."""
+    alg = cfg["algorithm"]
+    hw = cfg["hardware"]
+    az_grid = np.linspace(0.0, 360.0, alg["n_az"], endpoint=False, dtype=np.float32)
+    el_grid = np.linspace(5.0, 90.0, alg["n_el"], dtype=np.float32)
+    spec2d = np.stack(specs, axis=0)
+    doa_az = np.max(spec2d, axis=1).astype(np.float32)
+    np.savez_compressed(
+        path,
+        spec2d=spec2d,
+        doa_az=doa_az,
+        last_spec2d=spec2d[-1],
+        last_doa_az=doa_az[-1],
+        az_deg=np.array([r["az"] for r in results], dtype=np.float32),
+        el_deg=np.array([r["el"] for r in results], dtype=np.float32),
+        papr_db=np.array([r["papr_db"] for r in results], dtype=np.float32),
+        snr_db=np.array([r["snr_db"] for r in results], dtype=np.float32),
+        az_grid_deg=az_grid,
+        el_grid_deg=el_grid,
+        freq_hz=np.int64(hw["freq_mhz"] * 1e6),
+    )
+    print(f"Saved {len(specs)} DOA spectra → {path}")
 
 
-def main():
+def process_burst_npz(path: str, cfg: dict, args: argparse.Namespace) -> list[dict]:
+    data = np.load(path, allow_pickle=True)
+    if "X" in data:
+        X_all = data["X"]
+    elif "bursts" in data:
+        X_all = data["bursts"]
+    else:
+        raise ValueError(f"{path}: expected key 'X' or 'bursts', got {list(data.keys())}")
+
+    X_all = np.asarray(X_all)
+    if X_all.ndim != 3:
+        raise ValueError(f"Expected (N, n_ant, N_samp), got shape {X_all.shape}")
+
+    n_total = X_all.shape[0]
+    n_proc = n_total if args.max_bursts <= 0 else min(n_total, args.max_bursts)
+    print(f"Loaded {n_total} burst windows from {os.path.basename(path)} "
+          f"(processing {n_proc})")
+
+    alg = cfg["algorithm"]
+    profile = _PROFILES[alg["mode"]]
+    uca = _build_uca(cfg)
+    phase_offs = _phase_offsets(cfg, args)
+    thr = cfg["thresholds"]
+    if args.snr_min is not None:
+        thr = {**thr, "snr_min_db": args.snr_min}
+    if args.papr_min is not None:
+        thr = {**thr, "papr_min_db": args.papr_min}
+    debug_dir = args.debug_dir or cfg["output"].get("debug_dir", "")
+
+    state: dict = {}
+    results: list[dict] = []
+    specs: list[np.ndarray] = []
+    spec_out = specs if args.save_doa else None
+    t0 = time.time()
+
+    for i in range(n_proc):
+        Xw = np.asarray(X_all[i], dtype=np.complex64)
+        if Xw.shape[0] < cfg["array"]["n_ant"]:
+            continue
+        Xw = Xw[:cfg["array"]["n_ant"], :]
+
+        rec = _run_doa_on_window(
+            Xw, cfg=cfg, profile=profile, uca=uca, phase_offs=phase_offs,
+            algo=alg["algo"], thr=thr, state=state, burst_idx=i + 1,
+            debug_dir=debug_dir, spec_out=spec_out,
+        )
+        if rec is None:
+            continue
+        results.append(rec)
+        line = json.dumps(rec)
+        print(line, flush=True)
+        if args.out:
+            with open(args.out, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        if args.verbose and len(results) % 10 == 0:
+            print(f"  … {len(results)} estimates in {time.time()-t0:.1f}s", file=sys.stderr)
+
+    if args.save_doa and specs:
+        _save_doa_music(args.save_doa, specs, results, cfg)
+    return results
+
+
+def _process_cpi_frames(
+    frames: list[np.ndarray],
+    *,
+    cfg: dict,
+    args: argparse.Namespace,
+    label: str,
+) -> list[dict]:
+    """Run burst detection + DOA on a list of CPI frames (n_ant, cpi_size)."""
+    alg = cfg["algorithm"]
+    profile = _PROFILES[alg["mode"]]
+    uca = _build_uca(cfg)
+    phase_offs = _phase_offsets(cfg, args)
+    thr = cfg["thresholds"]
+    if args.snr_min is not None:
+        thr = {**thr, "snr_min_db": args.snr_min}
+    if args.papr_min is not None:
+        thr = {**thr, "papr_min_db": args.papr_min}
+    debug_dir = args.debug_dir or cfg["output"].get("debug_dir", "")
+
+    state: dict = {}
+    results: list[dict] = []
+    specs: list[np.ndarray] = []
+    spec_out = specs if args.save_doa else None
+    window_samples = cfg["hardware"]["window_samples"]
+
+    print(f"Processing {len(frames)} CPI frames from {label}")
+
+    for fi, X in enumerate(frames):
+        starts = detect_energy_bursts(
+            X[0], FS, threshold_factor=profile["energy_threshold"]
+        )
+        if not starts:
+            continue
+        b0 = starts[0]
+        bend = min(b0 + window_samples, X.shape[1])
+        X_win = X[:, b0:bend]
+        rec = _run_doa_on_window(
+            X_win, cfg=cfg, profile=profile, uca=uca, phase_offs=phase_offs,
+            algo=alg["algo"], thr=thr, state=state, burst_idx=fi + 1,
+            debug_dir=debug_dir, spec_out=spec_out,
+        )
+        if rec is None:
+            continue
+        rec["frame"] = fi
+        results.append(rec)
+        print(json.dumps(rec), flush=True)
+
+    if args.save_doa and specs:
+        _save_doa_music(args.save_doa, specs, results, cfg)
+    return results
+
+
+def process_raw_iq_npz(path: str, cfg: dict, args: argparse.Namespace) -> list[dict]:
+    data = np.load(path, allow_pickle=True)
+    if "X" not in data:
+        raise ValueError(f"{path}: expected key 'X' with shape (N, n_ant, cpi_size)")
+
+    X_all = np.asarray(data["X"], dtype=np.complex64)
+    if X_all.ndim != 3:
+        raise ValueError(f"Expected (N, n_ant, cpi_size), got {X_all.shape}")
+
+    n_ant = cfg["array"]["n_ant"]
+    cpi_size = int(data["cpi_size"]) if "cpi_size" in data else X_all.shape[2]
+    n_total = X_all.shape[0]
+    n_proc = n_total if args.max_bursts <= 0 else min(n_total, args.max_bursts)
+
+    if "freq_hz" in data:
+        cfg = {**cfg, "hardware": {**cfg["hardware"],
+                                   "freq_mhz": float(data["freq_hz"]) / 1e6}}
+
+    print(f"Loaded {n_total} raw CPI frames, cpi_size={cpi_size} "
+          f"(processing {n_proc})")
+
+    frames = [X_all[i, :n_ant, :cpi_size] for i in range(n_proc)]
+    return _process_cpi_frames(frames, cfg=cfg, args=args, label=os.path.basename(path))
+
+
+def process_multichan_npz(path: str, cfg: dict, args: argparse.Namespace) -> list[dict]:
+    data = np.load(path, allow_pickle=True)
+    n_ant = cfg["array"]["n_ant"]
+    channels = []
+    for i in range(n_ant):
+        for key in (f"ch{i}", f"ant{i}"):
+            if key in data:
+                channels.append(np.asarray(data[key]).flatten().astype(np.complex64))
+                break
+        else:
+            raise ValueError(f"Missing channel {i} in {path}")
+    min_len = min(len(c) for c in channels)
+    X_full = np.stack([c[:min_len] for c in channels])
+    cpi = cfg["hardware"].get("cpi_size", 131072)
+    n_frames = min_len // cpi
+    if args.max_bursts > 0:
+        n_frames = min(n_frames, args.max_bursts)
+
+    print(f"Loaded {n_ant}-ch recording, {min_len/cpi:.0f} CPI frames "
+          f"(processing {n_frames})")
+
+    frames = [X_full[:, fi * cpi:(fi + 1) * cpi] for fi in range(n_frames)]
+    return _process_cpi_frames(frames, cfg=cfg, args=args, label=os.path.basename(path))
+
+
+def process_single_channel(path: str, cfg: dict, args: argparse.Namespace) -> None:
+    from hardware.file_iq_source import FileIQSource
+
+    profile = _PROFILES[cfg["algorithm"]["mode"]]
+    src = FileIQSource(path, sample_rate=FS, center_freq_hz=cfg["hardware"]["freq_mhz"] * 1e6)
+    src.start()
+
+    print(f"\nSingle-channel file: DOA skipped (need {cfg['array']['n_ant']} antennas)")
+    print(f"Running burst + tone detection on {os.path.basename(path)} …\n")
+
+    n_frames = n_bursts = 0
+    cfo_list: list[float] = []
+
+    while True:
+        frame = src.get_frame()
+        if frame is None:
+            break
+        n_frames += 1
+        if args.max_bursts > 0 and n_bursts >= args.max_bursts:
+            break
+
+        ch0 = frame[0] if frame.ndim == 2 else frame
+        starts = detect_energy_bursts(ch0, FS, threshold_factor=profile["energy_threshold"])
+        for b0 in starts:
+            bend = min(b0 + cfg["hardware"]["window_samples"], len(ch0))
+            tones = scan_preamble_tones(
+                ch0[b0:bend], FS,
+                nom_tone_hz=profile["tone_nom_hz"],
+                scan_bw_hz=profile["scan_bw_hz"],
+                min_snr_db=profile["min_snr_db"],
+                dc_guard_hz=profile["dc_guard_hz"],
+            )
+            if not tones:
+                continue
+            tone_hz, snr = tones[0]
+            cfo = tone_hz - profile["tone_nom_hz"]
+            cfo_list.append(cfo)
+            n_bursts += 1
+            if args.verbose or n_bursts <= 20:
+                t_s = (src.current_sample - len(ch0) + b0) / FS
+                print(f"  burst {n_bursts:4d}  t={t_s:8.1f}s  "
+                      f"cfo={cfo:+7.0f}Hz  snr={snr:.1f}dB")
+
+    src.stop()
+    print(f"\nSummary: {n_frames} frames, {n_bursts} bursts detected")
+    if cfo_list:
+        cfo_a = np.array(cfo_list)
+        print(f"  CFO range: {cfo_a.min():+.0f} … {cfo_a.max():+.0f} Hz  "
+              f"(median {np.median(cfo_a):+.0f} Hz)")
+
+
+def _resolve_input(path: str) -> tuple[str, str]:
+    """Return (file_path, format_id). Accepts session dirs containing raw_iq.npz."""
+    if os.path.isdir(path):
+        for name in ("raw_iq.npz", "raw_iq_checkpoint.npz"):
+            candidate = os.path.join(path, name)
+            if os.path.isfile(candidate):
+                return candidate, "raw_iq_npz"
+        raise ValueError(f"No raw_iq.npz found in directory {path!r}")
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".npz":
+        data = np.load(path, allow_pickle=True)
+        keys = set(data.keys())
+        if "X" in keys:
+            X = np.asarray(data["X"])
+            if X.ndim == 3 and (X.shape[2] > 8192 or "cpi_size" in keys):
+                return path, "raw_iq_npz"
+            return path, "burst_npz"
+        if "bursts" in keys:
+            return path, "burst_npz"
+        if any(k.startswith("ch") or k.startswith("ant") for k in keys):
+            return path, "multichan_npz"
+        raise ValueError(f"Unknown npz layout: {sorted(keys)}")
+    if ext in (".wav", ".cf32", ".iq", ".raw"):
+        return path, "single_channel"
+    raise ValueError(f"Unsupported file type: {ext}")
+
+
+def main() -> None:
     args = parse_args()
+    cfg = load_config(args.config)
 
-    if not args.input and not args.files:
-        print("Error: provide input .npz file or --files ch0.cf32 ... ch4.cf32")
+    live_ns = argparse.Namespace(
+        config=args.config, gui=False, host=None, freq=None, gain=None,
+        n_ant=None, cal_file=args.cal_file, ant0_offset=None, ccw=False,
+        algo=args.algo, mode=args.mode, out=args.out, debug_dir=args.debug_dir,
+        record=None, no_record_raw=False, record_checkpoint=None,
+        phase_cal=args.phase_cal, verbose=args.verbose,
+    )
+    cfg = _apply_cli(cfg, live_ns)
+    if args.phase_cal:
+        cfg["array"]["use_phase_cal"] = True
+
+    if args.out and os.path.exists(args.out):
+        os.remove(args.out)
+
+    input_path, fmt = _resolve_input(args.input)
+    print(f"Input: {args.input}  format={fmt}  mode={cfg['algorithm']['mode']}  "
+          f"algo={cfg['algorithm']['algo']}")
+
+    if fmt == "burst_npz":
+        results = process_burst_npz(input_path, cfg, args)
+    elif fmt == "raw_iq_npz":
+        results = process_raw_iq_npz(input_path, cfg, args)
+    elif fmt == "multichan_npz":
+        results = process_multichan_npz(input_path, cfg, args)
+    else:
+        process_single_channel(input_path, cfg, args)
+        return
+
+    if not results:
+        print("\nNo DOA estimates produced. Try --mode outdoor or lower thresholds in doa_config.toml",
+              file=sys.stderr)
         sys.exit(1)
 
-    profile = dict(_MODE_PROFILES[args.mode])
-    if args.tone_nom is not None:
-        profile["tone_nom_hz"] = args.tone_nom
-    if args.scan_bw is not None:
-        profile["scan_bw_hz"] = args.scan_bw
-    if args.bpf_bw is not None:
-        profile["bpf_bw_hz"] = args.bpf_bw
-
-    phase_offs = [float(x) for x in args.phase_offs.split(",")]
-
-    cfg = UcaConfig(
-        n_ant=args.n_ant, radius_lambda=args.radius,
-        n_az=args.n_az, n_el=args.n_el,
-        el_min_deg=args.el_min, el_max_deg=args.el_max,
-        num_expected_signals=1,
-        ant0_offset_deg=args.ant0_offset, ant_ccw=args.ccw,
-    )
-
-    print(f"\n{'='*60}")
-    print(f"  Iridium DoA Offline — {args.algo} on {args.n_ant}-element UCA")
-    print(f"  Freq: {args.freq/1e6:.3f} MHz | fs: {args.fs/1e0:.0f} Hz")
-    print(f"  Mode: {args.mode} | CPI: {args.cpi_size} | Window: {args.window_samples}")
-    print(f"  Phase offsets: {phase_offs}")
-    if args.input:
-        print(f"  Input: {args.input}")
-    else:
-        print(f"  Input: {args.files}")
-    print(f"{'='*60}\n")
-
-    if args.input:
-        print(f"Loading {args.input}...")
-        X_full = load_npz(args.input, args.n_ant)
-    else:
-        print(f"Loading {args.files}...")
-        X_full = load_cf32_files(args.files, args.n_ant)
-
-    print(f"  Shape: {X_full.shape} ({X_full.shape[1]} samples, {X_full.shape[1]/args.fs:.2f}s)")
-
-    n_total_frames = X_full.shape[1] // args.cpi_size
-    if args.n_frames > 0:
-        n_total_frames = min(n_total_frames, args.n_frames)
-
-    print(f"  Processing {n_total_frames} frames of {args.cpi_size} samples each\n")
-
-    state = dict(R_ema=None, az_ema=None, el_ema=None, n_bursts=0)
-    results = []
-    spectra = []
-
-    if args.gui:
-        import matplotlib
-        matplotlib.use("TkAgg")
-        import matplotlib.pyplot as plt
-        az_grid = cfg.az_range_deg()
-        el_grid = cfg.el_range_deg()
-        az_hist, el_hist = [], []
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        fig.suptitle(f"Iridium DoA Offline — {args.algo}", fontsize=14)
-
-    for fi in range(n_total_frames):
-        start = fi * args.cpi_size
-        end = start + args.cpi_size
-        X = X_full[:, start:end]
-
-        result = process_frame(
-            X, cfg, phase_offs, profile, args.fs,
-            args.pre_samples, args.bpf_guard, args.window_samples,
-            args.cov_alpha, args.az_alpha, args.el_alpha,
-            args.snr_min, args.papr_min, args.algo, state,
-        )
-
-        if result is None:
-            if args.verbose:
-                print(f"  [{fi:4d}] no burst detected")
-            continue
-
-        n = state["n_bursts"]
-        print(f"[{n:4d}] az={result['az']:6.1f}deg  el={result['el']:5.1f}deg  "
-              f"snr={result['snr']:5.1f}dB  papr={result['papr']:5.1f}dB  "
-              f"tone={result['tone']:.0f}Hz  doppler={result['doppler']:+.0f}Hz")
-
-        results.append(result)
-        if result.get("spec") is not None:
-            spectra.append(result["spec"])
-
-        if args.gui and result.get("spec") is not None:
-            spec = result["spec"]
-            az = result["az"]
-            el = result["el"]
-
-            ax_spec, ax_az, ax_track, ax_snr = axes[0, 0], axes[0, 1], axes[1, 0], axes[1, 1]
-
-            ax_spec.clear()
-            ax_spec.set_title(f"DOA Spectrum — az={az:.1f}° el={el:.1f}°")
-            ax_spec.imshow(spec, aspect="auto", origin="lower",
-                           extent=[az_grid[0], az_grid[-1], el_grid[0], el_grid[-1]],
-                           cmap="hot", vmin=-40, vmax=0)
-            ax_spec.plot(az, el, "g+", markersize=15, markeredgewidth=2)
-            ax_spec.set_xlabel("Azimuth [°]")
-            ax_spec.set_ylabel("Elevation [°]")
-
-            ax_az.clear()
-            el_idx = np.argmin(np.abs(el_grid - el))
-            ax_az.plot(az_grid, spec[el_idx, :], "b-")
-            ax_az.set_xlabel("Azimuth [°]")
-            ax_az.set_ylabel("Spectrum [dB]")
-            ax_az.set_ylim(-40, 0)
-            ax_az.set_title("Azimuth Cut")
-
-            az_hist.append(az)
-            el_hist.append(el)
-            ax_track.clear()
-            ax_track.plot(az_hist, "b-", label="Azimuth")
-            ax_track.plot(el_hist, "r-", label="Elevation")
-            ax_track.legend()
-            ax_track.set_ylabel("Degrees")
-            ax_track.set_title("Tracking History")
-
-            snrs = [r["snr"] for r in results]
-            ax_snr.clear()
-            ax_snr.plot(snrs, "g-")
-            ax_snr.set_xlabel("Burst #")
-            ax_snr.set_ylabel("SNR [dB]")
-            ax_snr.set_title("SNR History")
-
-            plt.tight_layout()
-            plt.pause(0.01)
-
-    if args.gui:
-        plt.show()
-
-    if args.save_spectrum and spectra:
-        np.savez(args.save_spectrum,
-                 spectra=np.stack(spectra),
-                 az=np.array([r["az"] for r in results]),
-                 el=np.array([r["el"] for r in results]),
-                 snr=np.array([r["snr"] for r in results]))
-        print(f"\nSaved {len(spectra)} spectra to {args.save_spectrum}")
-
-    print(f"\nDone. {state['n_bursts']} bursts detected in {n_total_frames} frames.")
+    az = [r["az"] for r in results]
+    el = [r["el"] for r in results]
+    print(f"\nDone: {len(results)} estimates")
+    print(f"  Az median {np.median(az):.1f}°  (std {np.std(az):.1f}°)")
+    print(f"  El median {np.median(el):.1f}°  (std {np.std(el):.1f}°)")
 
 
 if __name__ == "__main__":
