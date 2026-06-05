@@ -90,9 +90,9 @@ class TrackClusterer:
         self,
         *,
         max_gap_s: float = 30.0,
-        max_az_deg: float = 20.0,
-        max_el_deg: float = 12.0,
-        max_cfo_hz: float = 5000.0,
+        max_az_deg: float = 25.0,
+        max_el_deg: float = 15.0,
+        max_cfo_hz: float = 12000.0,
         min_track_len: int = 5,
     ) -> None:
         self.max_gap_s = max_gap_s
@@ -136,9 +136,13 @@ class TrackClusterer:
         t: float,
         cfo_hz: float,
         peaks: np.ndarray,
+        cfo_per_peak: list[float] | None = None,
     ) -> list[int]:
         """
         Assign track_id per peak row. Returns list of track ids (same order as peaks).
+
+        ``cfo_per_peak``: if provided (per-tone architecture), use the per-peak CFO
+        for matching instead of the shared burst CFO.
         """
         self._retire_stale(t)
         track_ids: list[int] = []
@@ -148,25 +152,26 @@ class TrackClusterer:
 
         for pi in range(peaks.shape[0]):
             az, el = float(peaks[pi, 0]), float(peaks[pi, 1])
+            peak_cfo = float(cfo_per_peak[pi]) if cfo_per_peak and pi < len(cfo_per_peak) else cfo_hz
             best_tr: _ActiveTrack | None = None
             best_cost = float("inf")
             for tr in self._active:
-                cost = self._match_cost(tr, az, el, cfo_hz, t)
+                cost = self._match_cost(tr, az, el, peak_cfo, t)
                 if cost is not None and cost < best_cost:
                     best_cost = cost
                     best_tr = tr
             if best_tr is not None:
-                best_tr.append(burst_idx, pi, az, el, cfo_hz, t)
+                best_tr.append(burst_idx, pi, az, el, peak_cfo, t)
                 track_ids.append(best_tr.track_id)
             else:
                 tr = _ActiveTrack(
                     track_id=self._next_id,
                     az_last=az,
                     el_last=el,
-                    cfo_last=cfo_hz,
+                    cfo_last=peak_cfo,
                     t_last=t,
                 )
-                tr.append(burst_idx, pi, az, el, cfo_hz, t)
+                tr.append(burst_idx, pi, az, el, peak_cfo, t)
                 self._active.append(tr)
                 track_ids.append(self._next_id)
                 self._next_id += 1
@@ -219,8 +224,10 @@ def assign_tracks(
     for b in sorted(bursts, key=lambda x: float(x.get("t", 0))):
         burst_idx = int(b["burst_idx"])
         peaks = np.asarray(b["peaks"])
+        cfo_per_peak = b.get("cfo_per_peak") or None
         tids = clusterer.assign_burst(
             burst_idx, float(b["t"]), float(b["cfo_hz"]), peaks,
+            cfo_per_peak=cfo_per_peak,
         )
         row = dict(b)
         row["track_ids"] = tids
