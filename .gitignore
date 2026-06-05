@@ -107,3 +107,4 @@ paper/images/
 *.pdf
 *.json
 *.png
+krakenSDR/data/*

@@ -4,16 +4,25 @@ run_doa_offline.py — Offline Iridium DOA from recorded data.
 
 Supported inputs
 ──────────────────
-  session_.../raw_iq.npz   Raw Kraken CPI recording  X: (N, 5, cpi_size)
-  *_iq.npz                 Pre-segmented burst windows  (N, 5, 2621)
-  *.npz                    Multi-channel CPI (ch0..ch4)
-  *.wav / *.cf32           Single-channel — burst/tone detection only
+  session_.../           Incremental raw/frame_*.npy  (memory-safe streaming)
+  session_.../doa/       Live estimates est_*.npz (--plot-only --from-doa)
+  offline_doa.jsonl      Previous run_doa_offline output (--plot-only)
+  doa_music.npz          Consolidated spectra (--plot-only)
+  *_iq.npz               Pre-segmented burst windows  (N, 5, 2621)
+  *.wav / *.cf32         Single-channel — burst/tone detection only
 
 Usage:
-    python3 run_doa_offline.py data/doa_iridium/session_20260603_120000/raw_iq.npz
-    python3 run_doa_offline.py data/doa_iridium/doa_iridium_20260527_100712_iq.npz
-    python3 run_doa_offline.py recordings/baseband_1626270000Hz_10-35-33_27-05-2026.wav
-    python3 run_doa_offline.py file.npz --mode outdoor --max-bursts 50 --debug-dir /tmp/dbg
+    # Process raw IQ + show plot
+    python3 run_doa_offline.py data/doa_iridium/session_.../ --mode outdoor --gui
+
+    # Plot existing live estimates (no IQ reload)
+    python3 run_doa_offline.py data/doa_iridium/session_.../ --plot-only --from-doa --gui
+
+    # Interactive replay with timeline controls
+    python3 run_doa_offline.py data/doa_iridium/session_.../ --replay --from-doa
+
+    # Save figure without opening window
+    python3 run_doa_offline.py session_.../ --plot-only --from-doa --save-fig session_.../plots
 """
 
 from __future__ import annotations
@@ -75,11 +84,41 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--papr-min", type=float, default=None,
                    help="Minimum PAPR gate [dB] (default: from config)")
     p.add_argument("--max-bursts", type=int, default=0,
-                   help="Limit bursts processed (0 = all)")
+                   help="Limit CPI frames processed (0 = all; incremental sessions)")
+    p.add_argument("--frame-start", type=int, default=0,
+                   help="First frame index for incremental session replay")
+    p.add_argument("--frame-stride", type=int, default=1,
+                   help="Process every Nth CPI frame (1 = all)")
+    p.add_argument("--max-frames", type=int, default=0,
+                   help="Max CPI frames to process after start/stride (0 = all)")
     p.add_argument("--out", metavar="FILE", help="Write results JSONL to file")
     p.add_argument("--debug-dir", metavar="DIR")
     p.add_argument("--save-doa", metavar="FILE",
                    help="Write doa_music.npz (spec2d + Kraken-style doa_az)")
+    p.add_argument("--gui", action="store_true",
+                   help="Show matplotlib summary after processing (or with --plot-only)")
+    p.add_argument("--plot-only", action="store_true",
+                   help="Skip IQ processing — plot existing JSONL or doa/ estimates")
+    p.add_argument("--from-doa", action="store_true",
+                   help="With --plot-only: load session doa/est_*.npz (not offline JSONL)")
+    p.add_argument("--save-fig", metavar="DIR",
+                   help="Save summary PNG to directory")
+    p.add_argument("--plot-stride", type=int, default=1,
+                   help="Plot every Nth estimate (default 1)")
+    p.add_argument("--max-plot", type=int, default=5000,
+                   help="Max estimates to load for plotting (0 = unlimited)")
+    p.add_argument("--replay", action="store_true",
+                   help="Interactive timeline replay (slider, play/pause, speed, reverse)")
+    p.add_argument("--reprocess-multi", action="store_true",
+                   help="Reprocess session raw/ → doa_multi/ + tracks.json")
+    p.add_argument("--k-peaks", type=int, default=3,
+                   help="Max DOA peaks per burst (multi reprocess)")
+    p.add_argument("--track-gap-s", type=float, default=30.0,
+                   help="Max time gap [s] before closing a satellite track")
+    p.add_argument("--min-track-len", type=int, default=5,
+                   help="Min peaks per track (shorter → outlier)")
+    p.add_argument("--save-spec", action="store_true",
+                   help="With --reprocess-multi: store spec2d in burst npz files")
     p.add_argument("--phase-cal", action="store_true",
                    help="Enable hardware phase calibration")
     p.add_argument("--verbose", action="store_true")
@@ -139,6 +178,8 @@ def _run_doa_on_window(
     window_samples = min(hw["window_samples"], X_win.shape[1])
     bpf_guard = hw["bpf_guard"]
     has_cal = any(o != 0.0 for o in phase_offs)
+
+    if X_win.shape[1] < pre_samples + bpf_guard:
         # Pre-segmented _iq.npz windows are often exactly pre_samples long
         if X_win.shape[1] < bpf_guard + 512:
             return None
@@ -334,13 +375,14 @@ def process_burst_npz(path: str, cfg: dict, args: argparse.Namespace) -> list[di
 
 
 def _process_cpi_frames(
-    frames: list[np.ndarray],
+    frame_iter,
     *,
     cfg: dict,
     args: argparse.Namespace,
     label: str,
+    total_hint: int = 0,
 ) -> list[dict]:
-    """Run burst detection + DOA on a list of CPI frames (n_ant, cpi_size)."""
+    """Run burst detection + DOA on CPI frames from an iterator (idx, array)."""
     alg = cfg["algorithm"]
     profile = _PROFILES[alg["mode"]]
     uca = _build_uca(cfg)
@@ -357,10 +399,14 @@ def _process_cpi_frames(
     specs: list[np.ndarray] = []
     spec_out = specs if args.save_doa else None
     window_samples = cfg["hardware"]["window_samples"]
+    t0 = time.time()
+    n_seen = 0
 
-    print(f"Processing {len(frames)} CPI frames from {label}")
+    hint = f" / ~{total_hint}" if total_hint else ""
+    print(f"Processing CPI frames from {label}{hint}")
 
-    for fi, X in enumerate(frames):
+    for fi, X in frame_iter:
+        n_seen += 1
         starts = detect_energy_bursts(
             X[0], FS, threshold_factor=profile["energy_threshold"]
         )
@@ -378,7 +424,19 @@ def _process_cpi_frames(
             continue
         rec["frame"] = fi
         results.append(rec)
-        print(json.dumps(rec), flush=True)
+        if args.out:
+            with open(args.out, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
+        if not args.out:
+            print(json.dumps(rec), flush=True)
+        if args.verbose and len(results) % 50 == 0:
+            elapsed = time.time() - t0
+            print(f"  … {len(results)} DOA estimates from {n_seen} CPI "
+                  f"({elapsed:.0f}s)", file=sys.stderr)
+
+    elapsed = time.time() - t0
+    print(f"Processed {n_seen} CPI in {elapsed:.0f}s → {len(results)} DOA estimates",
+          file=sys.stderr)
 
     if args.save_doa and specs:
         _save_doa_music(args.save_doa, specs, results, cfg)
@@ -407,7 +465,10 @@ def process_raw_iq_npz(path: str, cfg: dict, args: argparse.Namespace) -> list[d
           f"(processing {n_proc})")
 
     frames = [X_all[i, :n_ant, :cpi_size] for i in range(n_proc)]
-    return _process_cpi_frames(frames, cfg=cfg, args=args, label=os.path.basename(path))
+    return _process_cpi_frames(
+        ((i, frames[i]) for i in range(len(frames))),
+        cfg=cfg, args=args, label=os.path.basename(path), total_hint=n_proc,
+    )
 
 
 def process_multichan_npz(path: str, cfg: dict, args: argparse.Namespace) -> list[dict]:
@@ -432,7 +493,10 @@ def process_multichan_npz(path: str, cfg: dict, args: argparse.Namespace) -> lis
           f"(processing {n_frames})")
 
     frames = [X_full[:, fi * cpi:(fi + 1) * cpi] for fi in range(n_frames)]
-    return _process_cpi_frames(frames, cfg=cfg, args=args, label=os.path.basename(path))
+    return _process_cpi_frames(
+        ((fi, frames[fi]) for fi in range(n_frames)),
+        cfg=cfg, args=args, label=os.path.basename(path), total_hint=n_frames,
+    )
 
 
 def process_single_channel(path: str, cfg: dict, args: argparse.Namespace) -> None:
@@ -486,14 +550,53 @@ def process_single_channel(path: str, cfg: dict, args: argparse.Namespace) -> No
               f"(median {np.median(cfo_a):+.0f} Hz)")
 
 
+def process_incremental_session(session_dir: str, cfg: dict, args: argparse.Namespace) -> list[dict]:
+    """Replay CPI frames from session_.../raw/frame_*.npy (memory-safe streaming)."""
+    from apps.doa_iridium_grc.lark.recording import count_session_raw_frames, iter_session_raw_frames
+
+    meta_path = os.path.join(session_dir, "meta.json")
+    if os.path.isfile(meta_path):
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+        cfg = {**cfg, "hardware": {**cfg["hardware"],
+                                   "freq_mhz": float(meta.get("freq_hz", cfg["hardware"]["freq_mhz"] * 1e6)) / 1e6}}
+        if args.mode is None and meta.get("mode"):
+            cfg = {**cfg, "algorithm": {**cfg["algorithm"], "mode": meta["mode"]}}
+        if args.algo is None and meta.get("algo"):
+            cfg = {**cfg, "algorithm": {**cfg["algorithm"], "algo": meta["algo"]}}
+
+    total = count_session_raw_frames(session_dir)
+    start = max(0, args.frame_start)
+    stride = max(1, args.frame_stride)
+    max_frames = args.max_frames if args.max_frames > 0 else (
+        args.max_bursts if args.max_bursts > 0 else 0
+    )
+    if max_frames <= 0:
+        max_frames = max(0, (total - start + stride - 1) // stride)
+
+    print(f"Session: {total} CPI in raw/  start={start} stride={stride} "
+          f"max_frames={max_frames}")
+
+    frame_iter = iter_session_raw_frames(
+        session_dir, start=start, stride=stride, max_frames=max_frames,
+    )
+    return _process_cpi_frames(
+        frame_iter, cfg=cfg, args=args,
+        label=os.path.basename(session_dir), total_hint=max_frames,
+    )
+
+
 def _resolve_input(path: str) -> tuple[str, str]:
-    """Return (file_path, format_id). Accepts session dirs containing raw_iq.npz."""
+    """Return (path, format_id). Accepts session dirs with raw/ or raw_iq.npz."""
     if os.path.isdir(path):
+        raw_dir = os.path.join(path, "raw")
+        if os.path.isdir(raw_dir) and os.path.isfile(os.path.join(raw_dir, "frame_000000.npy")):
+            return path, "incremental_session"
         for name in ("raw_iq.npz", "raw_iq_checkpoint.npz"):
             candidate = os.path.join(path, name)
             if os.path.isfile(candidate):
                 return candidate, "raw_iq_npz"
-        raise ValueError(f"No raw_iq.npz found in directory {path!r}")
+        raise ValueError(f"No raw/ frames or raw_iq.npz found in directory {path!r}")
 
     ext = os.path.splitext(path)[1].lower()
     if ext == ".npz":
@@ -518,6 +621,48 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
 
+    if args.reprocess_multi:
+        from apps.doa_iridium_grc.reprocess_session import reprocess_session
+
+        if not os.path.isdir(args.input):
+            print(f"Not a session directory: {args.input}", file=sys.stderr)
+            sys.exit(1)
+        summary = reprocess_session(args.input, cfg=cfg, args=args)
+        if summary["n_bursts"] == 0:
+            sys.exit(1)
+        return
+
+    if args.replay:
+        from apps.doa_iridium_grc.lark.offline_replay import show_replay
+
+        max_rows = args.max_plot if args.max_plot > 0 else 0
+        show_replay(
+            args.input,
+            stride=max(1, args.plot_stride),
+            max_rows=max_rows,
+            from_doa=args.from_doa or not args.input.endswith(".jsonl"),
+        )
+        return
+
+    if args.plot_only:
+        from apps.doa_iridium_grc.lark.offline_viz import load_results_for_plot, show_results
+
+        max_rows = args.max_plot if args.max_plot > 0 else 0
+        rows, meta, title = load_results_for_plot(
+            args.input,
+            stride=max(1, args.plot_stride),
+            max_rows=max_rows,
+            from_doa=args.from_doa,
+        )
+        print(f"Plotting {len(rows)} estimates from {args.input}")
+        show_results(
+            rows, title=title, meta=meta,
+            save_dir=args.save_fig or "", show=args.gui or bool(args.save_fig),
+        )
+        if not rows:
+            sys.exit(1)
+        return
+
     live_ns = argparse.Namespace(
         config=args.config, gui=False, host=None, freq=None, gain=None,
         n_ant=None, cal_file=args.cal_file, ant0_offset=None, ccw=False,
@@ -538,6 +683,8 @@ def main() -> None:
 
     if fmt == "burst_npz":
         results = process_burst_npz(input_path, cfg, args)
+    elif fmt == "incremental_session":
+        results = process_incremental_session(input_path, cfg, args)
     elif fmt == "raw_iq_npz":
         results = process_raw_iq_npz(input_path, cfg, args)
     elif fmt == "multichan_npz":
@@ -556,6 +703,23 @@ def main() -> None:
     print(f"\nDone: {len(results)} estimates")
     print(f"  Az median {np.median(az):.1f}°  (std {np.std(az):.1f}°)")
     print(f"  El median {np.median(el):.1f}°  (std {np.std(el):.1f}°)")
+
+    if args.gui or args.save_fig:
+        from apps.doa_iridium_grc.lark.offline_viz import show_results
+
+        meta = {}
+        if fmt == "incremental_session" and os.path.isfile(
+            os.path.join(input_path, "meta.json")
+        ):
+            with open(os.path.join(input_path, "meta.json"), encoding="utf-8") as f:
+                meta = json.load(f)
+        show_results(
+            results,
+            title=os.path.basename(input_path.rstrip("/")),
+            meta=meta,
+            save_dir=args.save_fig or "",
+            show=args.gui,
+        )
 
 
 if __name__ == "__main__":

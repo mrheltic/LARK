@@ -63,7 +63,7 @@ cd krakenSDR/src/apps/doa_iridium_grc
 
 ### A. Live with GUI + recording (best for field work)
 
-Records raw Kraken IQ **and** DOA spectra. Press `Ctrl+C` to stop; files are flushed on exit.
+Records raw Kraken IQ **and** DOA spectra. Press `Ctrl+C` **once** and wait for the save to finish.
 
 ```bash
 python3 run_doa.py \
@@ -79,9 +79,27 @@ python3 run_doa.py \
   ```
   krakenSDR/data/doa_iridium/session_20260603_143000/
     meta.json
-    raw_iq.npz      # every CPI: X shape (N, 5, 131072)
-    doa_music.npz   # spec2d, doa_az, az_deg, el_deg, …
+    state.json
+    raw/
+      frame_000000.npy   # written immediately, one CPI each (~5 MB)
+      frame_000001.npy
+    doa/
+      est_000000.npz     # one DOA spectrum per valid burst
+    raw_iq.npz           # optional — build offline with consolidate_session.py
+    doa_music.npz
   ```
+
+Each CPI is saved to `raw/` **as it arrives**. Shutdown is **fast** (seconds): it writes `doa_music.npz` and leaves IQ in `raw/`. To pack IQ into one file later (slow for long sessions):
+
+```bash
+python3 consolidate_session.py ../../../data/doa_iridium/session_20260603_143000/ --raw-only
+```
+
+Replay without consolidating:
+
+```bash
+python3 run_doa_offline.py ../../../data/doa_iridium/session_20260603_143000/
+```
 
 ### B. Headless + recording (no display, e.g. over SSH)
 

@@ -15,7 +15,7 @@ from .burst_processing import (
     scan_preamble_tones,
 )
 from .pipeline_debug import PipelineDebugSaver, STAGE_FILES, save_pipeline_stage
-from .recording import SessionRecorder, default_record_dir
+from .recording import SessionRecorder, consolidate_session, default_record_dir, list_session_raw_frames
 
 __all__ = [
     "detect_energy_bursts",
@@ -26,5 +26,7 @@ __all__ = [
     "STAGE_FILES",
     "save_pipeline_stage",
     "SessionRecorder",
+    "consolidate_session",
     "default_record_dir",
+    "list_session_raw_frames",
 ]

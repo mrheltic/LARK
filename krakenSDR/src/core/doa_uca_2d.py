@@ -37,6 +37,7 @@ __all__ = [
     "UcaConfig",
     "find_peak_uca_2d",
     "find_peaks_uca_2d",
+    "find_top_k_peaks_uca_2d",
     "pick_doa_peak_uca_2d",
     "expected_uca_phase_diffs_deg",
     "phase_residual_deg",
@@ -301,6 +302,81 @@ def find_peaks_uca_2d(
         # ── suppress neighbourhood of the found peak ───────────────────────
         for az_off in range(-az_bins_suppress, az_bins_suppress + 1):
             for el_off in range(-el_bins_suppress, el_bins_suppress + 1):
+                j_az = (i_az + az_off) % n_az
+                j_el = i_el + el_off
+                if 0 <= j_el < n_el:
+                    work[j_el, j_az] = -200.0
+
+    return results
+
+
+def find_top_k_peaks_uca_2d(
+    spec: np.ndarray,
+    cfg: UcaConfig,
+    k: int = 3,
+    *,
+    min_sep_az_deg: float = 15.0,
+    min_sep_el_deg: float = 8.0,
+    min_papr_db: float = 2.0,
+) -> list[tuple[float, float, float, float]]:
+    """
+    Top-K local maxima with NMS and per-peak local PAPR.
+
+    Returns list of (az_deg, el_deg, power_db, papr_local_db), strongest first.
+    ``papr_local_db`` = peak power minus median of a local neighbourhood [dB].
+    """
+    if k <= 0:
+        return []
+
+    n_el, n_az = spec.shape
+    az_step = 360.0 / n_az
+    el_step = (cfg.el_max_deg - cfg.el_min_deg) / max(n_el - 1, 1)
+    az_bins = max(1, int(np.ceil(min_sep_az_deg / az_step)))
+    el_bins = max(1, int(np.ceil(min_sep_el_deg / el_step)))
+
+    work = spec.copy()
+    results: list[tuple[float, float, float, float]] = []
+
+    for _ in range(k):
+        idx = np.unravel_index(np.argmax(work), work.shape)
+        i_el, i_az = int(idx[0]), int(idx[1])
+        y0 = float(work[i_el, i_az])
+        if y0 < -199.0:
+            break
+
+        az_frac = 0.0
+        ym_a = float(work[i_el, (i_az - 1) % n_az])
+        yp_a = float(work[i_el, (i_az + 1) % n_az])
+        denom_az = ym_a - 2.0 * y0 + yp_a
+        if abs(denom_az) > 1e-6:
+            az_frac = float(np.clip(0.5 * (ym_a - yp_a) / denom_az, -0.5, 0.5))
+
+        el_frac = 0.0
+        if 0 < i_el < n_el - 1:
+            ym_e = float(work[i_el - 1, i_az])
+            yp_e = float(work[i_el + 1, i_az])
+            denom_el = ym_e - 2.0 * y0 + yp_e
+            if abs(denom_el) > 1e-6:
+                el_frac = float(np.clip(0.5 * (ym_e - yp_e) / denom_el, -0.5, 0.5))
+
+        az_deg = (cfg.az_range_deg()[i_az] + az_frac * az_step) % 360.0
+        el_deg = float(np.clip(cfg.el_range_deg()[i_el] + el_frac * el_step,
+                               cfg.el_min_deg, cfg.el_max_deg))
+        power_db = float(y0)
+
+        i0_el = max(0, i_el - el_bins)
+        i1_el = min(n_el, i_el + el_bins + 1)
+        local = work[i0_el:i1_el, :]
+        local_med = float(np.median(local))
+        papr_local = power_db - local_med
+        if papr_local < min_papr_db:
+            work[i_el, i_az] = -200.0
+            continue
+
+        results.append((float(az_deg), float(el_deg), power_db, float(papr_local)))
+
+        for az_off in range(-az_bins, az_bins + 1):
+            for el_off in range(-el_bins, el_bins + 1):
                 j_az = (i_az + az_off) % n_az
                 j_el = i_el + el_off
                 if 0 <= j_el < n_el:

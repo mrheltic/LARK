@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
+import zipfile
 
 import numpy as np
 import pytest
 
-from apps.doa_iridium_grc.lark.recording import SessionRecorder
+from apps.doa_iridium_grc.lark.recording import (
+    SessionRecorder,
+    list_session_raw_frames,
+)
 
 
 def test_session_recorder_writes_raw_and_doa(tmp_path):
@@ -24,6 +27,8 @@ def test_session_recorder_writes_raw_and_doa(tmp_path):
         n_el=86,
         record_raw=True,
         checkpoint_s=0,
+        mode="indoor",
+        algo="music",
     )
 
     X = np.zeros((5, 1024), dtype=np.complex64)
@@ -33,11 +38,20 @@ def test_session_recorder_writes_raw_and_doa(tmp_path):
     spec -= spec.max()
     rec.add_doa(spec, 45.0, 30.0, papr_db=5.0, snr_db=8.0, timestamp=1001.0)
 
-    paths = rec.save()
-    assert "raw_iq" in paths
-    assert "doa_music" in paths
+    # Incremental files exist before consolidate
+    assert os.path.isfile(os.path.join(rec.raw_dir, "frame_000000.npy"))
+    assert os.path.isfile(os.path.join(rec.doa_dir, "est_000000.npz"))
 
-    raw = np.load(paths["raw_iq"])
+    paths = rec.save()
+    assert "doa_music" in paths
+    assert "raw_iq" not in paths  # skipped by default (fast exit)
+
+    paths_full = rec.save(consolidate_raw=True)
+    assert "raw_iq" in paths_full
+    assert zipfile.is_zipfile(paths_full["raw_iq"])
+    assert zipfile.is_zipfile(paths["doa_music"])
+
+    raw = np.load(paths_full["raw_iq"])
     assert raw["X"].shape == (1, 5, 1024)
     assert raw["freq_hz"] == 1_626_270_000
 
@@ -50,6 +64,7 @@ def test_session_recorder_writes_raw_and_doa(tmp_path):
     with open(os.path.join(rec.session_dir, "meta.json"), encoding="utf-8") as f:
         meta = json.load(f)
     assert meta["cpi_size"] == 1024
+    assert meta["mode"] == "indoor"
 
 
 def test_session_recorder_doa_only(tmp_path):
@@ -69,3 +84,30 @@ def test_session_recorder_doa_only(tmp_path):
     paths = rec.save()
     assert "raw_iq" not in paths
     assert "doa_music" in paths
+
+
+def test_incremental_frames_survive_without_consolidate(tmp_path):
+    rec = SessionRecorder(
+        out_dir=str(tmp_path),
+        freq_hz=1_626_270_000,
+        fs=1_024_000.0,
+        gain_db=30.0,
+        n_ant=5,
+        cpi_size=512,
+        n_az=360,
+        n_el=86,
+        record_raw=True,
+        checkpoint_s=0,
+    )
+    for i in range(3):
+        rec.add_raw_frame(np.full((5, 512), i, dtype=np.complex64))
+
+    frames = list_session_raw_frames(rec.session_dir)
+    assert len(frames) == 3
+    assert frames[2][0, 0] == pytest.approx(2 + 0j)
+
+    rec.save()
+    with open(os.path.join(rec.session_dir, "state.json"), encoding="utf-8") as f:
+        state = json.load(f)
+    assert state["raw_frames"] == 3
+    assert state["status"] == "complete"

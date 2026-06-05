@@ -53,7 +53,7 @@ if _SRC not in sys.path:
 
 # ── TOML loader (Python ≥3.11 built-in; install 'tomli' for older versions) ──
 try:
-    import tomllib                  # Python 3.11+
+    import tomllib                  # Python 3.11+  
 except ImportError:
     try:
         import tomli as tomllib     # pip install tomli
@@ -109,6 +109,7 @@ _DEFAULTS: dict = {
     "output": {"json_file": "", "debug_dir": ""},
     "recording": {
         "enabled": False, "dir": "", "record_raw": True, "checkpoint_s": 60.0,
+        "consolidate_on_exit": False,
     },
     "ui": {"update_interval_ms": 300, "history_len": 120},
 }
@@ -167,6 +168,8 @@ def parse_args() -> argparse.Namespace:
                    help="With --record: save DOA spectra only, skip raw CPI frames")
     p.add_argument("--record-checkpoint", type=float, metavar="SEC",
                    help="Flush recording checkpoint every N seconds")
+    p.add_argument("--record-consolidate", action="store_true",
+                   help="Build raw_iq.npz on exit (slow for long sessions)")
     p.add_argument("--phase-cal", action="store_true",
                    help="Enable hardware phase calibration (cal_file)")
     p.add_argument("--verbose",   action="store_true")
@@ -196,6 +199,8 @@ def _apply_cli(cfg: dict, args: argparse.Namespace) -> dict:
         rec["record_raw"] = False
     if getattr(args, "record_checkpoint", None) is not None:
         rec["checkpoint_s"] = args.record_checkpoint
+    if getattr(args, "record_consolidate", False):
+        rec["consolidate_on_exit"] = True
     return cfg
 
 
@@ -805,6 +810,9 @@ def _make_recorder(cfg: dict):
         n_el=alg["n_el"],
         record_raw=bool(rec_cfg.get("record_raw", True)),
         checkpoint_s=float(rec_cfg.get("checkpoint_s", 60.0)),
+        consolidate_on_exit=bool(rec_cfg.get("consolidate_on_exit", False)),
+        mode=str(alg.get("mode", "")),
+        algo=str(alg.get("algo", "")),
     )
 
 
@@ -818,8 +826,13 @@ def main():
     out_file = open(out_path, "w") if out_path else None
     recorder = _make_recorder(cfg)
 
-    def _on_exit(*_):
-        state["running"] = False
+    def _on_exit(signum, _frame):
+        if state["running"]:
+            state["running"] = False
+            print("\n[stop] Shutting down — saving recording (please wait, do not press Ctrl+C again)…",
+                  flush=True)
+        else:
+            print("\n[stop] Save in progress — please wait…", flush=True)
 
     signal.signal(signal.SIGINT,  _on_exit)
     signal.signal(signal.SIGTERM, _on_exit)
@@ -828,7 +841,7 @@ def main():
         target=pipeline_thread,
         args=(state, cfg, out_file, args.verbose, recorder),
         name="doa-pipeline",
-        daemon=True,
+        daemon=False,
     )
     t.start()
 
@@ -844,7 +857,10 @@ def main():
         except KeyboardInterrupt:
             state["running"] = False
 
-    t.join(timeout=5.0)
+    t.join()
+    if recorder is not None:
+        recorder.save_done.wait(timeout=600.0)
+
     if out_file:
         out_file.close()
 

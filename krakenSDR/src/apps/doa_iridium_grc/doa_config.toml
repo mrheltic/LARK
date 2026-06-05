@@ -90,7 +90,8 @@ debug_dir = ""             # save intermediate arrays per pipeline stage
 enabled = false             # save raw Kraken IQ + DOA spectra to disk
 dir = ""                   # output base dir (empty = krakenSDR/data/doa_iridium)
 record_raw = true          # save every CPI frame in raw_iq.npz
-checkpoint_s = 60          # flush checkpoint every N seconds (0 = only at exit)
+checkpoint_s = 60          # log progress every N seconds (0 = off)
+consolidate_on_exit = false # false = fast exit; raw/ is canonical (see consolidate_session.py)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
