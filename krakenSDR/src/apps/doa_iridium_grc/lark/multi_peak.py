@@ -73,6 +73,7 @@ def _doa_from_tone(
     algo_u: str,
     snr_min_db: float,
     papr_min_db: float,
+    el_min_deg: float = 10.0,
 ) -> tuple[float, float, float, float, float] | None:
     """
     BPF + MF covariance + DOA for one preamble tone.
@@ -111,6 +112,8 @@ def _doa_from_tone(
     az_deg, el_deg, papr = find_peak_uca_2d(spec, uca)
     if papr < papr_min_db:
         return None
+    if el_deg < el_min_deg:
+        return None
 
     # Return argmax power in dB (peak value of the spectrum = 0 dB by construction)
     return float(az_deg), float(el_deg), 0.0, float(papr), float(snr_db)
@@ -129,6 +132,7 @@ def process_cpi_for_multi(
     k_peaks: int = 3,
     min_sep_az_deg: float = 15.0,
     min_sep_el_deg: float = 8.0,
+    el_min_deg: float = 10.0,
     timestamp: float | None = None,
 ) -> dict[str, Any] | None:
     """
@@ -194,6 +198,7 @@ def process_cpi_for_multi(
             algo_u=algo_u,
             snr_min_db=thr["snr_min_db"],
             papr_min_db=thr["papr_min_db"],
+            el_min_deg=el_min_deg,
         )
         if result is None:
             continue

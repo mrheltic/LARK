@@ -111,6 +111,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Interactive timeline replay (slider, play/pause, speed, reverse)")
     p.add_argument("--reprocess-multi", action="store_true",
                    help="Reprocess session raw/ → doa_multi/ + tracks.json")
+    p.add_argument("--compare", action="store_true",
+                   help="Static comparison of MUSIC/Capon/Bartlett reprocess outputs")
+    p.add_argument("--out-subdir", metavar="NAME",
+                   help="Output subdir for --reprocess-multi (default: doa_multi or doa_multi_<algo>)")
+    p.add_argument("--el-min", type=float, default=10.0,
+                   help="Minimum elevation [°] for --reprocess-multi (filters horizon noise)")
     p.add_argument("--k-peaks", type=int, default=3,
                    help="Max DOA peaks per burst (multi reprocess)")
     p.add_argument("--track-gap-s", type=float, default=30.0,
@@ -119,6 +125,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Min peaks per track (shorter → outlier)")
     p.add_argument("--save-spec", action="store_true",
                    help="With --reprocess-multi: store spec2d in burst npz files")
+    p.add_argument("--max-az-deg", type=float, default=25.0,
+                   help="Max azimuth separation [°] for track association")
+    p.add_argument("--max-el-deg", type=float, default=15.0,
+                   help="Max elevation separation [°] for track association")
+    p.add_argument("--max-cfo-hz", type=float, default=12000.0,
+                   help="Max CFO separation [Hz] for track association")
+    p.add_argument("--recluster-only", action="store_true",
+                   help="Re-run clustering on existing JSONL without reprocessing IQ")
+    p.add_argument("--no-tracks", action="store_true",
+                   help="Disable track coloring — show all peaks with flat color")
     p.add_argument("--phase-cal", action="store_true",
                    help="Enable hardware phase calibration")
     p.add_argument("--verbose", action="store_true")
@@ -621,15 +637,31 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
 
-    if args.reprocess_multi:
+    if args.recluster_only or args.reprocess_multi:
         from apps.doa_iridium_grc.reprocess_session import reprocess_session
 
         if not os.path.isdir(args.input):
             print(f"Not a session directory: {args.input}", file=sys.stderr)
             sys.exit(1)
         summary = reprocess_session(args.input, cfg=cfg, args=args)
+        if summary.get("recluster_only"):
+            return
         if summary["n_bursts"] == 0:
             sys.exit(1)
+        return
+
+    if args.compare:
+        from apps.doa_iridium_grc.lark.algo_compare import show_algo_comparison
+
+        if not os.path.isdir(args.input):
+            print(f"Not a session directory: {args.input}", file=sys.stderr)
+            sys.exit(1)
+        show_algo_comparison(
+            args.input,
+            save_dir=args.save_fig or "",
+            show=args.gui or not bool(args.save_fig),
+            no_tracks=getattr(args, "no_tracks", False),
+        )
         return
 
     if args.replay:
@@ -641,6 +673,9 @@ def main() -> None:
             stride=max(1, args.plot_stride),
             max_rows=max_rows,
             from_doa=args.from_doa or not args.input.endswith(".jsonl"),
+            algo=args.algo,
+            out_subdir=getattr(args, "out_subdir", None),
+            no_tracks=getattr(args, "no_tracks", False),
         )
         return
 

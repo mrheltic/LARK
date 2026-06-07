@@ -212,6 +212,9 @@ def assign_tracks(
     *,
     max_gap_s: float = 30.0,
     min_track_len: int = 5,
+    max_az_deg: float = 25.0,
+    max_el_deg: float = 15.0,
+    max_cfo_hz: float = 12000.0,
 ) -> tuple[list[dict], list[dict]]:
     """
     Cluster burst records (each with peaks array and t, cfo_hz, burst_idx).
@@ -219,7 +222,10 @@ def assign_tracks(
     Returns (tracks_json, bursts_with_track_ids) where each burst gets
     ``track_ids`` list parallel to peaks rows.
     """
-    clusterer = TrackClusterer(max_gap_s=max_gap_s, min_track_len=min_track_len)
+    clusterer = TrackClusterer(
+        max_gap_s=max_gap_s, min_track_len=min_track_len,
+        max_az_deg=max_az_deg, max_el_deg=max_el_deg, max_cfo_hz=max_cfo_hz,
+    )
     out_bursts: list[dict] = []
     for b in sorted(bursts, key=lambda x: float(x.get("t", 0))):
         burst_idx = int(b["burst_idx"])
@@ -264,6 +270,9 @@ def cluster_from_jsonl(
     *,
     max_gap_s: float = 30.0,
     min_track_len: int = 5,
+    max_az_deg: float = 25.0,
+    max_el_deg: float = 15.0,
+    max_cfo_hz: float = 12000.0,
     meta: dict | None = None,
 ) -> list[dict]:
     """Load doa_multi.jsonl, assign tracks, write tracks.json, update jsonl rows."""
@@ -276,6 +285,7 @@ def cluster_from_jsonl(
 
     tracks, annotated = assign_tracks(
         bursts, max_gap_s=max_gap_s, min_track_len=min_track_len,
+        max_az_deg=max_az_deg, max_el_deg=max_el_deg, max_cfo_hz=max_cfo_hz,
     )
     save_tracks_json(out_tracks_path, tracks, meta=meta)
 
