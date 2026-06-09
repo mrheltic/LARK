@@ -28,12 +28,6 @@ from .covariance import (           # noqa: F401
     apply_decorrelation,
     CovarianceAccumulator,
 )
-from .signal_quality import (       # noqa: F401
-    eigenvalue_spread_db,
-    snr_from_covariance,
-    coherence_matrix,
-)
-from .doa_estimators import compute_papr as _compute_papr  # noqa: F401
 
 
 def papr_db(spectrum_db: np.ndarray) -> float:
@@ -41,9 +35,8 @@ def papr_db(spectrum_db: np.ndarray) -> float:
     Peak-to-Average Power Ratio of the DoA spectrum [dB].
     High PAPR → sharp MUSIC peak → reliable estimate.
     Rule of thumb: PAPR > 6 dB acceptable, > 12 dB good.
-    Delegates to doa_estimators.compute_papr.
     """
-    return _compute_papr(spectrum_db)
+    return float(np.max(spectrum_db) - np.mean(spectrum_db))
 
 
 # =============================================================================
@@ -619,4 +612,23 @@ def condition_number(R: np.ndarray) -> float:
     return float(ev[-1] / (ev[0] + 1e-20))
 
 
+def snr_from_covariance(R: np.ndarray, n_signal: int = 1) -> float:
+    """Estimate SNR [dB] from covariance eigenvalues."""
+    ev = np.sort(np.abs(np.linalg.eigvalsh(R)))
+    if n_signal >= len(ev):
+        return 0.0
+    Ps = np.mean(ev[-n_signal:])
+    Pn = np.mean(ev[:-n_signal]) if n_signal < len(ev) else Ps
+    return float(10.0 * np.log10(max(Ps / max(Pn, 1e-30), 1e-30)))
 
+
+def eigenvalue_spread_db(R: np.ndarray) -> float:
+    """Dominant eigenvalue dominance [dB] = λ_max / mean(λ_noise)."""
+    ev = np.sort(np.abs(np.linalg.eigvalsh(R)))
+    return float(10.0 * np.log10(max(ev[-1] / (np.mean(ev[:-1]) + 1e-30), 1e-30)))
+
+
+def coherence_matrix(R: np.ndarray) -> np.ndarray:
+    """Normalised coherence matrix from covariance R."""
+    diag = np.sqrt(np.abs(np.diag(R)))
+    return R / np.outer(diag, diag + 1e-30)

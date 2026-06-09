@@ -21,7 +21,7 @@ if _SRC not in sys.path:
 import numpy as np
 import pytest
 
-from apps.doa_iridium_grc.lark.burst_processing import (
+from core.burst_processing import (
     detect_energy_bursts,
     scan_preamble_tones,
     apply_bpf_and_normalize,

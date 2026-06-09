@@ -1227,39 +1227,10 @@ def doa_root_music_uca_2d(
         (spectrum, exec_time_ms)
     """
     import time
-    from .doa_advanced_uca import root_music_uca
-    
-    start_time = time.perf_counter()
-    
-    if n_sources is None:
-        n_sources = _estimate_signal_count_mdl(R, n_snapshots=100, max_signals=config.n_ant-1)
-    
-    azimuth_est, elevation_est = root_music_uca(
-        R, n_sources, config.radius_lambda, config.n_ant
+    raise NotImplementedError(
+        "doa_root_music_uca_2d requires doa_advanced_uca (removed). "
+        "Use doa_music_uca_2d or doa_capon_uca_2d instead."
     )
-    
-    # Create a simplified spectrum based on the estimated angles
-    # This is a placeholder - in practice, you'd want to create a proper 2D spectrum
-    n_az = config.n_az
-    n_el = config.n_el
-    spectrum = np.full((n_el, n_az), -40.0)  # Floor value
-    
-    # Convert estimated angles to grid indices and place peaks
-    az_grid = np.linspace(0, 360, n_az, endpoint=False)
-    el_grid = np.linspace(config.el_min_deg, 90.0, n_el)
-    
-    for az_rad, el_rad in zip(azimuth_est, elevation_est):
-        az_deg = np.degrees(az_rad) % 360
-        el_deg = np.degrees(el_rad)
-        
-        az_idx = np.argmin(np.abs(az_grid - az_deg))
-        el_idx = np.argmin(np.abs(el_grid - el_deg))
-        
-        # Place a peak at the estimated location
-        spectrum[el_idx, az_idx] = 0.0  # Peak value
-    
-    exec_time = (time.perf_counter() - start_time) * 1000
-    return spectrum, exec_time
 
 
 def doa_unitary_esprit_uca_2d(
@@ -1281,43 +1252,10 @@ def doa_unitary_esprit_uca_2d(
         (spectrum, exec_time_ms)
     """
     import time
-    from .doa_advanced_uca import unitary_esprit_uca
-    
-    start_time = time.perf_counter()
-    
-    # Create dummy data matrix from covariance for ESPRIT
-    # In practice, ESPRIT works better with snapshot data
-    n_snapshots = 100  # Dummy value
-    X_dummy = np.random.randn(n_snapshots, config.n_ant) + 1j*np.random.randn(n_snapshots, config.n_ant)
-    
-    if n_sources is None:
-        n_sources = _estimate_signal_count_mdl(R, n_snapshots=n_snapshots, max_signals=config.n_ant-1)
-    
-    azimuth_est, elevation_est = unitary_esprit_uca(
-        X_dummy, n_sources, config.radius_lambda, config.n_ant
+    raise NotImplementedError(
+        "doa_unitary_esprit_uca_2d requires doa_advanced_uca (removed). "
+        "Use doa_music_uca_2d or doa_capon_uca_2d instead."
     )
-    
-    # Create a simplified spectrum based on the estimated angles
-    n_az = config.n_az
-    n_el = config.n_el
-    spectrum = np.full((n_el, n_az), -40.0)  # Floor value
-    
-    # Convert estimated angles to grid indices and place peaks
-    az_grid = np.linspace(0, 360, n_az, endpoint=False)
-    el_grid = np.linspace(config.el_min_deg, 90.0, n_el)
-    
-    for az_rad, el_rad in zip(azimuth_est, elevation_est):
-        az_deg = np.degrees(az_rad) % 360
-        el_deg = np.degrees(el_rad)
-        
-        az_idx = np.argmin(np.abs(az_grid - az_deg))
-        el_idx = np.argmin(np.abs(el_grid - el_deg))
-        
-        # Place a peak at the estimated location
-        spectrum[el_idx, az_idx] = 0.0  # Peak value
-    
-    exec_time = (time.perf_counter() - start_time) * 1000
-    return spectrum, exec_time
 
 
 def doa_mfba_music_uca_2d(
@@ -1339,54 +1277,10 @@ def doa_mfba_music_uca_2d(
         (spectrum, exec_time_ms)
     """
     import time
-    from .doa_advanced_uca import mfb_covariance_matrix
-    
-    start_time = time.perf_counter()
-    
-    # Apply modified forward-backward averaging to the input covariance
-    # Create a dummy data matrix to apply MFB averaging
-    n_snapshots = R.shape[0] * 10  # Use more snapshots than elements
-    X_dummy = np.random.randn(n_snapshots, config.n_ant) + 1j*np.random.randn(n_snapshots, config.n_ant)
-    
-    # Generate data with the same covariance structure as R
-    U, S, Vh = np.linalg.svd(R)
-    sqrt_S = np.sqrt(np.maximum(S, 0))
-    X_dummy = (U * sqrt_S) @ Vh  # This creates data with covariance close to R
-    
-    # Apply MFB averaging
-    R_mfb = mfb_covariance_matrix(X_dummy)
-    
-    # Now apply standard MUSIC to the MFB-averaged covariance
-    if n_sources is None:
-        n_sources = _estimate_signal_count_mdl(R_mfb, n_snapshots=X_dummy.shape[0], max_signals=config.n_ant-1)
-    
-    # Calculate MUSIC spectrum
-    evals, evecs = np.linalg.eigh(R_mfb)
-    # Sort in descending order
-    idx = np.argsort(evals)[::-1]
-    evecs = evecs[:, idx]
-    
-    # Noise subspace (last M-K columns)
-    noise_subspace = evecs[:, n_sources:]
-    
-    # Create 2D grid for MUSIC
-    az_grid = np.linspace(0, 360, config.n_az, endpoint=False)
-    el_grid = np.linspace(config.el_min_deg, 90.0, config.n_el)
-    
-    spectrum = np.zeros((config.n_el, config.n_az))
-    
-    for i, az_deg in enumerate(az_grid):
-        for j, el_deg in enumerate(el_grid):
-            a = config.steering_vector(np.radians(az_deg), np.radians(el_deg))
-            nominator = a.conj().T @ noise_subspace @ noise_subspace.conj().T @ a
-            spectrum[j, i] = 1.0 / (abs(nominator) + 1e-12)
-    
-    # Normalize to dB with floor
-    spectrum_db = 10.0 * np.log10(spectrum / np.max(spectrum) + 1e-12)
-    spectrum_db = np.clip(spectrum_db, -40.0, 0.0)
-    
-    exec_time = (time.perf_counter() - start_time) * 1000
-    return spectrum_db, exec_time
+    raise NotImplementedError(
+        "doa_mfba_music_uca_2d requires doa_advanced_uca (removed). "
+        "Use doa_music_uca_2d or doa_capon_uca_2d instead."
+    )
 
 
 # =============================================================================
@@ -1424,38 +1318,10 @@ def enhanced_preprocessing(
     Returns:
         Preprocessed data matrix
     """
-    from .doa_advanced_uca import enhanced_preprocessing as enhanced_preproc_impl
-    
-    # Prepare data in the format expected by the implementation
-    X_t = X.T  # Transpose to (n_samples, n_ant) format
-    
-    # Apply enhanced preprocessing
-    filter_params = {
-        'bandpass': True,
-        'notch': True,
-        'decimation_factor': 1
-    }
-    
-    X_processed = enhanced_preproc_impl(
-        X_t, sample_rate, center_freq, filter_params
+    raise NotImplementedError(
+        "enhanced_preprocessing requires doa_advanced_uca (removed). "
+        "Use amplitude_normalize_channels for per-channel normalization instead."
     )
-    
-    # Transpose back to (n_ant, n_samples) format
-    X_processed = X_processed.T
-    
-    # Apply spatial smoothing if requested
-    if apply_spatial_smoothing:
-        X_processed = _apply_spatial_smoothing(X_processed, config)
-    
-    # Apply adaptive filtering if requested
-    if apply_adaptive_filtering:
-        X_processed = _apply_adaptive_filtering(X_processed)
-    
-    # Apply outlier rejection if requested
-    if apply_outlier_rejection:
-        X_processed = _apply_outlier_rejection(X_processed)
-    
-    return X_processed
 
 
 def _apply_adaptive_filtering(X: np.ndarray) -> np.ndarray:

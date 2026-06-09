@@ -9,7 +9,7 @@ import zipfile
 import numpy as np
 import pytest
 
-from apps.doa_iridium_grc.lark.recording import (
+from core.recording import (
     SessionRecorder,
     list_session_raw_frames,
 )

@@ -858,17 +858,17 @@ def test_metrics_consistency() -> dict:
 
     snr = snr_from_covariance(R)
     cond = condition_number(R)
-    ev_db = eigenvalue_spread_db(R)
+    ev_spread = eigenvalue_spread_db(R)
     power = measure_power_db(X)
     coh = coherence_matrix(R)
 
     return {
         "snr_reasonable": 10 < snr < 30,
         "cond_positive": cond > 1,
-        "ev_db_sorted": bool(np.all(np.diff(ev_db) <= 0.01)),  # descending
+        "ev_spread_positive": ev_spread > 0,
         "power_finite": np.isfinite(power),
         "coh_diag_one": bool(np.allclose(np.diag(coh), 1.0, atol=1e-6)),
-        "coh_range_01": bool(np.all(coh >= 0) and np.all(coh <= 1 + 1e-6)),
+        "coh_range_01": bool(np.all(np.abs(coh) >= 0) and np.all(np.abs(coh) <= 1 + 1e-6)),
     }
 
 

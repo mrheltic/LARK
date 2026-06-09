@@ -2,92 +2,6 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Setup: Full install",
-            "type": "shell",
-            "command": "bash setup.sh",
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "group": "build",
-            "presentation": {
-                "reveal": "always",
-                "panel": "new"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "Setup: Heimdall sudoers (run once)",
-            "detail": "Installs NOPASSWD sudoers rules so Heimdall DAQ scripts run as root without a password prompt. Requires sudo password once.",
-            "type": "shell",
-            "command": "bash setup.sh --sudoers",
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "group": "build",
-            "presentation": {
-                "reveal": "always",
-                "panel": "new",
-                "focus": true
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "Heimdall: Start — real hardware (Iridium 1626.270 MHz)",
-            "detail": "Auto-detects firmware path, copies Iridium config, installs sudoers if needed, then runs daq_start_sm.sh as root.",
-            "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} bash ${workspaceFolder}/krakenSDR/src/scripts/start_heimdall.sh",
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "isBackground": true,
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            },
-            "problemMatcher": {
-                "pattern": {
-                    "regexp": "^(.*)$",
-                    "message": 1
-                },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": "Starting Heimdall DAQ",
-                    "endsPattern": "Heimdall ready after"
-                }
-            }
-        },
-        {
-            "label": "KrakenSDR: Iridium — burst detect (single channel)",
-            "detail": "Iridium burst detector on a single antenna. Validates the HW chain before DoA.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/iridium/iridium_detector.py",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Iridium — receiver → parser (pipe)",
-            "detail": "Demodulates Iridium bursts and pipes RAW: lines to iridium-toolkit/iridium-parser.py for full protocol decode.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/iridium/iridium_live.py --freq 1626270000 | python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated"
-            },
-            "problemMatcher": []
-        },
-        {
             "label": "KrakenSDR: Run test suite",
             "detail": "Unit tests for DoA algorithms (MUSIC, ESPRIT, Capon, ML). No hardware needed.",
             "type": "shell",
@@ -102,6 +16,37 @@
             "presentation": {
                 "reveal": "always",
                 "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "KrakenSDR: Iridium DoA — live runner (1626.270 MHz)",
+            "detail": "Live burst-gated 2D DoA on Iridium band. Reads doa_config.toml.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_iridium/run_doa.py --gui",
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "KrakenSDR: Iridium DoA — offline replay",
+            "detail": "Replay a recorded session with interactive skyplot + Az/El/CFO/PAPR time-series.",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_iridium/run_doa_offline.py ${input:sessionDir} --replay --from-doa",
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
             },
             "problemMatcher": []
         },
@@ -121,39 +66,8 @@
             "problemMatcher": []
         },
         {
-            "label": "iridium-toolkit: Parse .bits file",
-            "detail": "Parses a RAW: lines file with iridium-parser.py from external/iridium-toolkit/.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p ${input:bitsFile}",
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Calibrate HW phase offsets — TX from North 0° (1626 MHz)",
-            "detail": "UCA hardware calibration: place antenna 0 facing geographic north, place the LibreSDR TX to the north (az=0°) at 1-3 m. Start 'LibreSDR: Indoor 1626 MHz — TX IRA burst' first. Collects ~120 s of bursts, computes per-channel phase offsets and writes them to config.py. Restart the DoA runner after.",
-            "type": "shell",
-            "command": "${workspaceFolder}/.venv/bin/python3 apps/doa_iridium/iridium_burst_doa_runner.py --freq 1626.270 --max-sats 1 --calibrate 0.0 --no-plot --no-rec",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            },
-            "problemMatcher": []
-        },
-        {
             "label": "LibreSDR: Indoor 1626 MHz — TX IRA burst (lab DoA)",
-            "detail": "Simulates an Iridium NEXT satellite indoors: full LEO pass with Doppler −28→+28 kHz, 45° elevation, 90 s cycle. Gain −50 dB gives ~20 dB SNR at 1-3 m. Increase to −40 dB if bursts are not detected. Stop with Ctrl+C.",
+            "detail": "Simulates an Iridium NEXT satellite indoors: full LEO pass with Doppler −28→+28 kHz, 45° elevation, 90 s cycle. Gain −50 dB gives ~20 dB SNR at 1-3 m. Stop with Ctrl+C.",
             "type": "shell",
             "command": "${workspaceFolder}/.venv/bin/python3 tx/indoor_1626.py --mode pass --gain -50 --elev 45 --dur 90 --cyclic",
             "options": {
@@ -176,133 +90,17 @@
             }
         },
         {
-            "label": "KrakenSDR: Iridium Burst DoA Runner — 1626.270 MHz (headless)",
-            "detail": "DoA on IRA bursts at 1626.270 MHz, no GUI. Waits for Heimdall, reads parameters from config.py and the selected scenario. Prints [DIAG] every 10 s.",
+            "label": "iridium-toolkit: Parse .bits file",
+            "detail": "Parses a RAW: lines file with iridium-parser.py from external/iridium-toolkit/.",
             "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/iridium_burst_doa_runner.py --no-plot --scenario ${input:iridiumScenario}",
+            "command": "${workspaceFolder}/.venv/bin/python3 ${workspaceFolder}/external/iridium-toolkit/iridium-parser.py -p ${input:bitsFile}",
             "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": {
-                "kind": "test",
-                "isDefault": false
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Iridium Burst DoA Runner — 1626.270 MHz (GUI)",
-            "detail": "DoA with interactive GUI (skyplot + 2D MUSIC + phase plot). Reads parameters from config.py and the selected scenario.",
-            "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/iridium_burst_doa_runner.py --scenario ${input:iridiumScenario}",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
+                "cwd": "${workspaceFolder}"
             },
             "group": "test",
             "presentation": {
                 "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Iridium Raw Dataset — 30 min (headless + save IQ + spec2d)",
-            "detail": "30-minute raw collection: saves IQ preamble per burst (_iq.npz) + spec2d + sat_id per estimate (.npz). Use for offline pipeline optimisation (peak-picking, calibration). Ctrl+C to stop early; data is saved automatically.",
-            "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/iridium_burst_doa_runner.py --no-plot --save-iq --max-time 1800 --scenario ${input:iridiumScenario}",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Iridium Dataset — collect 5ch bursts",
-            "detail": "Collects burst windows from all 5 antennas using the same burst detector/tone estimator as iridium_burst_doa_runner.py.",
-            "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/collect_iridium_burst_dataset.py --max-time-s ${input:iridiumCollectSeconds} --max-bursts ${input:iridiumCollectBursts}",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Iridium Dataset — offline DoA processing",
-            "detail": "Runs offline DoA on a collected dataset and outputs per-burst estimates plus error summary when ground truth is available.",
-            "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/process_iridium_burst_dataset_offline.py --input ${input:iridiumDatasetFile} --algo ${input:iridiumOfflineAlgo}",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Iridium DoA — offline visualiser",
-            "detail": "Replay a .npz recording with interactive skyplot + Az/El/CFO/PAPR/Phase time-series and a time slider.",
-            "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} ${workspaceFolder}/.venv/bin/python3 -u apps/doa_iridium/offline_visualiser.py ${input:iridiumDatasetFile}",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "KrakenSDR: Iridium — collect + validate pipeline",
-            "detail": "Sequential pipeline: 1) collect 5ch bursts from Heimdall, 2) run validate_pipeline on the new dataset with known TX az/el. Requires Heimdall + LibreSDR TX running. Saves dataset .npz/.json and validation report PDF.",
-            "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} COLLECT_SECONDS=${input:iridiumCollectSeconds} COLLECT_BURSTS=${input:iridiumCollectBursts} VALIDATE_AZ=${input:validateAz} VALIDATE_EL=${input:validateEl} ALGO=${input:iridiumOfflineAlgo} bash ${workspaceFolder}/krakenSDR/src/scripts/run_collect_and_validate.sh",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            },
-            "problemMatcher": []
-        },
-         {
-            "label": "KrakenSDR: Iridium — collect + validate pipeline (GUI)",
-            "detail": "Same as the previous task but runs the DoA runner with the GUI enabled.",
-            "type": "shell",
-            "command": "LARK_ROOT=${workspaceFolder} COLLECT_SECONDS=${input:iridiumCollectSeconds} COLLECT_BURSTS=${input:iridiumCollectBursts} VALIDATE_AZ=${input:validateAz} VALIDATE_EL=${input:validateEl} ALGO=${input:iridiumOfflineAlgo} bash ${workspaceFolder}/krakenSDR/src/scripts/run_collect_and_validate.sh --gui",
-            "options": {
-                "cwd": "${workspaceFolder}/krakenSDR/src"
-            },
-            "group": "test",
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
+                "panel": "shared"
             },
             "problemMatcher": []
         }
@@ -316,47 +114,9 @@
             "type": "promptString"
         },
         {
-            "id": "iridiumScenario",
-            "description": "Operational scenario (indoor_ira | indoor_pass | outdoor)",
-            "default": "outdoor",
-            "type": "pickString",
-            "options": ["indoor_ira", "indoor_pass", "outdoor"]
-        },
-        {
-            "id": "iridiumCollectSeconds",
-            "description": "Max collection time in seconds (0 = unlimited)",
-            "default": "120",
-            "type": "promptString"
-        },
-        {
-            "id": "iridiumCollectBursts",
-            "description": "Max number of bursts to collect",
-            "default": "1500",
-            "type": "promptString"
-        },
-        {
-            "id": "iridiumDatasetFile",
-            "description": "Path to .npz dataset generated by collect_iridium_burst_dataset.py",
-            "default": "../../data/doa_iridium/doa_iridium_dataset_latest.npz",
-            "type": "promptString"
-        },
-        {
-            "id": "iridiumOfflineAlgo",
-            "description": "Offline DoA algorithm",
-            "default": "music",
-            "type": "pickString",
-            "options": ["music", "capon", "bartlett", "phase-fit"]
-        },
-        {
-            "id": "validateAz",
-            "description": "Known TX azimuth from geographic North [°]",
-            "default": "0",
-            "type": "promptString"
-        },
-        {
-            "id": "validateEl",
-            "description": "Known TX elevation above horizon [°]",
-            "default": "60",
+            "id": "sessionDir",
+            "description": "Path to a recorded session directory (with raw/ frames or doa/ estimates)",
+            "default": "data/doa_iridium/session_latest/",
             "type": "promptString"
         }
     ]

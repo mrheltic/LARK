@@ -2,7 +2,7 @@
 """
 test_burst_energy.py — Unit tests for burst energy detection.
 
-Tests detect_energy_bursts() from apps.doa_iridium_grc.lark.burst_processing.
+Tests detect_energy_bursts() from core.burst_processing.
 
 Run:
     python3 -m pytest krakenSDR/src/tests/test_burst_energy.py -v
@@ -21,7 +21,7 @@ if _SRC not in sys.path:
 import numpy as np
 import pytest
 
-from apps.doa_iridium_grc.lark.burst_processing import detect_energy_bursts
+from core.burst_processing import detect_energy_bursts
 
 FS = 1_024_000.0
 TONE_HZ = 3_125.0

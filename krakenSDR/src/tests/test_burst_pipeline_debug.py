@@ -21,7 +21,7 @@ if _SRC not in sys.path:
 import numpy as np
 import pytest
 
-from apps.doa_iridium_grc.lark.pipeline_debug import (
+from core.pipeline_debug import (
     PipelineDebugSaver,
     STAGE_FILES,
     save_pipeline_stage,
