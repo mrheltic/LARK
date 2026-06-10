@@ -59,7 +59,10 @@ def detect_energy_bursts(
 
     Parameters
     ----------
-    iq               : (N,) complex IQ samples from one antenna channel.
+    iq               : (N,) complex IQ samples from one antenna channel, or
+                       (n_ant, N) for non-coherent multi-channel combining
+                       (block power summed across channels: ~10·log10(n_ant) dB
+                       detection gain on weak bursts).
     fs               : Sample rate [Hz].  Used only to compute default min_gap.
     energy_window    : Block length [samples] for the power estimator.
                        Smaller → finer timing; larger → better SNR estimate.
@@ -72,15 +75,15 @@ def detect_energy_bursts(
     -------
     starts : list[int]  — sample offsets of detected burst onsets (rising edges).
     """
-    n_blocks = len(iq) // energy_window
+    iq2d = np.atleast_2d(iq)            # (n_ant, N); 1-D input → (1, N)
+    n_blocks = iq2d.shape[1] // energy_window
     if n_blocks == 0:
         return []
 
-    pwr = np.array(
-        [np.mean(np.abs(iq[i * energy_window : (i + 1) * energy_window]) ** 2)
-         for i in range(n_blocks)],
-        dtype=np.float64,
-    )
+    # Non-coherent combining: sum block power across channels.
+    blocks = np.abs(iq2d[:, : n_blocks * energy_window]) ** 2
+    pwr = blocks.reshape(iq2d.shape[0], n_blocks, energy_window).mean(axis=2).sum(axis=0)
+    pwr = pwr.astype(np.float64)
     noise_floor = float(np.median(pwr)) + 1e-20
     active = pwr > threshold_factor * noise_floor
     edges  = np.diff(active.astype(np.int8), prepend=0)
@@ -130,7 +133,9 @@ def scan_preamble_tones(
 
     Parameters
     ----------
-    iq           : (N,) complex IQ.  Only the first power-of-2 samples are used.
+    iq           : (N,) complex IQ from one channel, or (n_ant, N) for
+                   non-coherent multi-channel combining (power spectra summed
+                   across channels — a tone faded on one antenna is still found).
     fs           : Sample rate [Hz].
     nom_tone_hz  : Centre of the search band [Hz].
     scan_bw_hz   : Half-bandwidth of the search band [Hz].
@@ -150,13 +155,15 @@ def scan_preamble_tones(
             a power-weighted penalty so that very weak tones are still rejected.
             Falls back to [(nom_tone_hz, 0.0)] when no valid peak is found.
     """
-    N = len(iq)
+    iq2d = np.atleast_2d(iq)            # (n_ant, N); 1-D input → (1, N)
+    N = iq2d.shape[1]
     if N < 128:
         return [(nom_tone_hz, 0.0)]
 
     nfft  = max(128, 1 << int(np.ceil(np.log2(max(N, 2)))))
     win   = np.blackman(N)
-    Spec  = np.abs(np.fft.fft(iq[:N] * win, n=nfft)) ** 2
+    # Non-coherent combining: sum power spectra across channels.
+    Spec  = np.sum(np.abs(np.fft.fft(iq2d * win[None, :], n=nfft, axis=1)) ** 2, axis=0)
     freqs = np.fft.fftfreq(nfft, 1.0 / fs)
 
     Spec  = np.fft.fftshift(Spec)
@@ -174,12 +181,27 @@ def scan_preamble_tones(
 
     results: list[tuple[float, float]] = []
     Sb_work = Sb.copy()
+    df = fs / nfft
     for _ in range(n_peaks):
         idx = int(np.argmax(Sb_work))
         snr = 10.0 * np.log10(max(float(Sb_work[idx]), 1e-30) / noise_floor)
         if snr < min_snr_db:
             break
-        results.append((float(fb[idx]), float(snr)))
+        # Parabolic interpolation on log power for sub-bin tone frequency.
+        # Neighbours come from the original Sb (Sb_work may be zeroed by
+        # earlier peak suppression) and must be contiguous bins — the mask
+        # can have a hole at the DC guard.
+        f_peak = float(fb[idx])
+        if (0 < idx < len(fb) - 1
+                and abs(fb[idx + 1] - f_peak) < 1.5 * df
+                and abs(f_peak - fb[idx - 1]) < 1.5 * df):
+            ym, y0, yp = (np.log(max(float(Sb[i]), 1e-30))
+                          for i in (idx - 1, idx, idx + 1))
+            denom = ym - 2.0 * y0 + yp
+            if denom < 0.0:
+                delta = float(np.clip(0.5 * (ym - yp) / denom, -0.5, 0.5))
+                f_peak += delta * df
+        results.append((f_peak, float(snr)))
         Sb_work[np.abs(fb - fb[idx]) < min_sep_hz] = 0.0
 
     if not results:
@@ -265,7 +287,7 @@ def compute_mf_covariance(
     # pure noise → SINR ≈ 0 dB, strong coherent signal → SINR > 10 dB.
     R_sample = (X_pre @ X_pre.conj().T) / n_pre
     ev_s     = np.sort(np.maximum(np.linalg.eigvalsh(R_sample), 0.0))[::-1]
-    K        = max(1, min(1, R_sample.shape[0] - 1))
+    K        = 1  # single dominant source after per-tone BPF
     sigma2_n = float(np.mean(ev_s[K:])) + 1e-30
     sinr_lin = max(float(ev_s[0]) - sigma2_n, 1e-30) / max(sigma2_n, 1e-30)
     snr_db   = float(10.0 * np.log10(max(sinr_lin, 1e-10)))

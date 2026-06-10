@@ -133,3 +133,62 @@ class TestToneScannerSNR:
         res = scan_preamble_tones(iq, FS, nom_tone_hz=TONE_HZ, scan_bw_hz=3_000)
         assert len(res) >= 1
         assert abs(res[0][0] - (TONE_HZ + 500.0)) < 500.0
+
+class TestSubBinInterpolation:
+    """Parabolic interpolation: tone frequency error well below the FFT bin."""
+
+    def test_offgrid_tone_short_window(self):
+        # 3000-sample window → nfft 4096 → 250 Hz bins; an off-grid tone
+        # should still come back within a fraction of a bin.
+        true_hz = 3_125.0 + 7_387.0   # deliberately off the 250 Hz grid
+        iq = _cw_burst(true_hz, n=3_000, snr_db=20.0)
+        res = scan_preamble_tones(iq, FS, nom_tone_hz=TONE_HZ, scan_bw_hz=45_000)
+        assert len(res) >= 1
+        assert abs(res[0][0] - true_hz) < 25.0
+
+    def test_offgrid_negative_doppler(self):
+        true_hz = 3_125.0 - 21_111.0
+        iq = _cw_burst(true_hz, n=3_000, snr_db=20.0)
+        res = scan_preamble_tones(iq, FS, nom_tone_hz=TONE_HZ, scan_bw_hz=45_000)
+        assert len(res) >= 1
+        assert abs(res[0][0] - true_hz) < 25.0
+
+    def test_two_offgrid_tones(self):
+        f1 = 3_125.0 + 10_087.0
+        f2 = 3_125.0 - 15_213.0
+        iq = _cw_burst(f1, n=3_000, snr_db=20.0) + _cw_burst(f2, n=3_000, snr_db=17.0)
+        res = scan_preamble_tones(iq, FS, nom_tone_hz=TONE_HZ,
+                                  scan_bw_hz=45_000, n_peaks=2)
+        assert len(res) == 2
+        found = sorted(r[0] for r in res)
+        assert abs(found[0] - f2) < 50.0
+        assert abs(found[1] - f1) < 50.0
+
+
+class TestMultiChannelToneScan:
+    """scan_preamble_tones with (n_ant, N) input: power spectra summed."""
+
+    def test_2d_matches_1d(self):
+        iq = _cw_burst(TONE_HZ + 8_000.0, n=3_000, snr_db=20.0)
+        X = np.tile(iq, (5, 1))
+        res1 = scan_preamble_tones(iq, FS, nom_tone_hz=TONE_HZ, scan_bw_hz=45_000)
+        res5 = scan_preamble_tones(X, FS, nom_tone_hz=TONE_HZ, scan_bw_hz=45_000)
+        assert abs(res5[0][0] - res1[0][0]) < 5.0
+
+    def test_tone_faded_on_channel0(self):
+        # Tone present only on channels 1-4: ch0-only scan misses it,
+        # combined scan finds it.
+        rng = np.random.default_rng(21)
+        n = 3_000
+        true_hz = TONE_HZ - 12_000.0
+        X = ((rng.standard_normal((5, n)) + 1j * rng.standard_normal((5, n)))
+             / np.sqrt(2)).astype(np.complex64)
+        t = np.arange(n, dtype=np.float64)
+        amp = 10 ** (10.0 / 20.0)
+        X[1:] += (amp * np.exp(2j * np.pi * true_hz / FS * t)).astype(np.complex64)
+        res0 = scan_preamble_tones(X[0], FS, nom_tone_hz=TONE_HZ,
+                                   scan_bw_hz=45_000, min_snr_db=8.0)
+        res = scan_preamble_tones(X, FS, nom_tone_hz=TONE_HZ,
+                                  scan_bw_hz=45_000, min_snr_db=8.0)
+        assert all(abs(f - true_hz) > 500.0 for f, _ in res0)
+        assert any(abs(f - true_hz) < 100.0 for f, _ in res)

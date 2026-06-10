@@ -41,7 +41,6 @@ import signal
 import sys
 import threading
 import time
-from typing import Optional
 
 import numpy as np
 
@@ -82,7 +81,7 @@ _PROFILES: dict[str, dict] = {
     ),
     "outdoor": dict(
         tone_nom_hz=3125.0, scan_bw_hz=45_000.0, bpf_bw_hz=15_000.0,
-        dc_guard_hz=500.0,  min_snr_db=3.0,       energy_threshold=2.0,
+        dc_guard_hz=500.0,  min_snr_db=4.0,       energy_threshold=2.5,
     ),
 }
 
@@ -90,7 +89,7 @@ _PROFILES: dict[str, dict] = {
 _DEFAULTS: dict = {
     "hardware": {
         "daq_ip": "localhost", "port": 5000, "ctrl_port": 5001,
-        "freq_mhz": 1626.27, "gain_db": 30.0,
+        "freq_mhz": 1626.27, "gain_db": 40.0,
         "cpi_size": 131072, "pre_samples": 2621, "window_samples": 3000, "bpf_guard": 128,
     },
     "array": {
@@ -103,7 +102,7 @@ _DEFAULTS: dict = {
         "n_az": 360, "n_el": 86,
     },
     "thresholds": {
-        "snr_min_db": 3.0, "papr_min_db": 2.0,
+        "snr_min_db": 4.0, "papr_min_db": 2.5,
         "cov_alpha": 0.93, "az_ema_alpha": 0.88, "el_ema_alpha": 0.65,
     },
     "output": {"json_file": "", "debug_dir": ""},
@@ -137,6 +136,12 @@ def load_config(config_path: str) -> dict:
                 cfg = _deep_merge(cfg, tomllib.load(f))
     elif config_path:
         print(f"[config] {config_path!r} not found — using defaults.")
+    # cal_file relative paths resolve against the config file's directory
+    # (the pipeline can be launched from any cwd).
+    cal = cfg.get("array", {}).get("cal_file", "")
+    if cal and not os.path.isabs(cal) and config_path:
+        cfg["array"]["cal_file"] = os.path.join(
+            os.path.dirname(os.path.abspath(config_path)), cal)
     return cfg
 
 
@@ -290,7 +295,7 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
     uca = UcaConfig(
         n_ant=n_ant, radius_lambda=radius_lambda,
         n_az=alg["n_az"], n_el=alg["n_el"],
-        el_min_deg=5.0, el_max_deg=90.0,
+        el_min_deg=alg.get("el_min_deg", 5.0), el_max_deg=alg.get("el_max_deg", 90.0),
         ant0_offset_deg=arr["ant0_offset_deg"],
         ant_ccw=arr["ant_ccw"],
         num_expected_signals=1,
@@ -317,6 +322,7 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
 
     R_ema  = None
     az_ema = el_ema = None
+    last_cfo = None
     frame_idx = 0
 
     print(_banner(cfg))
@@ -342,7 +348,7 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
 
             # ── Stage 1: Energy burst detection ──────────────────────────────
             burst_starts = detect_energy_bursts(
-                X[0], fs,
+                X, fs,
                 threshold_factor=profile["energy_threshold"],
             )
             if dbg and dbg.enabled:
@@ -350,149 +356,160 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
             if not burst_starts:
                 continue
 
-            b0   = burst_starts[0]
-            bend = min(b0 + window_samples, X.shape[1])
-            if bend - b0 < pre_samples + bpf_guard:
-                continue
+            # Process every detected burst in the CPI (a 128 ms CPI can hold
+            # more than one 90 ms Iridium frame).
+            for b0 in burst_starts:
+                bend = min(b0 + window_samples, X.shape[1])
+                if bend - b0 < pre_samples + bpf_guard:
+                    continue
 
-            # ── Stage 2: Preamble tone scan ───────────────────────────────────
-            tones = scan_preamble_tones(
-                X[0, b0:bend], fs,
-                nom_tone_hz=profile["tone_nom_hz"],
-                scan_bw_hz=profile["scan_bw_hz"],
-                min_snr_db=profile["min_snr_db"],
-                dc_guard_hz=profile["dc_guard_hz"],
-            )
-            if not tones:
-                continue
-            tone_hz, tone_snr = tones[0]
-            if dbg and dbg.enabled:
-                dbg.save("tones", [{"tone_hz": float(t), "snr_db": float(s)} for t, s in tones])
-
-            # ── Stage 3: BPF + amplitude normalisation ────────────────────────
-            X_win = X[:, b0:bend]
-            try:
-                X_bpf = apply_bpf_and_normalize(
-                    X_win, window_samples, fs, tone_hz, profile["bpf_bw_hz"]
+                # ── Stage 2: Preamble tone scan ───────────────────────────────────
+                tones = scan_preamble_tones(
+                    X[:, b0:bend], fs,
+                    nom_tone_hz=profile["tone_nom_hz"],
+                    scan_bw_hz=profile["scan_bw_hz"],
+                    min_snr_db=profile["min_snr_db"],
+                    dc_guard_hz=profile["dc_guard_hz"],
                 )
-            except ValueError:
-                continue
+                if not tones:
+                    continue
+                tone_hz, tone_snr = tones[0]
+                if dbg and dbg.enabled:
+                    dbg.save("tones", [{"tone_hz": float(t), "snr_db": float(s)} for t, s in tones])
 
-            if dbg and dbg.enabled:
-                dbg.save("bpf", X_bpf)
+                # ── Stage 3: BPF + amplitude normalisation ────────────────────────
+                X_win = X[:, b0:bend]
+                try:
+                    X_bpf = apply_bpf_and_normalize(
+                        X_win, window_samples, fs, tone_hz, profile["bpf_bw_hz"]
+                    )
+                except ValueError:
+                    continue
 
-            # ── Stage 4: Hardware phase calibration ───────────────────────────
-            X_cal = apply_phase_correction(X_bpf, phase_offs) if has_cal else X_bpf
-            if dbg and dbg.enabled:
-                dbg.save("phase_corrected", X_cal)
+                if dbg and dbg.enabled:
+                    dbg.save("bpf", X_bpf)
 
-            # ── Stage 5: Matched-filter covariance ────────────────────────────
-            try:
-                R_mf, _, snr_db = compute_mf_covariance(
-                    X_cal, tone_hz, fs, pre_samples, bpf_guard
-                )
-            except ValueError:
-                continue
+                # ── Stage 4: Hardware phase calibration ───────────────────────────
+                X_cal = apply_phase_correction(X_bpf, phase_offs) if has_cal else X_bpf
+                if dbg and dbg.enabled:
+                    dbg.save("phase_corrected", X_cal)
 
-            if snr_db < thr["snr_min_db"]:
-                continue
+                # ── Stage 5: Matched-filter covariance ────────────────────────────
+                try:
+                    R_mf, _, snr_db = compute_mf_covariance(
+                        X_cal, tone_hz, fs, pre_samples, bpf_guard
+                    )
+                except ValueError:
+                    continue
 
-            R_ema = R_mf.copy() if R_ema is None else (
-                cov_alpha * R_ema + (1.0 - cov_alpha) * R_mf
-            )
+                if snr_db < thr["snr_min_db"]:
+                    continue
 
-            if dbg and dbg.enabled:
-                dbg.save("R_mf", R_mf)
-                dbg.save("R_ema", R_ema)
+                # Each preamble tone belongs to one satellite: a CFO jump means a
+                # different satellite, so blending its covariance into the EMA
+                # would smear two directions together.  Restart the EMA state.
+                cfo_hz = tone_hz - profile["tone_nom_hz"]
+                if last_cfo is not None and abs(cfo_hz - last_cfo) > 3_000.0:
+                    R_ema = None
+                    az_ema = el_ema = None
+                last_cfo = cfo_hz
 
-            # ── Stage 6: 2D DOA ───────────────────────────────────────────────
-            if algo == "CAPON":
-                spec = doa_capon_uca_2d(X_cal, uca, R_in=R_ema, decorr="none")
-            elif algo == "BARTLETT":
-                spec = doa_bartlett_uca_2d(X_cal, uca, R_in=R_ema)
-            else:
-                spec = doa_music_uca_2d(X_cal, uca, R_in=R_ema)
-
-            az_raw, el_raw, papr = find_peak_uca_2d(spec, uca)
-
-            if papr < thr["papr_min_db"]:
-                continue
-
-            if dbg and dbg.enabled:
-                dbg.save("spec2d", spec)
-
-            # ── Stage 7: EMA smoothing ────────────────────────────────────────
-            if az_ema is None:
-                az_ema, el_ema = az_raw, el_raw
-            else:
-                d_az   = ((az_raw - az_ema + 180.0) % 360.0) - 180.0
-                az_ema = (az_ema + az_alpha * d_az) % 360.0
-                el_ema += el_alpha * (el_raw - el_ema)
-
-            # ── Derived diagnostics for UI panels ────────────────────────────
-            eigvals = np.sort(np.real(np.linalg.eigvalsh(R_ema)))[::-1]
-
-            # Measured inter-antenna phase diffs from cross-correlation column
-            phase_meas = np.degrees(np.angle(R_ema[1:, 0]))
-
-            # Expected phase diffs: UCA steering at current DOA estimate
-            az_r = np.radians(az_ema)
-            el_r = np.radians(el_ema)
-            phase_exp = np.degrees(
-                2.0 * np.pi * radius_lambda * np.cos(el_r) *
-                (np.cos(_phi_k - az_r) - np.cos(-az_r))
-            )
-
-            t_now = time.time()
-
-            # ── Update shared state (UI reads this under lock) ─────────────────
-            with state["lock"]:
-                state["az_raw"]    = az_raw
-                state["el_raw"]    = el_raw
-                state["az_ema"]    = az_ema
-                state["el_ema"]    = el_ema
-                state["az_hist"].append(az_ema)
-                state["el_hist"].append(el_ema)
-                state["t_hist"].append(t_now)
-                state["spec2d"]    = spec
-                state["R_ema"]     = R_ema.copy()
-                state["eigenvalues"] = eigvals
-                state["phase_meas"]  = phase_meas
-                state["phase_exp"]   = phase_exp
-                state["tone_hz"]   = tone_hz
-                state["snr_db"]    = snr_db
-                state["papr_db"]   = float(papr)
-                state["cfo_hz"]    = tone_hz - profile["tone_nom_hz"]
-                state["burst_count"] += 1
-
-            n = state["burst_count"]
-            doa_result = {
-                "t": round(t_now, 3), "n": n, "frame": frame_idx,
-                "az": round(az_ema, 1), "el": round(el_ema, 1),
-                "az_raw": round(az_raw, 1), "el_raw": round(el_raw, 1),
-                "snr_db": round(snr_db, 1), "papr_db": round(float(papr), 1),
-                "cfo_hz": round(tone_hz - profile["tone_nom_hz"], 0),
-                "tone_hz": round(tone_hz, 1),
-                "algo": algo,
-            }
-            if dbg and dbg.enabled:
-                dbg.save("doa_result", doa_result)
-
-            if recorder is not None:
-                recorder.add_doa(
-                    spec, az_ema, el_ema,
-                    papr_db=float(papr), snr_db=snr_db, timestamp=t_now,
+                R_ema = R_mf.copy() if R_ema is None else (
+                    cov_alpha * R_ema + (1.0 - cov_alpha) * R_mf
                 )
 
-            rec = json.dumps(doa_result)
-            print(rec, flush=True)
-            if out_file:
-                print(rec, file=out_file, flush=True)
+                if dbg and dbg.enabled:
+                    dbg.save("R_mf", R_mf)
+                    dbg.save("R_ema", R_ema)
 
-            if verbose:
-                print(f"  [{n:4d}] az={az_ema:6.1f}° el={el_ema:5.1f}° "
-                      f"snr={snr_db:.1f}dB cfo={tone_hz - profile['tone_nom_hz']:+.0f}Hz",
-                      file=sys.stderr)
+                # ── Stage 6: 2D DOA ───────────────────────────────────────────────
+                if algo == "CAPON":
+                    spec = doa_capon_uca_2d(X_cal, uca, R_in=R_ema, decorr="none")
+                elif algo == "BARTLETT":
+                    spec = doa_bartlett_uca_2d(X_cal, uca, R_in=R_ema)
+                else:
+                    spec = doa_music_uca_2d(X_cal, uca, R_in=R_ema)
+
+                az_raw, el_raw, papr = find_peak_uca_2d(spec, uca)
+
+                if papr < thr["papr_min_db"]:
+                    continue
+
+                if dbg and dbg.enabled:
+                    dbg.save("spec2d", spec)
+
+                # ── Stage 7: EMA smoothing ────────────────────────────────────────
+                if az_ema is None:
+                    az_ema, el_ema = az_raw, el_raw
+                else:
+                    d_az   = ((az_raw - az_ema + 180.0) % 360.0) - 180.0
+                    az_ema = (az_ema + az_alpha * d_az) % 360.0
+                    el_ema += el_alpha * (el_raw - el_ema)
+
+                # ── Derived diagnostics for UI panels ────────────────────────────
+                eigvals = np.sort(np.real(np.linalg.eigvalsh(R_ema)))[::-1]
+
+                # Measured inter-antenna phase diffs from cross-correlation column
+                phase_meas = np.degrees(np.angle(R_ema[1:, 0]))
+
+                # Expected phase diffs: UCA steering at current DOA estimate
+                az_r = np.radians(az_ema)
+                el_r = np.radians(el_ema)
+                phase_exp = np.degrees(
+                    2.0 * np.pi * radius_lambda * np.cos(el_r) *
+                    (np.cos(_phi_k - az_r) - np.cos(-az_r))
+                )
+
+                t_now = time.time()
+
+                # ── Update shared state (UI reads this under lock) ─────────────────
+                with state["lock"]:
+                    state["az_raw"]    = az_raw
+                    state["el_raw"]    = el_raw
+                    state["az_ema"]    = az_ema
+                    state["el_ema"]    = el_ema
+                    state["az_hist"].append(az_ema)
+                    state["el_hist"].append(el_ema)
+                    state["t_hist"].append(t_now)
+                    state["spec2d"]    = spec
+                    state["R_ema"]     = R_ema.copy()
+                    state["eigenvalues"] = eigvals
+                    state["phase_meas"]  = phase_meas
+                    state["phase_exp"]   = phase_exp
+                    state["tone_hz"]   = tone_hz
+                    state["snr_db"]    = snr_db
+                    state["papr_db"]   = float(papr)
+                    state["cfo_hz"]    = tone_hz - profile["tone_nom_hz"]
+                    state["burst_count"] += 1
+
+                n = state["burst_count"]
+                doa_result = {
+                    "t": round(t_now, 3), "n": n, "frame": frame_idx,
+                    "az": round(az_ema, 1), "el": round(el_ema, 1),
+                    "az_raw": round(az_raw, 1), "el_raw": round(el_raw, 1),
+                    "snr_db": round(snr_db, 1), "papr_db": round(float(papr), 1),
+                    "cfo_hz": round(tone_hz - profile["tone_nom_hz"], 0),
+                    "tone_hz": round(tone_hz, 1),
+                    "algo": algo,
+                }
+                if dbg and dbg.enabled:
+                    dbg.save("doa_result", doa_result)
+
+                if recorder is not None:
+                    recorder.add_doa(
+                        spec, az_ema, el_ema,
+                        papr_db=float(papr), snr_db=snr_db, timestamp=t_now,
+                    )
+
+                rec = json.dumps(doa_result)
+                print(rec, flush=True)
+                if out_file:
+                    print(rec, file=out_file, flush=True)
+
+                if verbose:
+                    print(f"  [{n:4d}] az={az_ema:6.1f}° el={el_ema:5.1f}° "
+                          f"snr={snr_db:.1f}dB cfo={tone_hz - profile['tone_nom_hz']:+.0f}Hz",
+                          file=sys.stderr)
 
     finally:
         src.stop()

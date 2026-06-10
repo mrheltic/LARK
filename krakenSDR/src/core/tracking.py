@@ -3,6 +3,11 @@ core.tracking
 =============
 Angular and scalar tracking filters for real-time Direction-of-Arrival estimation.
 
+STATUS: not wired into the Iridium pipeline yet (run_doa.py uses a plain
+inline EMA).  Used by ``apps/legacy/doa_test_868`` and covered by unit
+tests; ``KalmanAngular`` is the natural upgrade for SNR-weighted smoothing
+of the live az/el output if ever needed.
+
 All classes are lightweight, stateful, and thread-unsafe by design — the caller
 is responsible for locking when state is shared across threads.
 

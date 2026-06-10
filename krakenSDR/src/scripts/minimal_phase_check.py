@@ -41,7 +41,6 @@ import socket
 import struct
 import sys
 import time
-from datetime import datetime, timezone
 
 import numpy as np
 
@@ -286,15 +285,20 @@ def main() -> int:
         print(f"  CH{i+1} vs CH0:  mean={mean_phases[i]:+8.2f}°  "
               f"std={std_phases[i]:6.2f}°  |coh|={mean_coh[i]:.3f}  {status}")
 
-    # Compare to calibration offsets in config.py if available
-    _here = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, _here)
+    # Compare to the calibration the DOA pipeline actually uses
+    # (doa_config.toml → cal_file, typically cal_tle.npz from fit_array_cal.py)
     try:
-        import config as C_cfg
-        cal = getattr(C_cfg, "CHANNEL_PHASE_OFFSETS_DEG", [0.0] * 5)
-        if len(cal) >= 5:
+        _here = os.path.dirname(os.path.abspath(__file__))
+        _src = os.path.dirname(_here)
+        if _src not in sys.path:
+            sys.path.insert(0, _src)
+        from apps.doa_iridium.run_doa import _load_cal, load_config
+        cfg = load_config(os.path.join(_src, "apps", "doa_iridium",
+                                       "doa_config.toml"))
+        cal = _load_cal(cfg["array"].get("cal_file", ""), 5)
+        if any(c != 0.0 for c in cal):
             print()
-            print("CALIBRATION check (config.py CHANNEL_PHASE_OFFSETS_DEG)")
+            print("CALIBRATION check (doa_config.toml cal_file)")
             for i in range(4):
                 expected = cal[i + 1] - cal[0]
                 expected = ((expected + 180.0) % 360.0) - 180.0
@@ -303,7 +307,7 @@ def main() -> int:
                 print(f"  CH{i+1}: measured={mean_phases[i]:+7.2f}°  "
                       f"cal={expected:+7.2f}°  Δ={delta:5.1f}°  {ok}")
     except Exception as exc:
-        print(f"[PHASE-CHECK] Could not load config.py for calibration check: {exc}")
+        print(f"[PHASE-CHECK] Could not load calibration for comparison: {exc}")
 
     print("━" * 55)
 

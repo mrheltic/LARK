@@ -45,7 +45,6 @@ from apps.doa_iridium.run_doa import (  # noqa: E402
     _apply_cli,
     _load_cal,
     load_config,
-    parse_args as _live_parse_args,
 )
 from core.burst_processing import (
     apply_bpf_and_normalize,
@@ -79,10 +78,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--cal-file", metavar="PATH")
     p.add_argument("--phase-offs", metavar="DEG_LIST",
                    help="Comma-separated phase offsets (overrides cal-file)")
-    p.add_argument("--snr-min", type=float, default=-5.0,
-                   help="Minimum SINR gate [dB] (default -5 for pre-segmented recordings)")
+    p.add_argument("--snr-min", type=float, default=None,
+                   help="Minimum SINR gate [dB] (default: from config, 4.0 outdoor)")
     p.add_argument("--papr-min", type=float, default=None,
-                   help="Minimum PAPR gate [dB] (default: from config)")
+                   help="Minimum PAPR gate [dB] (default: from config, 2.5 outdoor)")
     p.add_argument("--max-bursts", type=int, default=0,
                    help="Limit CPI frames processed (0 = all; incremental sessions)")
     p.add_argument("--frame-start", type=int, default=0,
@@ -115,8 +114,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Static comparison of MUSIC/Capon/Bartlett reprocess outputs")
     p.add_argument("--out-subdir", metavar="NAME",
                    help="Output subdir for --reprocess-multi (default: doa_multi or doa_multi_<algo>)")
-    p.add_argument("--el-min", type=float, default=10.0,
-                   help="Minimum elevation [°] for --reprocess-multi (filters horizon noise)")
+    p.add_argument("--el-min", type=float, default=5.0,
+                   help="Minimum elevation [°] for --reprocess-multi peak filtering")
     p.add_argument("--k-peaks", type=int, default=3,
                    help="Max DOA peaks per burst (multi reprocess)")
     p.add_argument("--track-gap-s", type=float, default=30.0,
@@ -147,7 +146,7 @@ def _build_uca(cfg: dict) -> UcaConfig:
     return UcaConfig(
         n_ant=arr["n_ant"], radius_lambda=arr["radius_lambda"],
         n_az=alg["n_az"], n_el=alg["n_el"],
-        el_min_deg=5.0, el_max_deg=90.0,
+        el_min_deg=alg.get("el_min_deg", 5.0), el_max_deg=alg.get("el_max_deg", 90.0),
         ant0_offset_deg=arr["ant0_offset_deg"],
         ant_ccw=arr["ant_ccw"],
         num_expected_signals=1,
@@ -161,7 +160,8 @@ def _phase_offsets(cfg: dict, args: argparse.Namespace) -> list[float]:
     if args.phase_offs:
         offs = [float(x) for x in args.phase_offs.split(",")]
     else:
-        offs = _load_cal(cfg["array"].get("cal_file", ""), n)
+        cal_path = getattr(args, "cal_file", "") or cfg["array"].get("cal_file", "")
+        offs = _load_cal(cal_path, n)
     if all(o == 0.0 for o in offs) and not cfg["array"].get("cal_file"):
         legacy = os.path.join(_SRC, "apps", "doa_iridium", "config.py")
         if os.path.isfile(legacy):
@@ -207,7 +207,7 @@ def _run_doa_on_window(
         dbg.save("raw_iq", X_win)
 
     tones = scan_preamble_tones(
-        X_win[0], FS,
+        X_win, FS,
         nom_tone_hz=profile["tone_nom_hz"],
         scan_bw_hz=profile["scan_bw_hz"],
         min_snr_db=profile["min_snr_db"],
@@ -424,31 +424,34 @@ def _process_cpi_frames(
     for fi, X in frame_iter:
         n_seen += 1
         starts = detect_energy_bursts(
-            X[0], FS, threshold_factor=profile["energy_threshold"]
+            X, FS, threshold_factor=profile["energy_threshold"]
         )
         if not starts:
             continue
-        b0 = starts[0]
-        bend = min(b0 + window_samples, X.shape[1])
-        X_win = X[:, b0:bend]
-        rec = _run_doa_on_window(
-            X_win, cfg=cfg, profile=profile, uca=uca, phase_offs=phase_offs,
-            algo=alg["algo"], thr=thr, state=state, burst_idx=fi + 1,
-            debug_dir=debug_dir, spec_out=spec_out,
-        )
-        if rec is None:
-            continue
-        rec["frame"] = fi
-        results.append(rec)
-        if args.out:
-            with open(args.out, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec) + "\n")
-        if not args.out:
-            print(json.dumps(rec), flush=True)
-        if args.verbose and len(results) % 50 == 0:
-            elapsed = time.time() - t0
-            print(f"  … {len(results)} DOA estimates from {n_seen} CPI "
-                  f"({elapsed:.0f}s)", file=sys.stderr)
+        # Process every detected burst in the CPI (a 128 ms CPI can hold
+        # more than one 90 ms Iridium frame).
+        for b0 in starts:
+            bend = min(b0 + window_samples, X.shape[1])
+            X_win = X[:, b0:bend]
+            rec = _run_doa_on_window(
+                X_win, cfg=cfg, profile=profile, uca=uca, phase_offs=phase_offs,
+                algo=alg["algo"], thr=thr, state=state, burst_idx=fi + 1,
+                debug_dir=debug_dir, spec_out=spec_out,
+            )
+            if rec is None:
+                continue
+            rec["frame"] = fi
+            rec["burst_offset"] = int(b0)
+            results.append(rec)
+            if args.out:
+                with open(args.out, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec) + "\n")
+            if not args.out:
+                print(json.dumps(rec), flush=True)
+            if args.verbose and len(results) % 50 == 0:
+                elapsed = time.time() - t0
+                print(f"  … {len(results)} DOA estimates from {n_seen} CPI "
+                      f"({elapsed:.0f}s)", file=sys.stderr)
 
     elapsed = time.time() - t0
     print(f"Processed {n_seen} CPI in {elapsed:.0f}s → {len(results)} DOA estimates",

@@ -29,6 +29,7 @@ from core.multi_peak import process_cpi_for_multi  # noqa: E402
 from core.recording import (  # noqa: E402
     count_session_raw_frames,
     iter_session_raw_frames,
+    session_frame_times,
     _atomic_savez_compressed,
 )
 from core.track_clusterer import cluster_from_jsonl  # noqa: E402
@@ -36,7 +37,6 @@ from apps.doa_iridium.run_doa_offline import (  # noqa: E402
     _build_uca,
     _phase_offsets,
 )
-from core.doa_uca_2d import UcaConfig  # noqa: E402
 
 DEFAULT_ALGOS = ("music", "capon", "bartlett")
 
@@ -209,7 +209,7 @@ def reprocess_session(
     uca = _build_uca(cfg)
     phase_offs = _phase_offsets(cfg, args)
     thr = cfg["thresholds"]
-    el_min_deg = float(getattr(args, "el_min", 10.0))
+    el_min_deg = float(getattr(args, "el_min", 5.0))
     fs_hz = float(meta.get("fs_hz", 1_024_000))
 
     total = count_session_raw_frames(session_dir)
@@ -241,10 +241,18 @@ def reprocess_session(
     frame_iter = iter_session_raw_frames(
         session_dir, start=start, stride=stride, max_frames=max_frames,
     )
+    # Wall-clock per frame: live recording drops CPIs when processing lags,
+    # so fi × CPI duration drifts from real time (minutes over a session)
+    # and would misalign the TLE ground truth.
+    frame_ts = session_frame_times(session_dir)
+
     for fi, X in frame_iter:
         n_seen += 1
         cpi_size = int(X.shape[1])
-        t_rel = fi * cpi_size / fs_hz
+        if frame_ts is not None and fi < len(frame_ts):
+            t_rel = float(frame_ts[fi] - frame_ts[0])
+        else:
+            t_rel = fi * cpi_size / fs_hz
 
         rec = process_cpi_for_multi(
             X,
@@ -282,6 +290,8 @@ def reprocess_session(
             "snr_db": np.float32(rec["snr_db"]),
             "papr_db_global": np.float32(rec["papr_db_global"]),
             "peaks": peaks,
+            "cfo_per_peak": np.asarray(rec["cfo_per_peak"], dtype=np.float32),
+            "snr_per_peak": np.asarray(rec["snr_per_peak"], dtype=np.float32),
             "az_slice": az_slice,
         }
         if args.save_spec:
@@ -299,6 +309,8 @@ def reprocess_session(
             "snr_db": rec["snr_db"],
             "papr_db_global": rec["papr_db_global"],
             "peaks": peaks.tolist(),
+            "cfo_per_peak": [round(float(c), 1) for c in rec["cfo_per_peak"]],
+            "snr_per_peak": [round(float(s), 2) for s in rec["snr_per_peak"]],
             "track_ids": [],
         }
         with open(jsonl_path, "a", encoding="utf-8") as f:

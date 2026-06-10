@@ -163,7 +163,7 @@ class SessionRecorder:
 
     def _write_meta(self) -> None:
         meta = {
-            "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "created": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
             "freq_hz": self.freq_hz,
             "fs_hz": self.fs,
             "gain_db": self.gain_db,
@@ -204,6 +204,11 @@ class SessionRecorder:
             path = os.path.join(self.raw_dir, f"frame_{idx:06d}.npy")
             _atomic_save_npy_simple(path, np.asarray(X, dtype=np.complex64))
             self._raw_t.append(ts)
+            # Persist per-frame wall-clock times live: CPIs are dropped when
+            # processing lags, so frame index × CPI duration is NOT wall time.
+            with open(os.path.join(self.raw_dir, "timestamps.csv"), "a",
+                      encoding="utf-8") as f:
+                f.write(f"{idx},{ts:.3f}\n")
             self._raw_count += 1
             self._maybe_write_state()
         self._maybe_checkpoint()
@@ -351,6 +356,41 @@ class SessionRecorder:
             self._save_done.set()
 
         return written
+
+
+def session_frame_times(session_dir: str) -> np.ndarray | None:
+    """Per-frame wall-clock epochs [s] for raw/frame_NNNNNN.npy.
+
+    Live recordings drop CPIs when processing lags, so ``frame_index ×
+    CPI_duration`` drifts from wall time by many minutes over a session.
+    Prefers raw/timestamps.csv (written live by SessionRecorder); falls back
+    to file modification times (≈ when each frame was written, i.e. just
+    after the end of its CPI).  Returns None if there are no frames.
+    """
+    raw_dir = os.path.join(session_dir, "raw")
+    n = count_session_raw_frames(session_dir)
+    if n == 0:
+        return None
+
+    csv_path = os.path.join(raw_dir, "timestamps.csv")
+    if os.path.isfile(csv_path):
+        ts = np.full(n, np.nan)
+        with open(csv_path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    idx_s, t_s = line.strip().split(",")
+                    idx = int(idx_s)
+                except ValueError:
+                    continue
+                if 0 <= idx < n:
+                    ts[idx] = float(t_s)
+        if not np.any(np.isnan(ts)):
+            return ts
+
+    return np.array([
+        os.path.getmtime(os.path.join(raw_dir, f"frame_{i:06d}.npy"))
+        for i in range(n)
+    ])
 
 
 def count_session_raw_frames(session_dir: str) -> int:

@@ -1,71 +1,55 @@
 """
-core — KrakenSDR signal processing library
-==========================================
+core — KrakenSDR Iridium DOA signal-processing library
+=======================================================
 
-Direction-of-Arrival estimation, burst processing, and session recording.
+Everything needed to estimate the direction of arrival (DOA) of Iridium
+satellite bursts received with a KrakenSDR (5 coherent channels) and a
+uniform circular array (UCA) of 5 antennas.
+
+Processing pipeline (one CPI frame = one block of coherent IQ samples,
+shape ``(n_ant, n_samples)``):
+
+    1. burst detection      detect_energy_bursts()      where in the frame?
+    2. tone scan            scan_preamble_tones()       which frequency?
+                                                        (3125 Hz + Doppler)
+    3. band-pass filter     apply_bpf_and_normalize()   isolate one satellite
+    4. phase calibration    apply_phase_correction()    align the channels
+    5. MF covariance        compute_mf_covariance()     array response y·yᴴ
+    6. DOA spectrum         doa_music_uca_2d() & co.    scan (az, el) grid
+    7. peak picking         find_peak_uca_2d()          → azimuth, elevation
+
+`multi_peak.process_cpi_for_multi()` runs the whole chain for every burst
+and every satellite tone found in a CPI.  `recording.SessionRecorder`
+persists raw CPI frames so sessions can be reprocessed offline, and
+`track_clusterer` groups the per-burst estimates into satellite tracks.
+
+Notes for newcomers
+-------------------
+* The matched-filter covariance is rank-1, so MUSIC, Capon and Bartlett
+  all peak at the same (az, el) — algorithm choice is not the lever here,
+  phase calibration is (see ``scripts/fit_array_cal.py``).
+* Angles follow compass convention: azimuth in degrees clockwise from
+  geographic North, elevation in degrees above the horizon.
+
+The modules ``gates``, ``tone_extraction`` and ``tracking`` are kept only
+for the older 868 MHz experiments in ``apps/legacy`` and are not part of
+the Iridium pipeline (they are intentionally not re-exported here).
 """
 
 from __future__ import annotations
 
-# ── 2D UCA DoA (primary engine) ────────────────────────────────────────────
+# ── DOA on the uniform circular array (the estimation engine) ──────────────
 from .doa_uca_2d import (
     UcaConfig,
-    CovarianceAccumulatorUca,
     doa_music_uca_2d,
     doa_capon_uca_2d,
     doa_bartlett_uca_2d,
     find_peak_uca_2d,
-    find_peaks_uca_2d,
-    pick_doa_peak_uca_2d,
-    extract_pilot_tone,
-    amplitude_normalize_channels,
-    eigenvalue_spread_uca_db,
     snr_uca_db,
     crb_azimuth_deg,
-    doa_root_music_uca_2d,
-    doa_unitary_esprit_uca_2d,
-    doa_mfba_music_uca_2d,
-    enhanced_preprocessing,
 )
 
-# ── Legacy DoA algorithms (ULA/UCA) + phase calibration ───────────────────
-from .doa_algorithms import (
-    Geometry,
-    ArrayConfig,
-    covariance,
-    forward_backward_avg,
-    toeplitzify,
-    fb_toeplitz,
-    apply_decorrelation,
-    CovarianceAccumulator,
-    steering,
-    uca_to_vula,
-    compute_doa_covariance,
-    doa_music,
-    doa_capon,
-    doa_ml,
-    doa_root_music,
-    doa_esprit,
-    apply_phase_correction,
-    papr_db,
-    condition_number,
-)
-
-# ── Cross-array 3D DoA (space/satellite) ──────────────────────────────────
-from .doa_algorithms_3d import (
-    CrossArrayConfig,
-    doa_music_2d,
-    doa_bartlett_2d,
-    doa_capon_2d,
-    doa_iaa_2d,
-    find_peak_2d,
-    reorder_cross_array_channels,
-    estimate_signal_count,
-    CROSS_ARRAY_CANONICAL_ORDER,
-    normalize_cross_array_order,
-)
-
-# ── Burst DSP pipeline (energy → tone scan → BPF → MF covariance) ────────
+# ── Burst DSP (energy detection → tone scan → BPF → MF covariance) ─────────
 from .burst_processing import (
     detect_energy_bursts,
     scan_preamble_tones,
@@ -73,64 +57,61 @@ from .burst_processing import (
     compute_mf_covariance,
 )
 
-# ── Multi-peak DOA (per-burst multi-tone covariance) ──────────────────────
+# ── Per-channel phase calibration + spectrum quality metric ────────────────
+from .doa_algorithms import (
+    apply_phase_correction,
+    papr_db,
+)
+
+# ── Whole-CPI processing (all bursts, all satellite tones) ─────────────────
 from .multi_peak import process_cpi_for_multi
 
-# ── Session recording (crash-safe incremental frame + spectra writer) ─────
+# ── Session recording / offline replay ─────────────────────────────────────
 from .recording import (
     SessionRecorder,
     consolidate_session,
     default_record_dir,
-    list_session_raw_frames,
     count_session_raw_frames,
     iter_session_raw_frames,
+    list_session_raw_frames,
+    session_frame_times,
 )
 
-# ── Pipeline debug (per-stage intermediate data dumps) ────────────────────
-from .pipeline_debug import (
-    PipelineDebugSaver,
-    STAGE_FILES,
-    save_pipeline_stage,
-)
+# ── Per-stage debug dumps (--debug-dir) ────────────────────────────────────
+from .pipeline_debug import PipelineDebugSaver
 
-# ── Track clustering (online burst-to-satellite association) ──────────────
-from .track_clusterer import (
-    cluster_from_jsonl,
-    load_tracks_json,
-)
+# ── Burst-to-satellite track clustering ────────────────────────────────────
+from .track_clusterer import cluster_from_jsonl, load_tracks_json
 
-# ── Tracking filters (EMA, Kalman) ────────────────────────────────────────
-from .tracking import (
-    CircularEMA,
-    ScalarEMA,
-    KalmanScalar,
-    KalmanAngular,
-    circular_ema_batch,
-    scalar_ema_batch,
-)
-
-# ── Acceptance gates ──────────────────────────────────────────────────────
-from .gates import (
-    GateVerdict,
-    circ_median_deg,
-    PAGGate,
-    EigenGate,
-    BoundaryGate,
-    OutlierGate,
-    GatePipeline,
-)
-
-# ── Tone extraction & narrowband BPF ──────────────────────────────────────
-from .tone_extraction import (
-    find_preamble_onset,
-    find_tone_onset,
-    extract_pilot_tone as extract_pilot_tone_core,
-    narrowband_filter_fft,
-)
-
-# ── Low-level covariance (used by doa_algorithms re-exports) ──────────────
-from .covariance import (
-    sample_covariance,
-    spatial_smoothing,
-    DecorrelationMethod,
-)
+__all__ = [
+    # DOA engine
+    "UcaConfig",
+    "doa_music_uca_2d",
+    "doa_capon_uca_2d",
+    "doa_bartlett_uca_2d",
+    "find_peak_uca_2d",
+    "snr_uca_db",
+    "crb_azimuth_deg",
+    # burst DSP
+    "detect_energy_bursts",
+    "scan_preamble_tones",
+    "apply_bpf_and_normalize",
+    "compute_mf_covariance",
+    # calibration + metrics
+    "apply_phase_correction",
+    "papr_db",
+    # CPI processing
+    "process_cpi_for_multi",
+    # recording
+    "SessionRecorder",
+    "consolidate_session",
+    "default_record_dir",
+    "count_session_raw_frames",
+    "iter_session_raw_frames",
+    "list_session_raw_frames",
+    "session_frame_times",
+    # debug + tracks
+    "PipelineDebugSaver",
+    "cluster_from_jsonl",
+    "load_tracks_json",
+]

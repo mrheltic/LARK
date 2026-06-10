@@ -36,13 +36,9 @@ from __future__ import annotations
 __all__ = [
     "UcaConfig",
     "find_peak_uca_2d",
-    "find_peaks_uca_2d",
-    "find_top_k_peaks_uca_2d",
-    "pick_doa_peak_uca_2d",
     "expected_uca_phase_diffs_deg",
     "phase_residual_deg",
     "doa_phase_fit_uca_2d",
-    "uca_synthetic_peak_spectrum",
     "extract_pilot_tone",
     "amplitude_normalize_channels",
     "doa_music_uca_2d",
@@ -51,16 +47,11 @@ __all__ = [
     "eigenvalue_spread_uca_db",
     "snr_uca_db",
     "crb_azimuth_deg",
-    "estimate_signal_count_mdl",
     "CovarianceAccumulatorUca",
-    "doa_root_music_uca_2d",
-    "doa_unitary_esprit_uca_2d",
-    "doa_mfba_music_uca_2d",
-    "enhanced_preprocessing",
 ]
 
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Tuple
 
 import numpy as np
 
@@ -198,13 +189,13 @@ def find_peak_uca_2d(
     -----------
     az_deg  : estimated azimuth  [°, 0…360]
     el_deg  : estimated elevation [°, el_min…90]
-    papr_db : Peak-to-Average Power Ratio dello spettro [dB]
+    papr_db : Peak-to-Average Power Ratio of the spectrum [dB]
     """
     idx       = np.unravel_index(np.argmax(spec), spec.shape)
     i_el, i_az = int(idx[0]), int(idx[1])
     n_el, n_az  = spec.shape
 
-    # Azimuth — periodico (wrap-around)
+    # Azimuth — periodic (wrap-around)
     az_frac = 0.0
     ym = float(spec[i_el, (i_az - 1) % n_az])
     y0 = float(spec[i_el,  i_az])
@@ -213,7 +204,7 @@ def find_peak_uca_2d(
     if abs(denom_az) > 1e-6:
         az_frac = float(np.clip(0.5 * (ym - yp) / denom_az, -0.5, 0.5))
 
-    # Elevazione — non periodica
+    # Elevation — non-periodic
     el_frac = 0.0
     if 0 < i_el < n_el - 1:
         ym = float(spec[i_el - 1, i_az])
@@ -238,151 +229,6 @@ def find_peak_uca_2d(
               if mean_v > 1e-15 else 0.0)
 
     return float(az_deg), float(el_deg), float(papr)
-
-
-def find_peaks_uca_2d(
-    spec: np.ndarray,
-    cfg:  UcaConfig,
-    n_peaks: int = 2,
-    min_sep_deg: float = 10.0,
-) -> list[tuple[float, float, float]]:
-    """
-    Find the top ``n_peaks`` in a 2D MUSIC spectrum, with peak suppression.
-
-    After each peak is found, a circular neighbourhood of radius
-    ``min_sep_deg`` in both azimuth and elevation is zeroed so that
-    subsequent searches find the NEXT-strongest local maximum rather
-    than the same peak shifted by one grid bin.
-
-    Returns a list of (az_deg, el_deg, papr_db), sorted by PAPR.
-    """
-    n_el, n_az = spec.shape
-    az_step = 360.0 / n_az
-    el_step = (90.0 - cfg.el_min_deg) / max(n_el - 1, 1)
-    az_bins_suppress = max(1, int(np.ceil(min_sep_deg / az_step)))
-    el_bins_suppress = max(1, int(np.ceil(min_sep_deg / el_step)))
-
-    work = spec.copy()
-    results: list[tuple[float, float, float]] = []
-
-    for _ in range(n_peaks):
-        idx = np.unravel_index(np.argmax(work), work.shape)
-        i_el, i_az = int(idx[0]), int(idx[1])
-
-        # ── parabolic interpolation (same as find_peak_uca_2d) ─────────────
-        az_frac = 0.0
-        ym_a = float(work[i_el, (i_az - 1) % n_az])
-        y0_a = float(work[i_el, i_az])
-        yp_a = float(work[i_el, (i_az + 1) % n_az])
-        denom_az = ym_a - 2.0 * y0_a + yp_a
-        if abs(denom_az) > 1e-6:
-            az_frac = float(np.clip(0.5 * (ym_a - yp_a) / denom_az, -0.5, 0.5))
-
-        el_frac = 0.0
-        if 0 < i_el < n_el - 1:
-            ym_e = float(work[i_el - 1, i_az])
-            y0_e = float(work[i_el, i_az])
-            yp_e = float(work[i_el + 1, i_az])
-            denom_el = ym_e - 2.0 * y0_e + yp_e
-            if abs(denom_el) > 1e-6:
-                el_frac = float(np.clip(0.5 * (ym_e - yp_e) / denom_el, -0.5, 0.5))
-
-        az_deg = (cfg.az_range_deg()[i_az] + az_frac * az_step) % 360.0
-        el_deg = float(np.clip(cfg.el_range_deg()[i_el] + el_frac * el_step,
-                               cfg.el_min_deg, 90.0))
-
-        # ── PAPR (from the ORIGINAL spec, not the suppressed copy) ─────────
-        s_lin  = 10.0 ** (np.clip(spec, -200.0, 0.0) / 10.0)
-        mean_v = float(np.mean(s_lin))
-        papr   = (10.0 * np.log10(float(np.max(s_lin)) / (mean_v + 1e-15))
-                  if mean_v > 1e-15 else 0.0)
-
-        results.append((float(az_deg), float(el_deg), float(papr)))
-
-        # ── suppress neighbourhood of the found peak ───────────────────────
-        for az_off in range(-az_bins_suppress, az_bins_suppress + 1):
-            for el_off in range(-el_bins_suppress, el_bins_suppress + 1):
-                j_az = (i_az + az_off) % n_az
-                j_el = i_el + el_off
-                if 0 <= j_el < n_el:
-                    work[j_el, j_az] = -200.0
-
-    return results
-
-
-def find_top_k_peaks_uca_2d(
-    spec: np.ndarray,
-    cfg: UcaConfig,
-    k: int = 3,
-    *,
-    min_sep_az_deg: float = 15.0,
-    min_sep_el_deg: float = 8.0,
-    min_papr_db: float = 2.0,
-) -> list[tuple[float, float, float, float]]:
-    """
-    Top-K local maxima with NMS and per-peak local PAPR.
-
-    Returns list of (az_deg, el_deg, power_db, papr_local_db), strongest first.
-    ``papr_local_db`` = peak power minus median of a local neighbourhood [dB].
-    """
-    if k <= 0:
-        return []
-
-    n_el, n_az = spec.shape
-    az_step = 360.0 / n_az
-    el_step = (cfg.el_max_deg - cfg.el_min_deg) / max(n_el - 1, 1)
-    az_bins = max(1, int(np.ceil(min_sep_az_deg / az_step)))
-    el_bins = max(1, int(np.ceil(min_sep_el_deg / el_step)))
-
-    work = spec.copy()
-    results: list[tuple[float, float, float, float]] = []
-
-    for _ in range(k):
-        idx = np.unravel_index(np.argmax(work), work.shape)
-        i_el, i_az = int(idx[0]), int(idx[1])
-        y0 = float(work[i_el, i_az])
-        if y0 < -199.0:
-            break
-
-        az_frac = 0.0
-        ym_a = float(work[i_el, (i_az - 1) % n_az])
-        yp_a = float(work[i_el, (i_az + 1) % n_az])
-        denom_az = ym_a - 2.0 * y0 + yp_a
-        if abs(denom_az) > 1e-6:
-            az_frac = float(np.clip(0.5 * (ym_a - yp_a) / denom_az, -0.5, 0.5))
-
-        el_frac = 0.0
-        if 0 < i_el < n_el - 1:
-            ym_e = float(work[i_el - 1, i_az])
-            yp_e = float(work[i_el + 1, i_az])
-            denom_el = ym_e - 2.0 * y0 + yp_e
-            if abs(denom_el) > 1e-6:
-                el_frac = float(np.clip(0.5 * (ym_e - yp_e) / denom_el, -0.5, 0.5))
-
-        az_deg = (cfg.az_range_deg()[i_az] + az_frac * az_step) % 360.0
-        el_deg = float(np.clip(cfg.el_range_deg()[i_el] + el_frac * el_step,
-                               cfg.el_min_deg, cfg.el_max_deg))
-        power_db = float(y0)
-
-        i0_el = max(0, i_el - el_bins)
-        i1_el = min(n_el, i_el + el_bins + 1)
-        local = work[i0_el:i1_el, :]
-        local_med = float(np.median(local))
-        papr_local = power_db - local_med
-        if papr_local < min_papr_db:
-            work[i_el, i_az] = -200.0
-            continue
-
-        results.append((float(az_deg), float(el_deg), power_db, float(papr_local)))
-
-        for az_off in range(-az_bins, az_bins + 1):
-            for el_off in range(-el_bins, el_bins + 1):
-                j_az = (i_az + az_off) % n_az
-                j_el = i_el + el_off
-                if 0 <= j_el < n_el:
-                    work[j_el, j_az] = -200.0
-
-    return results
 
 
 def _circular_az_sep_deg(a: float, b: float) -> float:
@@ -515,134 +361,6 @@ def doa_phase_fit_uca_2d(
     )
     return best_az, best_el, float(best_err)
 
-
-def uca_synthetic_peak_spectrum(
-    cfg: UcaConfig,
-    az_deg: float,
-    el_deg: float,
-    *,
-    sigma_az_deg: float = 8.0,
-    sigma_el_deg: float = 6.0,
-) -> np.ndarray:
-    """Build a narrow 2D peak for GUI when DoA is computed without a full scan."""
-    az_grid = cfg.az_range_deg()
-    el_grid = cfg.el_range_deg()
-    AZ, EL = np.meshgrid(az_grid, el_grid)
-    d_az = np.abs(((AZ - az_deg + 180.0) % 360.0) - 180.0)
-    d_el = np.abs(EL - el_deg)
-    spec = -0.5 * ((d_az / max(sigma_az_deg, 1.0)) ** 2
-                   + (d_el / max(sigma_el_deg, 1.0)) ** 2)
-    spec -= float(np.max(spec))
-    return np.clip(spec, -40.0, 0.0).astype(np.float64)
-
-
-def pick_doa_peak_uca_2d(
-    spec: np.ndarray,
-    cfg: UcaConfig,
-    *,
-    indoor: bool = False,
-    el_pref_hi: float = 35.0,
-    el_pref_lo: float = 8.0,
-    phase_diffs: np.ndarray | None = None,
-    az_hint_deg: float | None = None,
-    el_hint_deg: float | None = None,
-    n_peaks: int = 4,
-    min_sep_deg: float = 8.0,
-    phase_score_weight: float = 0.35,
-    az_hint_score_weight: float = 0.25,
-    el_hint_score_weight: float = 0.20,
-    mirror_margin_deg: float = 5.0,
-    mirror_phase_min_margin_deg: float = 10.0,
-) -> tuple[float, float, float]:
-    """
-    Select the best (az, el, papr) from a 2D MUSIC spectrum.
-
-    Outdoor (``indoor=False``): global PAPR maximum (``find_peak_uca_2d``).
-
-    Indoor (``indoor=True``): score multiple local peaks — prefer elevation in
-    the direct-path window ``[el_pref_lo, el_pref_hi]`` and optionally boost
-    peaks whose inter-channel phases match ``phase_diffs`` (stable at low TX
-    power), and optionally favour azimuth near ``az_hint_deg`` (tracker EMA).
-    Suppresses ceiling multipath peaks at el ≈ 60–80°.
-    """
-    if not indoor:
-        az_out, el_out, papr_out = find_peak_uca_2d(spec, cfg)
-        az_out = _resolve_uca_180_ambiguity(
-            az_out, el_out,
-            phase_diffs=phase_diffs, cfg=cfg,
-            az_hint_deg=az_hint_deg,
-            margin_deg=mirror_margin_deg,
-            phase_min_margin_deg=mirror_phase_min_margin_deg,
-        )
-        return az_out, el_out, papr_out
-
-    peaks = find_peaks_uca_2d(spec, cfg, n_peaks=max(n_peaks, 6),
-                              min_sep_deg=min_sep_deg)
-    if not peaks:
-        return find_peak_uca_2d(spec, cfg)
-
-    # Flat UCA MUSIC often produces an elevation ridge (same az, many el bins
-    # at equal PAPR).  Collapse to one candidate per ~10° azimuth sector,
-    # keeping the elevation with the best phase match in each sector.
-    az_bucket_deg = 10.0
-    sector_best: dict[int, tuple[float, float, float, float]] = {}
-    for az, el, papr in peaks:
-        if el > cfg.el_max_deg + 1.0:
-            continue
-        bucket = int(round(az / az_bucket_deg))
-        ph_err = (_inter_antenna_phase_error_deg(az, el, phase_diffs, cfg)
-                  if phase_diffs is not None and phase_diffs.size >= cfg.n_ant - 1
-                  else 0.0)
-        prev = sector_best.get(bucket)
-        if prev is None or ph_err < prev[3] or (ph_err == prev[3] and papr > prev[2]):
-            sector_best[bucket] = (az, el, papr, ph_err)
-
-    candidates = [(v[0], v[1], v[2]) for v in sector_best.values()]
-    if not candidates:
-        candidates = peaks
-
-    best: tuple[float, float, float] | None = None
-    best_score = -1e9
-
-    for az, el, papr in candidates:
-        score = papr
-        if el > el_pref_hi:
-            score -= 2.5 * (el - el_pref_hi)
-        elif el < el_pref_lo:
-            score -= 0.6 * (el_pref_lo - el)
-
-        if phase_diffs is not None and phase_diffs.size >= cfg.n_ant - 1:
-            ph_err = _inter_antenna_phase_error_deg(az, el, phase_diffs, cfg)
-            score -= phase_score_weight * ph_err
-
-        if az_hint_deg is not None:
-            d_direct = _circular_az_sep_deg(az, az_hint_deg)
-            d_mirror = _circular_az_sep_deg((az + 180.0) % 360.0, az_hint_deg)
-            score -= az_hint_score_weight * min(d_direct, d_mirror)
-
-        if el_hint_deg is not None:
-            score -= el_hint_score_weight * abs(el - el_hint_deg)
-
-        if score > best_score:
-            best_score = score
-            best = (az, el, papr)
-
-    if best is None:
-        best = peaks[0]
-    az_out, el_out, papr_out = best
-    az_out = _resolve_uca_180_ambiguity(
-        az_out, el_out,
-        phase_diffs=phase_diffs, cfg=cfg,
-        az_hint_deg=az_hint_deg,
-        margin_deg=mirror_margin_deg,
-        phase_min_margin_deg=mirror_phase_min_margin_deg,
-    )
-    return az_out, el_out, papr_out
-
-
-# =============================================================================
-# Pilot tone extraction — narrow-band pre-filter
-# =============================================================================
 
 def extract_pilot_tone(
     X:           np.ndarray,
@@ -847,10 +565,10 @@ def doa_music_uca_2d(
 
     Parameters
     ---------
-    X           : (n_ant, N_campioni) complesso
+    X           : (n_ant, N_samples) complex
     cfg         : UcaConfig
-    R_in        : covarianza pre-calcolata (es. EMA); se fornita X non è usata
-    n_snapshots : campioni IQ (per MDL auto-detect)
+    R_in        : pre-computed covariance (e.g. EMA); if provided, X is ignored
+    n_snapshots : IQ samples (for MDL auto-detect)
     decorr      : 'none' (default) | 'circulant' | 'fb' | 'both'
 
     Returns
@@ -942,8 +660,8 @@ def doa_capon_uca_2d(
 
     P(φ, θ) = 1 / (a^H(φ, θ) · R^{-1} · a(φ, θ))
 
-    decorr='none' di default (vedi nota in doa_music_uca_2d).
-    Il circulant smoothing forza N-fold symmetry rendendo Capon
+    decorr='none' by default (see note in doa_music_uca_2d).
+    Circulant smoothing forces N-fold symmetry, making Capon
     equivalent to Bartlett on a degraded covariance.
 
     Returns
@@ -1168,298 +886,3 @@ def _estimate_signal_count_mdl(
 
     return best_k
 
-
-# Public alias — allows external callers to use MDL source enumeration directly
-# without reaching into the internal namespace.
-def estimate_signal_count_mdl(
-    R:           np.ndarray,
-    n_snapshots: int,
-    max_signals: int = 4,
-) -> int:
-    """MDL source-count estimator — public wrapper around _estimate_signal_count_mdl.
-
-    Uses the Minimum Description Length criterion (Wax & Kailath 1985,
-    Salama 2025 §4.2.4) to determine the number of sources K present in
-    the observed covariance matrix R.
-
-    The MDL cost for K sources is:
-
-        MDL(K) = –N·(M–K)·log(g_K / a_K) + 0.5·K·(2M–K)·log(N)
-
-    where g_K and a_K are the geometric and arithmetic means of the
-    M–K smallest eigenvalues of R.  The estimate K̂ = argmin_K MDL(K).
-
-    Parameters
-    ----------
-    R           : (M, M) sample covariance matrix (Hermitian positive semidefinite)
-    n_snapshots : number of IQ snapshots used to estimate R  (= X.shape[1])
-    max_signals : maximum K to consider; must be < M  (default 4 for M=5 UCA)
-
-    Returns
-    -------
-    K_hat : estimated number of sources in [0, max_signals]
-    """
-    return _estimate_signal_count_mdl(R, n_snapshots, max_signals)
-
-
-# =============================================================================
-# Advanced DoA algorithms for UCA (based on research papers)
-# =============================================================================
-
-def doa_root_music_uca_2d(
-    R: np.ndarray,
-    config: UcaConfig,
-    n_sources: Optional[int] = None
-) -> Tuple[np.ndarray, float]:
-    """
-    Root-MUSIC implementation for UCA based on research papers.
-    
-    Implements polynomial rooting approach adapted for UCA geometry.
-    Since UCA doesn't have exact polynomial structure like ULA, this uses
-    an approximate polynomial rooting approach.
-    
-    Args:
-        R: Covariance matrix (n_ant, n_ant)
-        config: UCA configuration
-        n_sources: Number of sources (if None, auto-detect via MDL)
-        
-    Returns:
-        (spectrum, exec_time_ms)
-    """
-    import time
-    raise NotImplementedError(
-        "doa_root_music_uca_2d requires doa_advanced_uca (removed). "
-        "Use doa_music_uca_2d or doa_capon_uca_2d instead."
-    )
-
-
-def doa_unitary_esprit_uca_2d(
-    R: np.ndarray,
-    config: UcaConfig,
-    n_sources: Optional[int] = None
-) -> Tuple[np.ndarray, float]:
-    """
-    Unitary ESPRIT implementation for UCA based on research papers.
-    
-    Implements real-valued processing approach for UCA using centro-Hermitian properties.
-    
-    Args:
-        R: Covariance matrix (n_ant, n_ant)
-        config: UCA configuration
-        n_sources: Number of sources (if None, auto-detect via MDL)
-        
-    Returns:
-        (spectrum, exec_time_ms)
-    """
-    import time
-    raise NotImplementedError(
-        "doa_unitary_esprit_uca_2d requires doa_advanced_uca (removed). "
-        "Use doa_music_uca_2d or doa_capon_uca_2d instead."
-    )
-
-
-def doa_mfba_music_uca_2d(
-    R: np.ndarray,
-    config: UcaConfig,
-    n_sources: Optional[int] = None
-) -> Tuple[np.ndarray, float]:
-    """
-    MUSIC with Modified Forward-Backward Averaging for UCA.
-    
-    Implements enhanced covariance estimation using MFB averaging based on literature.
-    
-    Args:
-        R: Covariance matrix (n_ant, n_ant)
-        config: UCA configuration
-        n_sources: Number of sources (if None, auto-detect via MDL)
-        
-    Returns:
-        (spectrum, exec_time_ms)
-    """
-    import time
-    raise NotImplementedError(
-        "doa_mfba_music_uca_2d requires doa_advanced_uca (removed). "
-        "Use doa_music_uca_2d or doa_capon_uca_2d instead."
-    )
-
-
-# =============================================================================
-# Advanced preprocessing techniques based on research papers
-# =============================================================================
-
-def enhanced_preprocessing(
-    X: np.ndarray,
-    config: UcaConfig,
-    sample_rate: float,
-    center_freq: float,
-    apply_spatial_smoothing: bool = True,
-    apply_mfba: bool = True,
-    apply_adaptive_filtering: bool = False,
-    apply_outlier_rejection: bool = False
-) -> np.ndarray:
-    """
-    Enhanced preprocessing pipeline based on literature findings.
-    
-    Implements preprocessing techniques from:
-    - "Software Defined Radio for GNSS Radio Frequency Interference Localization"
-    - "Twenty-Five Years of Sensor Array and Multichannel Signal Processing"
-    - "Direction of Arrival Estimation: A Tutorial Survey of Classical and Modern Methods"
-    
-    Args:
-        X: Input data matrix (n_ant, n_samples)
-        config: UCA configuration
-        sample_rate: Sampling rate in Hz
-        center_freq: Center frequency in Hz
-        apply_spatial_smoothing: Whether to apply spatial smoothing
-        apply_mfba: Whether to apply modified forward-backward averaging
-        apply_adaptive_filtering: Whether to apply adaptive interference cancellation
-        apply_outlier_rejection: Whether to apply statistical outlier rejection
-        
-    Returns:
-        Preprocessed data matrix
-    """
-    raise NotImplementedError(
-        "enhanced_preprocessing requires doa_advanced_uca (removed). "
-        "Use amplitude_normalize_channels for per-channel normalization instead."
-    )
-
-
-def _apply_adaptive_filtering(X: np.ndarray) -> np.ndarray:
-    """
-    Apply adaptive filtering techniques to suppress interference.
-    
-    Based on: "Robust adaptive beamforming" techniques from literature.
-    
-    Args:
-        X: Input data matrix (n_ant, n_samples)
-        
-    Returns:
-        Filtered data matrix
-    """
-    # Implement a simple adaptive noise canceller
-    # This is a simplified version - full implementation would use more sophisticated algorithms
-    n_ant, n_samples = X.shape
-    
-    # Use the first antenna as reference, others as auxiliary
-    if n_ant > 1:
-        # Simple adaptive filtering using least mean squares approach
-        # Estimate interference in each channel using other channels
-        X_filtered = X.copy()
-        
-        for i in range(n_ant):
-            # Use all other channels to estimate interference in channel i
-            aux_channels = np.delete(X, i, axis=0)
-            
-            # Simple correlation-based interference estimation
-            if aux_channels.shape[0] > 0:
-                # Average of other channels as interference estimate
-                interference_estimate = np.mean(aux_channels, axis=0)
-                
-                # Subtract scaled interference (with small regularization)
-                scale_factor = 0.1  # Small regularization to avoid complete cancellation
-                X_filtered[i, :] -= scale_factor * interference_estimate
-        
-        return X_filtered
-    else:
-        return X
-
-
-def _apply_outlier_rejection(X: np.ndarray, threshold: float = 2.5) -> np.ndarray:
-    """
-    Apply statistical outlier rejection to remove anomalous samples.
-    
-    Based on: Robust statistics techniques for array signal processing.
-    
-    Args:
-        X: Input data matrix (n_ant, n_samples)
-        threshold: Threshold in standard deviations for outlier detection
-        
-    Returns:
-        Cleaned data matrix with outliers replaced by median values
-    """
-    X_clean = X.copy()
-    
-    for i in range(X.shape[0]):  # For each antenna
-        # Calculate magnitude for outlier detection
-        magnitudes = np.abs(X[i, :])
-        
-        # Calculate median and MAD (Median Absolute Deviation)
-        med = np.median(magnitudes)
-        mad = np.median(np.abs(magnitudes - med))
-        
-        # Convert MAD to standard deviation equivalent
-        std_equiv = 1.4826 * mad
-        
-        # Identify outliers
-        outliers = np.abs(magnitudes - med) > threshold * std_equiv
-        
-        if np.any(outliers):
-            # Replace outliers with interpolated values
-            good_indices = ~outliers
-            if np.any(good_indices):
-                # Use linear interpolation to fill gaps
-                X_clean[i, outliers] = np.interp(
-                    np.where(outliers)[0], 
-                    np.where(good_indices)[0], 
-                    X[i, good_indices].real
-                ) + 1j * np.interp(
-                    np.where(outliers)[0], 
-                    np.where(good_indices)[0], 
-                    X[i, good_indices].imag
-                )
-    
-    return X_clean
-
-
-def _apply_spatial_smoothing(
-    X: np.ndarray,
-    config: UcaConfig,
-    subarray_size: Optional[int] = None,
-) -> np.ndarray:
-    """
-    UCA-aware circular spatial smoothing that preserves data dimensions.
-
-    For a 5-element UCA, uses circular sub-arrays of size 3 (default).
-    Each sub-array is a contiguous arc of the circle, wrapped around.
-    The smoothed covariance is factorised back to synthetic data via
-    Cholesky so downstream processing (MUSIC, Capon) works unchanged.
-
-    Returns (n_ant, n_samples) synthetic data with same dimensions as input.
-    """
-    n_ant, n_samp = X.shape
-    if subarray_size is None:
-        subarray_size = max(n_ant - 2, 3)
-    if subarray_size >= n_ant:
-        return X
-
-    n_sub = n_ant - subarray_size + 1
-    R_ss  = np.zeros((subarray_size, subarray_size), dtype=complex)
-
-    for i in range(n_sub):
-        idx = [(i + k) % n_ant for k in range(subarray_size)]
-        X_sub = X[idx, :]
-        R_ss += (X_sub @ X_sub.conj().T) / n_samp
-    R_ss /= n_sub
-
-    # FB averaging for the smoothed sub-array covariance
-    J = np.eye(subarray_size, dtype=complex)[::-1]
-    R_ss = 0.5 * (R_ss + J @ R_ss.conj() @ J)
-    R_ss = (R_ss + R_ss.conj().T) * 0.5
-
-    # Factorise back to synthetic data via eigendecomposition
-    ev, V = np.linalg.eigh(R_ss)
-    ev = np.maximum(ev, 0.0)
-    L = V @ np.diag(np.sqrt(ev))
-    n_synth = max(n_samp, subarray_size * 4)
-    noise = (np.random.default_rng(0).standard_normal((subarray_size, n_synth))
-             + 1j * np.random.default_rng(1).standard_normal((subarray_size, n_synth))) / np.sqrt(2)
-    X_synth = L @ noise
-
-    # Pad back to n_ant channels by repeating the smoothed data
-    if subarray_size < n_ant:
-        X_out = np.zeros((n_ant, n_synth), dtype=complex)
-        X_out[:subarray_size, :] = X_synth
-        for k in range(subarray_size, n_ant):
-            X_out[k, :] = X_synth[k % subarray_size, :]
-        return X_out
-    return X_synth

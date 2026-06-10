@@ -130,7 +130,7 @@ def _check_heimdall(host: str, port: int, timeout: float = 2.0) -> bool:
 
 
 # =============================================================================
-# Stato condiviso
+# Shared state
 # =============================================================================
 
 def _make_state(n_az: int, n_el: int) -> SimpleNamespace:
@@ -362,7 +362,7 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
                            top=0.93, bottom=0.07,
                            hspace=0.42, wspace=0.33)
 
-    # ── [0,0]  Bussola polare azimuth ─────────────────────────────────────────
+    # ── [0,0]  Polar compass azimuth ────────────────────────────────────────────
     ax_pol = fig.add_subplot(gs[0, 0], projection="polar", facecolor=BG2)
     ax_pol.set_theta_zero_location("N")
     ax_pol.set_theta_direction(-1)
@@ -392,7 +392,7 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
         bbox=dict(boxstyle="round,pad=0.3", facecolor=BG, edgecolor=C_ROSE, alpha=0.0),
         zorder=10)
 
-    # ── [0,1]  Mappa 2D az × el ───────────────────────────────────────────────
+    # ── [0,1]  2D map az × el ─────────────────────────────────────────────────
     ax_2d = fig.add_subplot(gs[0, 1], facecolor=BG2)
     ax_2d.set_facecolor(BG2)
     ax_2d.set_xlabel("Azimuth [°]", color=C_MUT, fontsize=8)
@@ -418,7 +418,7 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
     ax_q = fig.add_subplot(gs[0, 2], facecolor=BG2)
     ax_q.set_facecolor(BG2)
     ax_q.set_title("Eigenvalues + quality", color=C_TEXT, fontsize=9)
-    ax_q.set_xlabel("Canale", color=C_MUT, fontsize=8)
+    ax_q.set_xlabel("Channel", color=C_MUT, fontsize=8)
     ax_q.set_ylabel("Spread [dB]", color=C_MUT, fontsize=8)
     ax_q.set_xlim(-0.5, 4.5)
     ax_q.set_xticks(range(5))
@@ -444,7 +444,7 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
     txt_rec   = ax_q.text(2, 17, "rec: 0",      ha="center", va="top",
                            color=C_ROSE, fontsize=8)
 
-    # ── [1,0]  Storia azimuth rolling ─────────────────────────────────────────
+    # ── [1,0]  Rolling azimuth history ────────────────────────────────────────
     ax_az = fig.add_subplot(gs[1, 0], facecolor=BG2)
     ax_az.set_facecolor(BG2)
     ax_az.set_title("Azimuth history", color=C_TEXT, fontsize=9)
@@ -474,7 +474,7 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
     ax_el.grid(color=C_BDR, lw=0.4, alpha=0.4)
     el_line, = ax_el.plot([], [], "-", color=C_TEAL, lw=1.4)
 
-    # ── [1,2]  Differenze di fase inter-canale ────────────────────────────────
+    # ── [1,2]  Inter-channel phase differences ────────────────────────────────
     ax_ph = fig.add_subplot(gs[1, 2], facecolor=BG2)
     ax_ph.set_facecolor(BG2)
     ax_ph.set_title("ΔΦ  CH1..4 – CH0  (from covariance matrix)", color=C_TEXT, fontsize=9)
@@ -521,7 +521,7 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
             el_h     = list(S.el_hist)
             ph_h     = [list(q) for q in S.phase_hist]
 
-        # Bussola polare ───────────────────────────────────────────────────────
+        # Polar compass ────────────────────────────────────────────────────────
         lin = 10 ** (np.clip(az_s, -40, 0) / 10.0)
         lin /= (lin.max() + 1e-12)
         spec_line.set_data(np.r_[az_rad, az_rad[0]], np.r_[lin, lin[0]])
@@ -540,7 +540,7 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
         xh_h.set_ydata([el, el])
         peak_dot.set_data([az], [el])
 
-        # Autovalori + readout ─────────────────────────────────────────────────
+        # Eigenvalues + readout ────────────────────────────────────────────────
         for bar, v in zip(bars, eig):
             bar.set_height(float(v))
         txt_snr.set_text(f"SNR:  {snr:+.1f} dB")
@@ -550,7 +550,7 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
         txt_frame.set_text(f"frame: {fn}")
         txt_rec.set_text(f"rec: {n_rec}")
 
-        # Overlay stato segnale: NO SIGNAL (rosso) / DIR? (ambra) / ok (nascosto)
+        # Signal-state overlay: NO SIGNAL (red) / DIR? (amber) / ok (hidden)
         if no_sig:
             txt_nosig.set_text("NO SIGNAL")
             txt_nosig.set_color(C_ROSE)
@@ -578,7 +578,7 @@ def _build_and_run_ui(S: SimpleNamespace, cfg: UcaConfig,
             az_line.set_data([], [])
             az_med_line.set_data([], [])
 
-        # Elevazione history ───────────────────────────────────────────────────
+        # Elevation history ────────────────────────────────────────────────────
         if el_h:
             xs = np.arange(len(el_h))
             el_line.set_data(xs, el_h)

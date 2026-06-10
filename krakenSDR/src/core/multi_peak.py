@@ -154,77 +154,83 @@ def process_cpi_for_multi(
     has_cal = any(o != 0.0 for o in phase_offs)
 
     starts = detect_energy_bursts(
-        X[0], FS, threshold_factor=profile["energy_threshold"],
+        X, FS, threshold_factor=profile["energy_threshold"],
     )
     if not starts:
         return None
 
-    b0 = starts[0]
-    bend = min(b0 + window_samples, X.shape[1])
-    if bend - b0 < pre_samples + bpf_guard:
-        return None
-
-    # Scan for up to k_peaks satellite tones in one shot
-    tones = scan_preamble_tones(
-        X[0, b0:bend], FS,
-        nom_tone_hz=profile["tone_nom_hz"],
-        scan_bw_hz=profile["scan_bw_hz"],
-        n_peaks=k_peaks,
-        min_snr_db=profile["min_snr_db"],
-        dc_guard_hz=profile["dc_guard_hz"],
-    )
-    if not tones:
-        return None
-
-    X_win = X[:, b0:bend]
     algo_u = algo.upper()
     peak_list: list[tuple[float, float, float, float]] = []
     cfo_per_peak: list[float] = []
     snr_per_peak: list[float] = []
     best_snr_db = -999.0
-    best_tone_hz = tones[0][0]
+    best_tone_hz: float | None = None
     best_spec: np.ndarray | None = None
 
-    for tone_hz, _tone_snr in tones:
-        result = _doa_from_tone(
-            X_win, tone_hz,
-            window_samples=window_samples,
-            pre_samples=pre_samples,
-            bpf_guard=bpf_guard,
-            bpf_bw_hz=profile["bpf_bw_hz"],
-            phase_offs=phase_offs,
-            has_cal=has_cal,
-            uca=uca,
-            algo_u=algo_u,
-            snr_min_db=thr["snr_min_db"],
-            papr_min_db=thr["papr_min_db"],
-            el_min_deg=el_min_deg,
-        )
-        if result is None:
+    # Process every detected burst in the CPI (a 128 ms CPI can hold more
+    # than one 90 ms Iridium frame); each burst may carry several satellite
+    # tones.  Peaks from all bursts are accumulated — the track clusterer
+    # downstream associates repeated detections of the same satellite.
+    for b0 in starts:
+        bend = min(b0 + window_samples, X.shape[1])
+        if bend - b0 < pre_samples + bpf_guard:
             continue
-        az_deg, el_deg, power_db, papr_db, snr_db = result
-        peak_list.append((az_deg, el_deg, power_db, papr_db))
-        cfo_per_peak.append(float(tone_hz - profile["tone_nom_hz"]))
-        snr_per_peak.append(snr_db)
-        if snr_db > best_snr_db:
-            best_snr_db = snr_db
-            best_tone_hz = tone_hz
-            # Re-compute spec for the strongest tone for visualisation
-            try:
-                X_bpf = apply_bpf_and_normalize(X_win, window_samples, FS, tone_hz, profile["bpf_bw_hz"])
-                X_cal = apply_phase_correction(X_bpf, phase_offs) if has_cal else X_bpf
-                R_mf, _, _ = compute_mf_covariance(X_cal, tone_hz, FS,
-                                                   min(pre_samples, X_bpf.shape[1] - bpf_guard), bpf_guard)
-                if algo_u == "CAPON":
-                    best_spec = doa_capon_uca_2d(X_cal, uca, R_in=R_mf, decorr="none")
-                elif algo_u == "BARTLETT":
-                    best_spec = doa_bartlett_uca_2d(X_cal, uca, R_in=R_mf)
-                else:
-                    best_spec = doa_music_uca_2d(X_cal, uca, R_in=R_mf)
-            except (ValueError, Exception):
-                pass
 
-    if not peak_list:
+        # Scan for up to k_peaks satellite tones in one shot
+        tones = scan_preamble_tones(
+            X[:, b0:bend], FS,
+            nom_tone_hz=profile["tone_nom_hz"],
+            scan_bw_hz=profile["scan_bw_hz"],
+            n_peaks=k_peaks,
+            min_snr_db=profile["min_snr_db"],
+            dc_guard_hz=profile["dc_guard_hz"],
+        )
+        if not tones:
+            continue
+        if best_tone_hz is None:
+            best_tone_hz = tones[0][0]
+
+        X_win = X[:, b0:bend]
+        for tone_hz, _tone_snr in tones:
+            result = _doa_from_tone(
+                X_win, tone_hz,
+                window_samples=window_samples,
+                pre_samples=pre_samples,
+                bpf_guard=bpf_guard,
+                bpf_bw_hz=profile["bpf_bw_hz"],
+                phase_offs=phase_offs,
+                has_cal=has_cal,
+                uca=uca,
+                algo_u=algo_u,
+                snr_min_db=thr["snr_min_db"],
+                papr_min_db=thr["papr_min_db"],
+                el_min_deg=el_min_deg,
+            )
+            if result is None:
+                continue
+            az_deg, el_deg, power_db, papr_db, snr_db = result
+            peak_list.append((az_deg, el_deg, power_db, papr_db))
+            cfo_per_peak.append(float(tone_hz - profile["tone_nom_hz"]))
+            snr_per_peak.append(snr_db)
+            if snr_db > best_snr_db:
+                best_snr_db = snr_db
+                best_tone_hz = tone_hz
+                # Re-compute spec for the strongest tone for visualisation
+                try:
+                    X_bpf = apply_bpf_and_normalize(X_win, window_samples, FS, tone_hz, profile["bpf_bw_hz"])
+                    X_cal = apply_phase_correction(X_bpf, phase_offs) if has_cal else X_bpf
+                    R_mf, _, _ = compute_mf_covariance(X_cal, tone_hz, FS,
+                                                       min(pre_samples, X_bpf.shape[1] - bpf_guard), bpf_guard)
+                    if algo_u == "CAPON":
+                        best_spec = doa_capon_uca_2d(X_cal, uca, R_in=R_mf, decorr="none")
+                    elif algo_u == "BARTLETT":
+                        best_spec = doa_bartlett_uca_2d(X_cal, uca, R_in=R_mf)
+                    else:
+                        best_spec = doa_music_uca_2d(X_cal, uca, R_in=R_mf)
+                except (ValueError, Exception):
+                    pass
+
+    if not peak_list or best_tone_hz is None:
         return None
 
     return {

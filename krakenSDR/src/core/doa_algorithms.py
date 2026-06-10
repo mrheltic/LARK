@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
-doa_algorithms – DoA signal processing library for KrakenSDR
-=============================================================
-Provides array configuration, steering vectors, MUSIC / Root-MUSIC,
+doa_algorithms – generic 1D DoA reference library (ULA / UCA-as-VULA)
+=====================================================================
+Array configuration, steering vectors, MUSIC / Root-MUSIC / ESPRIT / ML,
 covariance decorrelation and related signal utilities.
+
+STATUS: the Iridium pipeline uses only ``apply_phase_correction`` and
+``papr_db`` from this module — its 2D estimation lives in
+``core.doa_uca_2d``.  The remaining 1D algorithms are kept as tested
+reference implementations (see ``tests/test_doa.py``) and for the older
+868 MHz experiments in ``apps/legacy``.
 
 No simulation code; hardware-only.
 
@@ -20,7 +26,7 @@ from enum import Enum
 import numpy as np
 
 # ── Re-export from canonical modules (no duplicate implementations) ────────
-from .covariance import (           # noqa: F401
+from .covariance import (
     covariance,
     forward_backward_avg,
     toeplitzify,
@@ -28,6 +34,35 @@ from .covariance import (           # noqa: F401
     apply_decorrelation,
     CovarianceAccumulator,
 )
+
+__all__ = [
+    # used by the Iridium pipeline
+    "apply_phase_correction",
+    "papr_db",
+    # 1D reference implementations (tests/test_doa.py, apps/legacy)
+    "Geometry",
+    "ArrayConfig",
+    "steering",
+    "uca_to_vula",
+    "compute_doa_covariance",
+    "doa_music",
+    "doa_capon",
+    "doa_ml",
+    "doa_root_music",
+    "doa_esprit",
+    "measure_power_db",
+    "condition_number",
+    "snr_from_covariance",
+    "eigenvalue_spread_db",
+    "coherence_matrix",
+    # re-exported from core.covariance
+    "covariance",
+    "forward_backward_avg",
+    "toeplitzify",
+    "fb_toeplitz",
+    "apply_decorrelation",
+    "CovarianceAccumulator",
+]
 
 
 def papr_db(spectrum_db: np.ndarray) -> float:

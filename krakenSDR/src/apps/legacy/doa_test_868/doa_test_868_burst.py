@@ -846,7 +846,7 @@ def _acq_loop(
                     S.phase_diffs = _phase_diffs_smooth   # EMA-smoothed, has_doa only
                     for _i, _p in enumerate(phase_diffs):
                         S.phase_hist[_i].append(float(_p))
-                    S.az_hist.append(az_inst)  # raw MUSIC peak → gate usa median reattiva
+                    S.az_hist.append(az_inst)  # raw MUSIC peak → gate uses reactive median
                     if len(S.az_hist) >= 3:
                         S.az_median = _circ_median(np.array(S.az_hist))
                     else:

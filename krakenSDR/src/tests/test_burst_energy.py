@@ -109,3 +109,44 @@ class TestBurstEnergyOffsets:
             iq = _make_burst(100_000, 30_000, 2_560, snr_db=snr)
             starts = detect_energy_bursts(iq, FS, threshold_factor=3.0)
             assert len(starts) >= 1, f"Failed at SNR={snr} dB"
+
+class TestMultiChannelDetection:
+    """detect_energy_bursts with (n_ant, N) input: non-coherent combining."""
+
+    def _make_multichannel(self, n_ant, n_total, burst_start, burst_len, snr_db):
+        rng = np.random.default_rng(7)
+        X = (rng.standard_normal((n_ant, n_total))
+             + 1j * rng.standard_normal((n_ant, n_total))) / np.sqrt(2)
+        amp = 10 ** (snr_db / 20.0)
+        t = np.arange(burst_len, dtype=np.float64)
+        burst = amp * np.exp(2j * np.pi * TONE_HZ / FS * t)
+        X[:, burst_start:burst_start + burst_len] += burst[np.newaxis, :]
+        return X.astype(np.complex64)
+
+    def test_2d_input_detects_burst(self):
+        X = self._make_multichannel(5, 200_000, 50_000, 2_560, snr_db=15.0)
+        starts = detect_energy_bursts(X, FS, threshold_factor=3.0)
+        assert len(starts) >= 1
+        assert abs(starts[0] - 50_000) <= 512
+
+    def test_2d_matches_1d_on_strong_burst(self):
+        X = self._make_multichannel(5, 200_000, 50_000, 2_560, snr_db=20.0)
+        starts_multi = detect_energy_bursts(X, FS, threshold_factor=3.0)
+        starts_single = detect_energy_bursts(X[0], FS, threshold_factor=3.0)
+        assert starts_multi == starts_single
+
+    def test_detects_burst_faded_on_channel0(self):
+        # Burst absent on channel 0 (fade / antenna mismatch) but present on
+        # channels 1-4: ch0-only detection misses it, combined detection works.
+        rng = np.random.default_rng(7)
+        X = (rng.standard_normal((5, 200_000))
+             + 1j * rng.standard_normal((5, 200_000))) / np.sqrt(2)
+        amp = 10 ** (15.0 / 20.0)
+        t = np.arange(2_560, dtype=np.float64)
+        burst = amp * np.exp(2j * np.pi * TONE_HZ / FS * t)
+        X[1:, 50_000:52_560] += burst[np.newaxis, :]
+        X = X.astype(np.complex64)
+        starts_single = detect_energy_bursts(X[0], FS, threshold_factor=3.0)
+        starts_multi = detect_energy_bursts(X, FS, threshold_factor=3.0)
+        assert starts_single == []
+        assert len(starts_multi) >= 1

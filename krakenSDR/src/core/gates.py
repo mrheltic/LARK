@@ -3,6 +3,9 @@ core.gates
 ==========
 Composable burst-acceptance gates for preamble-gated DoA estimation.
 
+STATUS: not used by the Iridium pipeline — kept only for the older 868 MHz
+experiments in ``apps/legacy/doa_test_868``.  Remove together with them.
+
 Each gate is a lightweight callable that checks one quality criterion and
 returns a ``GateVerdict`` dataclass.  Gates are stateless (PAGGate, EigenGate,
 BoundaryGate) or carry minimal state (OutlierGate maintains its own az history).

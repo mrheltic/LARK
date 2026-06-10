@@ -3,6 +3,10 @@ core.tone_extraction
 ====================
 Narrowband tone detection and pilot extraction for preamble-gated DoA.
 
+STATUS: not used by the Iridium pipeline (which uses
+``core.burst_processing`` instead) — kept only for the older 868 MHz
+experiments in ``apps/legacy/doa_test_868``.  Remove together with them.
+
 This module provides a general-purpose, stateless (no I/O, no globals)
 API for burst-mode IQ processing.  All app-specific constants (sample rate,
 burst length, preamble structure) are passed as explicit arguments so the
