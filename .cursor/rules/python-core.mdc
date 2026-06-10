@@ -1,0 +1,31 @@
+---
+description: Python core DSP module conventions
+globs: krakenSDR/src/core/**/*.py
+alwaysApply: false
+---
+
+# core/ DSP library
+
+Hardware-independent, unit-tested signal processing.
+
+## Modules
+
+| Module | Responsibility |
+|--------|----------------|
+| `burst_processing.py` | detect, tone scan, BPF, MF covariance |
+| `multi_peak.py` | full CPI multi-satellite processing |
+| `doa_uca_2d.py` | UCA steering, MUSIC/Capon/Bartlett, peak find |
+| `track_clusterer.py` | peak → track association |
+| `recording.py` | session record + frame iteration |
+
+## Conventions
+
+- Pure functions where possible; explicit parameters over hidden globals.
+- NumPy arrays: IQ `(n_ant, n_samples)`, spec `(n_el, n_az)`.
+- UCA radius `0.4253λ` → λ/2 chord spacing for N=5 antennas.
+- After substantive changes, run: `pytest tests/test_burst*.py tests/test_multi_peak.py tests/test_doa.py -q`
+
+## Do not
+
+- Add GNU Radio dependencies to `core/`.
+- Extend legacy modules (`gates`, `tone_extraction`, `tracking`) without explicit request.
