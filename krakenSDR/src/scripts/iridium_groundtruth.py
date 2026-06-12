@@ -297,6 +297,8 @@ def main():
     if args.session_dir:
         session = args.session_dir.rstrip("/")
         if os.path.isdir(session):
+            from shared.iridium_tle import use_session_tle
+            use_session_tle(session)   # freeze ground-truth elements
             t0, t1, meta = load_session_window(session)
             print(f"Session: {os.path.basename(session)}")
             print(f"  Window: {t0.isoformat()} → {t1.isoformat()} "

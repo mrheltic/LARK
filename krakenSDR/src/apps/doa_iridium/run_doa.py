@@ -273,6 +273,7 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
         find_peak_uca_2d,
     )
     from core.doa_algorithms import apply_phase_correction
+    from core.multiburst import TrackCovarianceEma
 
     hw   = cfg["hardware"]
     arr  = cfg["array"]
@@ -320,9 +321,11 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
     )
     src.start()
 
-    R_ema  = None
+    # One covariance EMA per active satellite (keyed by Doppler trend):
+    # concurrent satellites no longer reset each other's integration.
+    cov_tracker = TrackCovarianceEma(alpha=cov_alpha)
     az_ema = el_ema = None
-    last_cfo = None
+    last_track_id = None
     frame_idx = 0
 
     print(_banner(cfg))
@@ -396,7 +399,7 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
 
                 # ── Stage 5: Matched-filter covariance ────────────────────────────
                 try:
-                    R_mf, _, snr_db = compute_mf_covariance(
+                    R_mf, y_mf, snr_db = compute_mf_covariance(
                         X_cal, tone_hz, fs, pre_samples, bpf_guard
                     )
                 except ValueError:
@@ -405,18 +408,15 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
                 if snr_db < thr["snr_min_db"]:
                     continue
 
-                # Each preamble tone belongs to one satellite: a CFO jump means a
-                # different satellite, so blending its covariance into the EMA
-                # would smear two directions together.  Restart the EMA state.
+                # Per-satellite covariance EMA: each tone is one satellite,
+                # matched to its track by Doppler-trend continuity.  The
+                # angle EMA restarts when the displayed track changes.
                 cfo_hz = tone_hz - profile["tone_nom_hz"]
-                if last_cfo is not None and abs(cfo_hz - last_cfo) > 3_000.0:
-                    R_ema = None
+                R_ema, track_id, _n_track = cov_tracker.update(
+                    y_mf, cfo_hz, t_frame)
+                if track_id != last_track_id:
                     az_ema = el_ema = None
-                last_cfo = cfo_hz
-
-                R_ema = R_mf.copy() if R_ema is None else (
-                    cov_alpha * R_ema + (1.0 - cov_alpha) * R_mf
-                )
+                last_track_id = track_id
 
                 if dbg and dbg.enabled:
                     dbg.save("R_mf", R_mf)

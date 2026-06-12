@@ -8,15 +8,25 @@ This document is the practical guide: how the pipeline works, every command
 with its use case, field procedures for outdoor measurements, and when/how to
 calibrate. It is written for someone picking up the project from scratch.
 
-Validated performance (session 2026-06-05, 36 min, 10 satellites, ~2200
-bursts matched against SGP4 ground truth):
+Validated performance — reference session 2026-06-05 (36 min outdoor),
+processed with `--el-min 9`, evaluated against **epoch-matched** SGP4
+elements (Space-Track, median epoch distance 2 h — see §4.4), 1599 bursts
+uniquely Doppler-assigned to 10 satellites:
 
-| Metric | Value |
-|---|---|
-| Azimuth error (median bias / MAD) | +1.1° / **3.8°** |
-| Elevation error (median bias / MAD) | −4.6° / **5.5°** |
-| Receiver LO offset (estimated automatically) | ≈ +3.5 kHz (+2.1 ppm) |
-| Burst→satellite assignment (unique Doppler match) | 2171 / 3915 peaks |
+| Per-burst error | bias | MedAE | RMSE |
+|---|---|---|---|
+| azimuth, single-burst | +1.7° | 4.1° | 9.4° |
+| azimuth, multi-burst B=16 (§4.5) | +1.5° | **3.7°** | 9.0° |
+| elevation, single-burst | −2.1° | 3.9° | 8.0° |
+| elevation, multi-burst B=16 (§4.5) | −1.9° | **3.3°** | 6.9° |
+
+RMSE ≫ MedAE flags the heavy outlier tail (sidelobes/reflections) — the
+robust track smoothing (§4.5) exists to reject it. Receiver LO offset,
+estimated automatically: ≈ +3.5 kHz (+2.1 ppm). Numbers quoted elsewhere
+in this document (e.g. calibration history, smoothing) were measured on the
+earlier `--el-min 5` processing of the same session; absolute values shift
+with the elevation gate and the TLE epoch, comparisons within one dataset
+do not.
 
 ---
 
@@ -30,10 +40,11 @@ bursts matched against SGP4 ground truth):
    - 4.2 [Record a session](#42-record-a-session)
    - 4.3 [Offline reprocessing](#43-offline-reprocessing)
    - 4.4 [Ground truth & accuracy evaluation](#44-ground-truth--accuracy-evaluation)
-   - 4.5 [Array calibration](#45-array-calibration)
-   - 4.6 [Visualization](#46-visualization)
-   - 4.7 [Utilities & diagnostics](#47-utilities--diagnostics)
-   - 4.8 [Tests](#48-tests)
+   - 4.5 [Track smoothing (Kalman/RTS)](#45-track-smoothing-kalmanrts)
+   - 4.6 [Array calibration](#46-array-calibration)
+   - 4.7 [Visualization](#47-visualization)
+   - 4.8 [Utilities & diagnostics](#48-utilities--diagnostics)
+   - 4.9 [Tests](#49-tests)
 5. [Data formats](#5-data-formats)
 6. [Field guide — outdoor measurements](#6-field-guide--outdoor-measurements)
 7. [Calibration policy — when and how](#7-calibration-policy--when-and-how)
@@ -135,12 +146,13 @@ krakenSDR/src/
 │   ├── eval_doa_accuracy.py per-burst az/el error vs SGP4
 │   ├── plot_track_vs_tle.py measured trajectory vs real satellite track
 │   ├── iridium_groundtruth.py  pass prediction + track-level matching
+│   ├── fetch_session_tle.py epoch-matched TLEs from Space-Track (see §4.4)
 │   ├── predict_passes.py    quick pass forecast (when to measure)
 │   ├── minimal_phase_check.py  live inter-channel phase sanity check
 │   ├── diag_raw_iq.py       live capture diagnostic (power/tone/coherence)
 │   └── legacy/              tools for the old single-npz recording format
 ├── hardware/                kraken_iq_source (TCP), file_iq_source
-└── tests/                   pytest suite (136 tests, synthetic signals)
+└── tests/                   pytest suite (156 tests, synthetic signals)
 
 krakenSDR/data/doa_iridium/  recorded sessions (gitignored)
 shared/iridium_tle.py        TLE download + SGP4 (passes, Doppler, az/el)
@@ -227,22 +239,25 @@ This is the workhorse command:**
 
 ```bash
 python3 apps/doa_iridium/reprocess_session.py ../data/doa_iridium/session_20260605_110716 \
-        --algo music --el-min 5
+        --algo music --el-min 5 --cov-bursts 16
 ```
 
 Writes `<session>/doa_multi_music/` containing `doa_multi.jsonl` (one line
-per CPI with all peaks + per-peak CFO/SNR), `burst_*.npz`, `waterfall.npz`,
-and `tracks.json` (peaks clustered into per-satellite tracks by az/el/CFO
-continuity).
+per CPI with all peaks + per-peak CFO/SNR/MF vector), `burst_*.npz`,
+`waterfall.npz`, and `tracks.json` (peaks clustered into per-satellite
+tracks by az/el/CFO continuity, with Doppler-trend gating and merging of
+sequential pass fragments).
 
 Useful options:
 
 | Flag | Use case |
 |---|---|
+| `--cov-bursts 16` | **recommended** — average the covariance over a 16-burst window per track before the final DOA (validated: el MAD 5.5° → 4.5°, see §4.5); 0 = single-burst rank-1 |
+| `--cov-span-s 20` | max window time span (steering smear limit) |
 | `--max-frames 2000 --frame-start 5000` | quick look at a segment |
 | `--k-peaks 3` | max simultaneous satellites per burst (default 3) |
 | `--el-min 5` | accept low-elevation peaks (early/late pass tracking) |
-| `--recluster-only` | re-run track clustering without re-reading IQ |
+| `--recluster-only` | re-run track clustering (and `--cov-bursts`, if given) without re-reading IQ |
 | `--out-subdir NAME` | parallel experiments without overwriting |
 | `--phase-cal --cal-file PATH` | override the calibration |
 
@@ -278,11 +293,96 @@ python3 scripts/eval_doa_accuracy.py <session_dir> --subdir doa_multi_music
 
 Each DOA peak is assigned to a satellite only if its Doppler matches exactly
 one predicted track within ±2 kHz (after automatic LO-offset removal), then
-az/el errors vs the SGP4 position at burst time are reported (bias, MAD,
-RMS, per-satellite counts). Use `--lo-offset` to pin the LO estimate when
-comparing runs of the same session.
+az/el errors vs the SGP4 position at burst time are reported: signed bias,
+MedAE (median |error| — the robust headline), MAE, MAD and RMSE
+(RMSE ≫ MedAE flags heavy outlier tails), plus per-satellite counts. Use
+`--lo-offset` to pin the LO estimate when comparing runs of the same
+session.
 
-### 4.5 Array calibration
+**TLE freshness — read this once.** A TLE is a set of orbital elements at
+an *epoch*, and SGP4 error grows ~1–3 km/day away from it (mostly
+along-track → a Doppler timing error that silently weakens the matching).
+CelesTrak only serves the latest elements, so re-running an evaluation
+weeks later degrades the ground truth. Two safeguards are built in:
+
+1. **Per-session snapshot** — the first ground-truth run saves the elements
+   to `<session>/iridium_tle.txt` and every script uses that file from then
+   on (results frozen and reproducible).
+2. **Epoch-matched elements** — for the best ground truth, fill the
+   snapshot with elements whose epoch matches the session date
+   (free Space-Track account required):
+
+```bash
+# credentials: copy scripts/spacetrack.json.example → ~/.config/lark/spacetrack.json
+# (chmod 600) and fill in, or export SPACETRACK_USER / SPACETRACK_PASS
+python3 scripts/fetch_session_tle.py <session_dir>
+# → <session>/iridium_tle.txt with the closest-epoch element set per satellite
+#   (reference session: median epoch distance 0.08 d vs ~6 d from CelesTrak)
+
+# then re-run the evaluations/plots — they pick up the snapshot automatically:
+python3 scripts/eval_doa_accuracy.py <session_dir> --subdir doa_multi_music
+python3 scripts/plot_track_vs_tle.py <session_dir>
+```
+
+### 4.5 Track smoothing (Kalman/RTS)
+
+**Use case: trajectory-level estimates.** Per-burst errors are nearly white
+while a satellite pass is smooth (peak angular rate ≈ 0.6°/s), so smoothing
+along each clustered track removes most of the random error. A 6-state
+Kalman filter on the direction *unit vector* (no azimuth-wrap or zenith
+issues) plus a Rauch–Tung–Striebel backward pass — every point conditioned
+on the whole track. Real DOA errors are heavy-tailed, so the filter runs
+robustly by default: a χ² innovation gate plus a reject-and-resmooth pass
+(points > 4×MAD from the first solution are excluded and flagged).
+
+```bash
+python3 scripts/smooth_tracks.py <session_dir> --subdir doa_multi_music
+# → <subdir>/tracks_smoothed.json + raw-vs-smoothed accuracy stats vs TLE
+```
+
+On the reference session this roughly halves the per-point spread on the
+long tracks (az MAD 3.7° → 2.1°, el MAD 5.2° → 4.5°; az RMS 5.7° → 3.9°),
+rejecting ~8% of points as outliers. The remaining error is systematic
+(manifold/calibration), which no amount of smoothing removes. Tune
+`--sigma-acc` if passes look over- or under-smoothed (default 2e-5 rad/s²,
+fitted on the reference session with the robust pass enabled);
+`--no-robust` gives the plain least-squares behaviour. Weighting
+measurements by SNR makes the stats slightly *worse* (the error is
+manifold-dominated, not noise-dominated) — that is why there is no such
+option. The smoothed trajectory is automatically overlaid by
+`plot_track_vs_tle.py` (§4.7), with rejected points marked ×.
+
+#### Beyond rank-1 — multi-burst covariance
+
+A single burst gives a rank-1 covariance (MUSIC = Capon = Bartlett). But
+consecutive bursts of the same track carry independent noise and, as the
+satellite moves, decorrelating ground multipath — so averaging normalised
+MF vectors over a sliding window of B bursts makes the noise subspace
+estimable. The JSONL stores the per-peak MF vector (`y_per_peak`, sessions
+reprocessed after June 2026), so this is a pure post-processing step.
+
+**The normal interface is the reprocess flag** (`--cov-bursts 16`, §4.3),
+which re-estimates the JSONL peaks in place after clustering. The research
+tool behind it also sweeps window sizes and writes derived result sets:
+
+```bash
+# Sweep window sizes, report accuracy vs TLE per window:
+python3 scripts/multiburst_doa.py <session_dir> --windows 1 2 4 8 16
+
+# Write a derived result set; every existing tool works on it unchanged:
+python3 scripts/multiburst_doa.py <session_dir> --window 16 --max-span-s 20 --write
+python3 scripts/smooth_tracks.py  <session_dir> --subdir doa_multi_music_covB16
+```
+
+Measured on the reference session: per-burst el MAD 5.5° → 4.5° and el bias
+−4.6° → −4.1° at B=16 (azimuth ~flat; B=32 adds little) — consistent with
+the multipath-decorrelation picture. After Kalman smoothing the two
+pipelines converge to similar numbers: the covariance window and the
+smoother average over the same time axis, and the systematic manifold error
+is the common floor. The live pipeline does the equivalent with a
+per-satellite covariance EMA (`cov_alpha`, effective window ≈ 14 bursts).
+
+### 4.6 Array calibration
 
 **Use case: new deployment, or accuracy suddenly degraded.** See §7 for the
 policy. The trick: Iridium satellites themselves are the calibration source —
@@ -309,7 +409,7 @@ much worse than the others, suspect its cable/connector. It warns if all
 bursts come from one satellite (rotation and offsets become degenerate —
 record longer).
 
-### 4.6 Visualization
+### 4.7 Visualization
 
 **Measured trajectory vs the real satellite track** (the thesis figure):
 
@@ -322,6 +422,8 @@ python3 scripts/plot_track_vs_tle.py <session_dir> --subdir doa_multi_capon
 Produces, per satellite pass: a polar sky plot (TLE trajectory as a
 time-colored line, DOA peaks as same-colormap scatter) plus az(t), el(t) and
 Doppler(t) panels with residual statistics. PNGs land in `<session>/plots/`.
+If `tracks_smoothed.json` exists (§4.5) the Kalman/RTS trajectory is drawn
+as a solid teal line with its own residual stats (`--no-smooth` to disable).
 
 Other plotting modes (via the offline pipeline):
 
@@ -330,7 +432,7 @@ python3 apps/doa_iridium/run_doa_offline.py <session_dir> --replay    # replay r
 python3 apps/doa_iridium/run_doa_offline.py <session_dir> --compare   # MUSIC/Capon/Bartlett overlay
 ```
 
-### 4.7 Utilities & diagnostics
+### 4.8 Utilities & diagnostics
 
 ```bash
 # When should I go outside? Pass forecast for the next N hours:
@@ -342,15 +444,19 @@ python3 scripts/minimal_phase_check.py
 
 # Quick live capture: power, tone at +3125 Hz, channel coherence:
 python3 scripts/diag_raw_iq.py
+
+# Would tilting the array improve low-elevation accuracy? (synthetic Monte
+# Carlo; spoiler: no — median gain at el≈5° only, ambiguity outliers everywhere)
+python3 scripts/tilt_study.py
 ```
 
 `scripts/legacy/` holds diagnostics for the pre-June-2026 single-file
 recording format — not for session directories.
 
-### 4.8 Tests
+### 4.9 Tests
 
 ```bash
-python3 -m pytest tests/ -q        # 136 tests, all synthetic, ~15 s
+python3 -m pytest tests/ -q        # 156 tests, all synthetic, ~17 s
 ```
 
 Every `core/` DSP stage has unit tests with known-truth synthetic signals
@@ -395,12 +501,15 @@ timestamps are the reliable clock there too.
  "peaks": [[az, el, power_db, papr_db], ...],
  "cfo_per_peak": [10000.0, -22500.0],     // per-satellite Doppler
  "snr_per_peak": [14.2, 9.8],
+ "y_per_peak": [[[re, im], ... x n_ant]], // MF array-response vector
  "track_ids": []}
 ```
 
 `t` is seconds since session start (wall clock). `cfo_per_peak` is the
 per-satellite discriminator — use it, not the scalar `cfo_hz`, when peaks
-from different satellites share a CPI.
+from different satellites share a CPI. `y_per_peak` (added 2026-06-11) is
+the calibrated matched-filter output the rank-1 covariance is built from;
+`scripts/multiburst_doa.py` uses it to average covariances across bursts.
 
 **`cal_tle.npz`**: `phase_offsets_deg (n_ant,)` (ch0 = 0 reference),
 `ant0_offset_deg`, `circ_std_deg` (per-channel residual spread), `n_bursts`,
@@ -473,7 +582,7 @@ Two distinct things are calibrated, both by `fit_array_cal.py`:
 2. **Array rotation** (`ant0_offset_deg`) — *mechanical* orientation vs
    geographic North.
 
-**Recalibrate (full procedure of §4.5) whenever:**
+**Recalibrate (full procedure of §4.6) whenever:**
 
 - antennas, cables or connectors are touched, swapped or re-routed;
 - the array is moved to a new site or re-assembled;
@@ -502,7 +611,7 @@ values it prints.
 | Symptom | Likely cause → what to do |
 |---|---|
 | No bursts detected | Wrong frequency/gain, antenna issue. `diag_raw_iq.py`: is there power and a tone? Check passes are actually overhead (`predict_passes.py`). |
-| Bursts but low PAPR (< 3 dB), peaks rejected | Calibration off or disabled — check `use_phase_cal`, re-run §4.5 verification. Indoors this is expected (multipath). |
+| Bursts but low PAPR (< 3 dB), peaks rejected | Calibration off or disabled — check `use_phase_cal`, re-run §4.6 verification. Indoors this is expected (multipath). |
 | Azimuth tracks the satellite but with a constant offset | `ant0_offset_deg` wrong (array rotated). Re-fit rotation (§7). |
 | Elevation systematically high/low | Array tilt (re-level) or stale phase calibration. |
 | Estimates jump between two directions | Two satellites alternating in the same CPI — normal; look at `cfo_per_peak`, the track clusterer separates them downstream. |

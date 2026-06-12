@@ -1,0 +1,5 @@
+{
+  "_comment": "Space-Track credentials for scripts/fetch_session_tle.py — copy to ~/.config/lark/spacetrack.json (chmod 600) and fill in. Free account: https://www.space-track.org",
+  "identity": "you@mail.com",
+  "password": "CHANGE-ME"
+}

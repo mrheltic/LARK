@@ -90,6 +90,22 @@
             }
         },
         {
+            "label": "KrakenSDR: Batch reprocess + TLE plots (3 algos, ±multiburst)",
+            "detail": "MUSIC/Capon/Bartlett full reprocess (el-min 5) + TLE-comparison plots, each both single-burst and with B=16 multiburst covariance (no Kalman smoothing). ~15-20 min for a 36-min session. Plots land in <session>/plots/.",
+            "type": "shell",
+            "command": "set -e; PY=${workspaceFolder}/.venv/bin/python3; S=\"${input:sessionDir}\"; for a in music capon bartlett; do echo \"=== $a (single-burst) ===\"; $PY apps/doa_iridium/reprocess_session.py \"$S\" --algo $a --el-min 9; $PY scripts/plot_track_vs_tle.py \"$S\" --subdir doa_multi_$a --no-smooth; echo \"=== $a (multiburst B=16) ===\"; $PY scripts/multiburst_doa.py \"$S\" --subdir doa_multi_$a --window 16 --max-span-s 20 --write; $PY scripts/plot_track_vs_tle.py \"$S\" --subdir \"doa_multi_$a\"_covB16 --no-smooth; done; echo 'Batch done.'",
+            "options": {
+                "cwd": "${workspaceFolder}/krakenSDR/src"
+            },
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            },
+            "problemMatcher": []
+        },
+        {
             "label": "iridium-toolkit: Parse .bits file",
             "detail": "Parses a RAW: lines file with iridium-parser.py from external/iridium-toolkit/.",
             "type": "shell",

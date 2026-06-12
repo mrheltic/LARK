@@ -39,6 +39,7 @@ from scripts.iridium_groundtruth import (  # noqa: E402
     OBSERVER_LON,
     load_session_window,
 )
+from shared.iridium_tle import use_session_tle  # noqa: E402
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -122,11 +123,17 @@ def evaluate(peaks: list[dict], tracks: list[dict], *,
         "per_sat": per_sat,
     }
     if len(az_a):
+        # bias = typical signed error; MedAE = typical |error| (robust);
+        # MAE/RMSE include the tail — RMSE ≫ MedAE flags heavy outliers.
         summary.update({
             "az_bias_deg": round(float(np.median(az_a)), 1),
+            "az_medae_deg": round(float(np.median(np.abs(az_a))), 1),
+            "az_mae_deg": round(float(np.mean(np.abs(az_a))), 1),
             "az_mad_deg": round(float(np.median(np.abs(az_a - np.median(az_a)))), 1),
             "az_rms_deg": round(float(np.sqrt(np.mean(az_a ** 2))), 1),
             "el_bias_deg": round(float(np.median(el_a)), 1),
+            "el_medae_deg": round(float(np.median(np.abs(el_a))), 1),
+            "el_mae_deg": round(float(np.mean(np.abs(el_a))), 1),
             "el_mad_deg": round(float(np.median(np.abs(el_a - np.median(el_a)))), 1),
             "el_rms_deg": round(float(np.sqrt(np.mean(el_a ** 2))), 1),
         })
@@ -140,6 +147,7 @@ def main(argv: list[str] | None = None) -> dict:
     if not os.path.isfile(jsonl_path):
         sys.exit(f"No JSONL at {jsonl_path}")
 
+    use_session_tle(session_dir)   # freeze ground-truth elements per session
     t0, t1, _meta = load_session_window(session_dir)
     peaks = load_peaks(jsonl_path)
     print(f"{len(peaks)} DOA peaks from {jsonl_path}")

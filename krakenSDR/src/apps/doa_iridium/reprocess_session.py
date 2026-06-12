@@ -103,11 +103,44 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Max CFO separation [Hz] for track association")
     p.add_argument("--recluster-only", action="store_true",
                    help="Re-run clustering on existing JSONL without reprocessing IQ")
+    p.add_argument("--cov-bursts", type=int, default=0, metavar="B",
+                   help="Average the covariance over a sliding window of B "
+                        "bursts of the same track before the final DOA "
+                        "(recommended: 16; 0 = single-burst, rank-1)")
+    p.add_argument("--cov-span-s", type=float, default=20.0,
+                   help="Max time span [s] of the covariance window "
+                        "(limits steering smear; satellite moves ~0.5°/s)")
     p.add_argument("--phase-cal", action="store_true")
     p.add_argument("--cal-file", metavar="PATH")
     p.add_argument("--phase-offs", metavar="DEG_LIST")
     p.add_argument("--verbose", action="store_true")
     return p.parse_args(argv)
+
+
+def apply_multiburst(jsonl_path: str, uca, *, window: int, span_s: float,
+                     algo: str) -> int:
+    """
+    Replace each tracked peak's (az, el, papr) in the JSONL with the
+    estimate from the covariance averaged over its track window
+    (core.multiburst).  Weak-MF and untracked peaks keep the single-burst
+    estimate.  The per-burst npz files keep the raw single-burst values.
+    Returns the number of re-estimated peaks.
+    """
+    from core.multiburst import collect_track_peaks, reestimate
+
+    with open(jsonl_path, encoding="utf-8") as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    by_tid = collect_track_peaks(rows)
+    peaks = reestimate(by_tid, window=window, max_span_s=span_s,
+                       uca=uca, algo=algo)
+    for p in peaks:
+        pk = rows[p["row_idx"]]["peaks"][p["peak_idx"]]
+        pk[0], pk[1], pk[3] = round(p["az"], 2), round(p["el"], 2), \
+            round(p["papr_db"], 2)
+    with open(jsonl_path, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    return len(peaks)
 
 
 def recluster_session(
@@ -147,6 +180,14 @@ def recluster_session(
         print(f"  T{tr['id']:2d}  n={tr['n_peaks']:4d}  az={tr['az_range']}")
     if len(tracks) > 10:
         print(f"  … and {len(tracks) - 10} more")
+    if getattr(args, "cov_bursts", 0) > 1:
+        cfg = load_config(args.config)
+        uca = _build_uca(cfg)
+        algo = (getattr(args, "algo", None) or "music").lower()
+        n_re = apply_multiburst(jsonl_path, uca, window=args.cov_bursts,
+                                span_s=args.cov_span_s, algo=algo)
+        print(f"Multi-burst covariance (B={args.cov_bursts}, "
+              f"span {args.cov_span_s:.0f}s): re-estimated {n_re} peaks")
     return {"n_tracks": len(tracks), "n_long_tracks": long, "out_subdir": out_subdir}
 
 
@@ -292,6 +333,7 @@ def reprocess_session(
             "peaks": peaks,
             "cfo_per_peak": np.asarray(rec["cfo_per_peak"], dtype=np.float32),
             "snr_per_peak": np.asarray(rec["snr_per_peak"], dtype=np.float32),
+            "y_per_peak": np.asarray(rec["y_per_peak"], dtype=np.complex64),
             "az_slice": az_slice,
         }
         if args.save_spec:
@@ -311,6 +353,12 @@ def reprocess_session(
             "peaks": peaks.tolist(),
             "cfo_per_peak": [round(float(c), 1) for c in rec["cfo_per_peak"]],
             "snr_per_peak": [round(float(s), 2) for s in rec["snr_per_peak"]],
+            # MF array-response vector per peak, [[re, im] × n_ant] — enables
+            # offline multi-burst covariance averaging (scripts/multiburst_doa.py)
+            "y_per_peak": [
+                [[round(float(v.real), 6), round(float(v.imag), 6)] for v in y]
+                for y in np.asarray(rec["y_per_peak"])
+            ],
             "track_ids": [],
         }
         with open(jsonl_path, "a", encoding="utf-8") as f:
@@ -363,6 +411,12 @@ def reprocess_session(
                   f"az={tr['az_range']}  cfo={tr['cfo_range_hz']} Hz")
         if len(tracks) > 10:
             print(f"  … and {len(tracks) - 10} more tracks")
+        if args.cov_bursts > 1:
+            n_re = apply_multiburst(
+                jsonl_path, uca, window=args.cov_bursts,
+                span_s=args.cov_span_s, algo=alg["algo"].lower())
+            print(f"Multi-burst covariance (B={args.cov_bursts}, "
+                  f"span {args.cov_span_s:.0f}s): re-estimated {n_re} peaks")
     else:
         print("No bursts detected — tracks.json not written", file=sys.stderr)
 

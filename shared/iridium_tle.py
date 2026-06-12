@@ -7,9 +7,17 @@ Uses *skyfield* (+ sgp4) for high-accuracy SGP4 orbital propagation.
 
 TLE source priority
 -------------------
-1. Local cache ``~/.config/lark/iridium_tle.txt`` (if < 24 h old)
-2. CelesTrak bulk download ``https://celestrak.org/NORAD/elements/gp.php?GROUP=iridium-NEXT&FORMAT=tle``
-3. Manual file passed by caller
+1. Per-session snapshot ``<session>/iridium_tle.txt`` (after ``use_session_tle()``)
+2. Local cache ``~/.config/lark/iridium_tle.txt`` (if < 24 h old)
+3. CelesTrak bulk download ``https://celestrak.org/NORAD/elements/gp.php?GROUP=iridium-NEXT&FORMAT=tle``
+4. Manual file passed by caller
+
+Why the session snapshot matters: CelesTrak only serves the *latest*
+elements, and SGP4 error grows ~1–3 km/day away from the TLE epoch (mostly
+along-track → Doppler timing error).  Evaluating an old session with fresh
+elements silently degrades the ground truth — freeze the elements per
+session instead (``scripts/fetch_session_tle.py`` can fill the snapshot
+with epoch-matched elements from Space-Track).
 
 Public API
 ----------
@@ -43,6 +51,29 @@ _CELESTRAK_URL = (
     "https://celestrak.org/NORAD/elements/gp.php"
     "?GROUP=iridium-NEXT&FORMAT=tle"
 )
+
+# Per-session TLE snapshot (set via use_session_tle); freezes the ground
+# truth so results stay reproducible regardless of when they are re-run.
+_SESSION_TLE: Optional[Path] = None
+
+
+def use_session_tle(session_dir: str) -> Path:
+    """
+    Pin all subsequent load_catalogue() calls to ``<session>/iridium_tle.txt``.
+
+    If the snapshot does not exist yet it is created from the current
+    cache/CelesTrak elements (better late than never — from then on the
+    session's ground truth is frozen).
+    """
+    global _SESSION_TLE
+    snap = Path(session_dir) / "iridium_tle.txt"
+    if snap.is_file():
+        print(f"[TLE] Using session snapshot: {snap}")
+    else:
+        snap.write_text(fetch_tle())
+        print(f"[TLE] Session snapshot created → {snap}")
+    _SESSION_TLE = snap
+    return snap
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -108,8 +139,12 @@ def load_catalogue(
     """
     if tle_file and os.path.isfile(tle_file):
         text = open(tle_file).read()
+    elif _SESSION_TLE is not None and not force_download:
+        text = _SESSION_TLE.read_text()
     else:
         text = fetch_tle(force=force_download)
+        if _SESSION_TLE is not None:        # refresh the frozen snapshot too
+            _SESSION_TLE.write_text(text)
     return IridiumCatalogue(text)
 
 

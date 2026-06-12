@@ -81,6 +81,15 @@ class UcaConfig:
     ant_ccw              : True if physical antennas are counter-clockwise
                             (CCW) viewed from above; False = clockwise (CW, default).
                             With CW matrix on CCW array: az_est = 360° − az_true.
+    tilt_deg             : tilt of the array plane from horizontal [°].
+                            The array normal leans from the zenith towards
+                            azimuth ``tilt_az_deg`` by this angle; antennas on
+                            that side of the array go down.  Tilting adds
+                            vertical baselines (sensitivity ∝ cos el), which
+                            improves elevation accuracy near the horizon where
+                            a flat UCA is weakest (sensitivity ∝ sin el).
+                            0 (default) = flat array, identical to before.
+    tilt_az_deg          : azimuth the array normal leans towards [° compass].
     """
     n_ant:                int   = 5
     radius_lambda:        float = 0.5
@@ -91,6 +100,8 @@ class UcaConfig:
     num_expected_signals: int   = 1
     ant0_offset_deg:      float = 0.0   # physical rotation of antenna-0 from North
     ant_ccw:              bool  = False  # True = antennas in counter-clockwise order (CCW)
+    tilt_deg:             float = 0.0   # array-plane tilt from horizontal
+    tilt_az_deg:          float = 0.0   # azimuth the normal leans towards
 
     _cache: dict = field(default_factory=dict, init=False, repr=False, compare=False)
 
@@ -98,15 +109,26 @@ class UcaConfig:
 
     @property
     def positions(self) -> np.ndarray:
-        """(n_ant, 2) array: [East, North] coordinates per antenna in wavelengths."""
+        """(n_ant, 3) array: [East, North, Up] coordinates per antenna in wavelengths."""
         k = np.arange(self.n_ant, dtype=np.float64)
         # positive direction = clockwise (CW); ant_ccw=True flips the sign
         sign  = -1.0 if self.ant_ccw else 1.0
         phi_k = np.deg2rad(self.ant0_offset_deg) + sign * 2.0 * np.pi * k / self.n_ant
-        return np.column_stack([
-            self.radius_lambda * np.sin(phi_k),   # East
-            self.radius_lambda * np.cos(phi_k),   # North
-        ])
+        east  = self.radius_lambda * np.sin(phi_k)
+        north = self.radius_lambda * np.cos(phi_k)
+        up    = np.zeros_like(east)
+        if self.tilt_deg != 0.0:
+            # Rigid rotation of the array plane: the normal leans by tilt_deg
+            # towards azimuth tilt_az_deg.  Antennas on that side go down by
+            # (p·d)·sin(tilt); horizontal coordinates shrink along d by cos(tilt).
+            beta = np.deg2rad(self.tilt_deg)
+            t_az = np.deg2rad(self.tilt_az_deg)
+            d_e, d_n = np.sin(t_az), np.cos(t_az)       # downhill direction
+            along = east * d_e + north * d_n            # p·d
+            east  += along * d_e * (np.cos(beta) - 1.0)
+            north += along * d_n * (np.cos(beta) - 1.0)
+            up     = -along * np.sin(beta)
+        return np.column_stack([east, north, up])
 
     def az_range_deg(self) -> np.ndarray:
         """Azimuth scan grid in degrees: 0° … 360°."""
@@ -124,8 +146,9 @@ class UcaConfig:
 
         Column index: i_el * n_az + i_az → grid point (el[i_el], az[i_az]).
 
-        Formula (identical to CrossArrayConfig):
-            τ_k = 2π · (p_k_E · cosθ · sinφ + p_k_N · cosθ · cosφ)
+        Formula (identical to CrossArrayConfig, plus the Up term which is
+        zero for a flat array):
+            τ_k = 2π · (p_k_E · cosθ · sinφ + p_k_N · cosθ · cosφ + p_k_U · sinθ)
             A_k = exp(j·τ_k)
         """
         key = ('uca2d',
@@ -134,26 +157,31 @@ class UcaConfig:
                self.n_az, self.n_el,
                round(self.el_min_deg, 4),
                round(self.ant0_offset_deg, 4),
-               bool(self.ant_ccw))
+               bool(self.ant_ccw),
+               round(self.tilt_deg, 4),
+               round(self.tilt_az_deg, 4))
         if key not in self._cache:
             az = np.deg2rad(self.az_range_deg())   # (n_az,)
             el = np.deg2rad(self.el_range_deg())   # (n_el,)
 
             AZ, EL = np.meshgrid(az, el)           # (n_el, n_az)
 
-            # Direction cosines in East-North plane
+            # Direction cosines (ENU)
             u_east  = np.cos(EL) * np.sin(AZ)     # cosθ · sinφ
             u_north = np.cos(EL) * np.cos(AZ)     # cosθ · cosφ
+            u_up    = np.sin(EL)                  # sinθ
 
             # Flatten to (N_grid,) where N_grid = n_el × n_az
             ue = u_east.ravel()
             un = u_north.ravel()
+            uu = u_up.ravel()
 
             # Phase delays (n_ant, N_grid)
-            p   = self.positions                   # (n_ant, 2)
+            p   = self.positions                   # (n_ant, 3)
             tau = 2.0 * np.pi * (
                 p[:, 0:1] * ue[np.newaxis, :]
               + p[:, 1:2] * un[np.newaxis, :]
+              + p[:, 2:3] * uu[np.newaxis, :]
             )
             self._cache[key] = np.exp(1j * tau).astype(np.complex128)
 
@@ -248,6 +276,7 @@ def expected_uca_phase_diffs_deg(
     tau = 2.0 * np.pi * (
         pos[:, 0] * np.cos(el_r) * np.sin(az_r)
         + pos[:, 1] * np.cos(el_r) * np.cos(az_r)
+        + pos[:, 2] * np.sin(el_r)
     )
     tau -= tau[0]
     return np.degrees(tau[1:])

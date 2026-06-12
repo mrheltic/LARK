@@ -83,6 +83,9 @@ from .pipeline_debug import PipelineDebugSaver
 # ── Burst-to-satellite track clustering ────────────────────────────────────
 from .track_clusterer import cluster_from_jsonl, load_tracks_json
 
+# ── Track smoothing (offline Kalman + RTS) ──────────────────────────────────
+from .track_filter import kalman_smooth_track
+
 __all__ = [
     # DOA engine
     "UcaConfig",
@@ -114,4 +117,5 @@ __all__ = [
     "PipelineDebugSaver",
     "cluster_from_jsonl",
     "load_tracks_json",
+    "kalman_smooth_track",
 ]

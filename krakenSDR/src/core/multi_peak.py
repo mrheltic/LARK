@@ -74,11 +74,14 @@ def _doa_from_tone(
     snr_min_db: float,
     papr_min_db: float,
     el_min_deg: float = 10.0,
-) -> tuple[float, float, float, float, float] | None:
+) -> tuple[float, float, float, float, float, np.ndarray] | None:
     """
     BPF + MF covariance + DOA for one preamble tone.
 
-    Returns (az_deg, el_deg, power_db, papr_db, snr_db) or None if quality gate fails.
+    Returns (az_deg, el_deg, power_db, papr_db, snr_db, y_mf) or None if
+    a quality gate fails.  ``y_mf`` is the per-antenna matched-filter output
+    (n_ant complex) — the rank-1 array response that R_mf is built from;
+    persisting it allows multi-burst covariance averaging offline.
     """
     try:
         X_bpf = apply_bpf_and_normalize(
@@ -93,7 +96,7 @@ def _doa_from_tone(
 
     X_cal = apply_phase_correction(X_bpf, phase_offs) if has_cal else X_bpf
     try:
-        R_mf, _, snr_db = compute_mf_covariance(
+        R_mf, y_mf, snr_db = compute_mf_covariance(
             X_cal, tone_hz, FS, n_pre_eff, bpf_guard,
         )
     except ValueError:
@@ -116,7 +119,7 @@ def _doa_from_tone(
         return None
 
     # Return argmax power in dB (peak value of the spectrum = 0 dB by construction)
-    return float(az_deg), float(el_deg), 0.0, float(papr), float(snr_db)
+    return float(az_deg), float(el_deg), 0.0, float(papr), float(snr_db), y_mf
 
 
 def process_cpi_for_multi(
@@ -163,6 +166,7 @@ def process_cpi_for_multi(
     peak_list: list[tuple[float, float, float, float]] = []
     cfo_per_peak: list[float] = []
     snr_per_peak: list[float] = []
+    y_per_peak: list[np.ndarray] = []
     best_snr_db = -999.0
     best_tone_hz: float | None = None
     best_spec: np.ndarray | None = None
@@ -208,10 +212,11 @@ def process_cpi_for_multi(
             )
             if result is None:
                 continue
-            az_deg, el_deg, power_db, papr_db, snr_db = result
+            az_deg, el_deg, power_db, papr_db, snr_db, y_mf = result
             peak_list.append((az_deg, el_deg, power_db, papr_db))
             cfo_per_peak.append(float(tone_hz - profile["tone_nom_hz"]))
             snr_per_peak.append(snr_db)
+            y_per_peak.append(np.asarray(y_mf, dtype=np.complex64))
             if snr_db > best_snr_db:
                 best_snr_db = snr_db
                 best_tone_hz = tone_hz
@@ -243,5 +248,6 @@ def process_cpi_for_multi(
         "peaks": peaks_to_array(peak_list),
         "cfo_per_peak": cfo_per_peak,
         "snr_per_peak": snr_per_peak,
+        "y_per_peak": np.asarray(y_per_peak, dtype=np.complex64),
         "spec2d": np.asarray(best_spec, dtype=np.float32) if best_spec is not None else np.zeros((1, 1), dtype=np.float32),
     }

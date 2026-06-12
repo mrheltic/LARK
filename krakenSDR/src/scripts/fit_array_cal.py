@@ -65,6 +65,7 @@ from scripts.iridium_groundtruth import (  # noqa: E402
     load_session_window,
     parse_isotime,
 )
+from shared.iridium_tle import use_session_tle  # noqa: E402
 
 FS = 1_024_000.0
 
@@ -338,6 +339,7 @@ def main(argv: list[str] | None = None) -> None:
     profile = _PROFILES[args.mode]
     arr = cfg["array"]
 
+    use_session_tle(session_dir)   # freeze ground-truth elements per session
     t0, t1, meta = load_session_window(session_dir)
     print(f"Session window: {t0.isoformat()} → {t1.isoformat()}")
 

@@ -8,6 +8,10 @@ For each satellite with enough DOA peaks assigned by Doppler, draws:
     time colormap — temporal correspondence is readable at a glance;
   * az(t), el(t) and Doppler(t) panels, measured vs predicted.
 
+If ``tracks_smoothed.json`` exists in the subdir (written by
+scripts/smooth_tracks.py), the Kalman/RTS-smoothed trajectory is overlaid
+as a solid line; disable with --no-smooth.
+
 Peak→satellite assignment is the same unique-Doppler rule used by
 eval_doa_accuracy.py (±dopp_tol after receiver LO offset removal).
 
@@ -20,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from datetime import timedelta
@@ -33,6 +38,7 @@ for p in (_ROOT, _SRC):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from core.track_filter import azel_to_unit  # noqa: E402
 from scripts.eval_doa_accuracy import estimate_lo, load_peaks  # noqa: E402
 from scripts.fit_array_cal import _interp_track, build_sat_tracks  # noqa: E402
 from scripts.iridium_groundtruth import (  # noqa: E402
@@ -41,6 +47,7 @@ from scripts.iridium_groundtruth import (  # noqa: E402
     OBSERVER_LON,
     load_session_window,
 )
+from shared.iridium_tle import use_session_tle  # noqa: E402
 
 # Dark theme (matches offline_viz.py / run_doa.py)
 BG = "#1a1d27"
@@ -48,6 +55,7 @@ BG2 = "#21253a"
 C_BDR = "#3b4263"
 C_MUT = "#8891b0"
 C_TEXT = "#d8dae8"
+C_SMOOTH = "#39d2c0"   # Kalman/RTS smoothed trajectory
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -65,6 +73,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Receiver LO offset [Hz] (default: auto-estimate)")
     p.add_argument("--out-dir", default="",
                    help="Output dir for PNGs (default: <session>/plots)")
+    p.add_argument("--no-smooth", action="store_true",
+                   help="Do not overlay the Kalman/RTS smoothed trajectory")
     p.add_argument("--show", action="store_true", help="Open interactive windows")
     # build_sat_tracks() expects observer location + el_min on the namespace.
     p.set_defaults(lat=OBSERVER_LAT, lon=OBSERVER_LON, alt=OBSERVER_ALT, el_min=5.0)
@@ -101,6 +111,70 @@ def assign_peaks(peaks: list[dict], tracks: list[dict], *,
     return by_track
 
 
+def load_smoothed_lookup(path: str) -> dict[tuple[float, float], tuple]:
+    """
+    {(t, az_raw): (clusterer_track_id, az_smooth, el_smooth, outlier)} from
+    tracks_smoothed.json.  The (t, az_raw) pair identifies a peak exactly:
+    both files round the same JSONL values the same way.
+    """
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    lookup: dict[tuple[float, float], tuple] = {}
+    for trk in data.get("tracks", []):
+        tid = int(trk["id"])
+        outl = trk.get("outlier") or [False] * len(trk["t"])
+        for t, az_r, az_s, el_s, o in zip(trk["t"], trk["az_raw"],
+                                          trk["az_smooth"], trk["el_smooth"],
+                                          outl):
+            lookup[(round(float(t), 3), round(float(az_r), 2))] = \
+                (tid, float(az_s), float(el_s), bool(o))
+    return lookup
+
+
+def smooth_segments(
+    pts: list[dict],
+    lookup: dict[tuple[float, float], tuple],
+    *,
+    min_len: int = 15,
+    max_sep_deg: float = 20.0,
+) -> tuple[list[np.ndarray], list[int]]:
+    """
+    Smoothed (t_rel, az, el) rows for this satellite's peaks, split per
+    clusterer track id so lines are not drawn across track gaps.
+
+    Segments that disagree with the satellite's predicted trajectory
+    (median great-circle separation > max_sep_deg) are dropped — they are
+    spurious clusterer tracks that happened to match the Doppler gate.
+    Also returns the indices (into pts) of points the robust smoother
+    rejected as outliers.
+    """
+    by_tid: dict[int, list[tuple]] = {}
+    outlier_idx: list[int] = []
+    for i, p in enumerate(pts):
+        hit = lookup.get((round(p["t_rel"], 3), round(p["az"], 2)))
+        if hit is None:
+            continue
+        tid, az_s, el_s, outl = hit
+        if outl:
+            outlier_idx.append(i)
+        by_tid.setdefault(tid, []).append(
+            (p["t_rel"], az_s, el_s, p["az_pred"], p["el_pred"]))
+
+    segs: list[np.ndarray] = []
+    for _, rows in sorted(by_tid.items()):
+        if len(rows) < min_len:
+            continue
+        arr = np.asarray(sorted(rows))
+        us = azel_to_unit(arr[:, 1], arr[:, 2])
+        up = azel_to_unit(arr[:, 3], arr[:, 4])
+        sep = np.rad2deg(np.arccos(np.clip(np.sum(us * up, axis=1), -1, 1)))
+        if np.median(sep) <= max_sep_deg:
+            segs.append(arr[:, :3])
+    return segs, outlier_idx
+
+
 def _style_axes(ax):
     ax.set_facecolor(BG2)
     for s in ax.spines.values():
@@ -112,7 +186,9 @@ def _style_axes(ax):
 
 
 def plot_satellite(sat: str, pts: list[dict], trk: dict, *,
-                   lo_offset: float, subdir: str, out_dir: str, show: bool) -> str:
+                   lo_offset: float, subdir: str, out_dir: str, show: bool,
+                   smooth_segs: list[np.ndarray] | None = None,
+                   outlier_idx: list[int] | None = None) -> str:
     import matplotlib
     if not show:
         matplotlib.use("Agg")
@@ -182,6 +258,16 @@ def plot_satellite(sat: str, pts: list[dict], trk: dict, *,
     cb.ax.tick_params(colors=C_MUT, labelsize=8)
     cb.outline.set_edgecolor(C_BDR)
 
+    # Kalman/RTS smoothed trajectory (one line per clusterer track)
+    for seg in smooth_segs or []:
+        ax_sky.plot(np.deg2rad(seg[:, 1]), 90.0 - seg[:, 2],
+                    color=C_SMOOTH, lw=1.8, alpha=0.95, zorder=7)
+
+    # Points the robust smoother rejected
+    if outlier_idx:
+        ax_sky.scatter(np.deg2rad(az_m[outlier_idx]), 90.0 - el_m[outlier_idx],
+                       marker="x", s=26, c=C_MUT, linewidths=1.0, zorder=6.5)
+
     # ── Time panels ─────────────────────────────────────────────────────────
     # Azimuth on the unwrapped predicted branch (no 0/360 jumps)
     taz_u = np.rad2deg(np.unwrap(np.deg2rad(taz)))
@@ -201,6 +287,16 @@ def plot_satellite(sat: str, pts: list[dict], trk: dict, *,
         ax.plot(tx, py, color=C_MUT, lw=1.6, label="TLE (SGP4)")
         ax.scatter(mx, my, c=mx, cmap=cmap, norm=norm, s=14,
                    edgecolors=BG, linewidths=0.3, label="DOA", zorder=5)
+        if i in (0, 1):
+            for si, seg in enumerate(smooth_segs or []):
+                ts = seg[:, 0] / 60.0
+                if i == 0:      # azimuth on the same unwrapped branch
+                    pred_u = np.interp(ts, tt, taz_u)
+                    y = pred_u + wrap180(seg[:, 1] - pred_u)
+                else:
+                    y = seg[:, 2]
+                ax.plot(ts, y, color=C_SMOOTH, lw=1.8, zorder=6,
+                        label="KF/RTS smoothed" if si == 0 else None)
         ax.set_ylabel(label, fontsize=9)
         if ylim is not None:
             ax.set_ylim(*ylim)
@@ -210,13 +306,24 @@ def plot_satellite(sat: str, pts: list[dict], trk: dict, *,
             ax.legend(loc="best", fontsize=8, facecolor=BG2,
                       edgecolor=C_BDR, labelcolor=C_TEXT)
 
-    fig.suptitle(
+    title = (
         f"{sat} — DOA trajectory vs TLE   ({subdir}, {len(pts)} burst)\n"
         f"residuals: az {np.median(az_res):+.1f}° (MAD {az_mad:.1f}°)   "
         f"el {np.median(el_res):+.1f}° (MAD {el_mad:.1f}°)   "
-        f"LO {lo_offset:+.0f} Hz",
-        color=C_TEXT, fontsize=11,
+        f"LO {lo_offset:+.0f} Hz"
     )
+    if smooth_segs:
+        allp = np.vstack(smooth_segs)
+        ts = allp[:, 0] / 60.0
+        az_res_s = wrap180(allp[:, 1] - np.interp(ts, tt, taz_u))
+        el_res_s = allp[:, 2] - np.interp(ts, tt, tel)
+        title += (
+            f"\nsmoothed:  az {np.median(az_res_s):+.1f}° "
+            f"(MAD {np.median(np.abs(az_res_s - np.median(az_res_s))):.1f}°)   "
+            f"el {np.median(el_res_s):+.1f}° "
+            f"(MAD {np.median(np.abs(el_res_s - np.median(el_res_s))):.1f}°)"
+        )
+    fig.suptitle(title, color=C_TEXT, fontsize=11)
 
     out_path = os.path.join(
         out_dir, f"track_{sat.replace(' ', '_')}_{subdir}.png")
@@ -236,6 +343,7 @@ def main(argv: list[str] | None = None) -> None:
     out_dir = args.out_dir or os.path.join(session_dir, "plots")
     os.makedirs(out_dir, exist_ok=True)
 
+    use_session_tle(session_dir)   # freeze ground-truth elements per session
     t0, t1, _meta = load_session_window(session_dir)
     peaks = load_peaks(jsonl)
     print(f"{len(peaks)} DOA peaks from {jsonl}")
@@ -246,6 +354,16 @@ def main(argv: list[str] | None = None) -> None:
     print(f"LO offset: {lo:+.0f} Hz")
 
     by_track = assign_peaks(peaks, tracks, dopp_tol=args.dopp_tol, lo_offset=lo)
+
+    smooth_lookup: dict = {}
+    if not args.no_smooth:
+        sm_path = os.path.join(session_dir, args.subdir, "tracks_smoothed.json")
+        smooth_lookup = load_smoothed_lookup(sm_path)
+        if smooth_lookup:
+            print(f"Smoothed overlay from {sm_path}")
+        else:
+            print("No tracks_smoothed.json — run scripts/smooth_tracks.py "
+                  "for the KF/RTS overlay")
 
     # A satellite can pass more than once: number passes per name.
     n_passes = {}
@@ -264,9 +382,11 @@ def main(argv: list[str] | None = None) -> None:
         pts.sort(key=lambda p: p["t_rel"])
         seen[sat] = seen.get(sat, 0) + 1
         name = sat if n_passes[sat] == 1 else f"{sat} pass{seen[sat]}"
+        segs, outlier_idx = smooth_segments(pts, smooth_lookup)
         path = plot_satellite(
             name, pts, tracks[ti], lo_offset=lo,
-            subdir=args.subdir, out_dir=out_dir, show=args.show)
+            subdir=args.subdir, out_dir=out_dir, show=args.show,
+            smooth_segs=segs, outlier_idx=outlier_idx)
         print(f"  {name:24s} {len(pts):4d} burst → {path}")
         plotted += 1
 
