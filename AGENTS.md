@@ -3,6 +3,13 @@
 Model-agnostic entry point for AI coding agents working in this repository.
 Keep this file short; deep detail lives in `docs/` and the operations handbook.
 
+> **This is the one and only agent-instructions file — every agent reads it.**
+> Claude Code, Cursor, Codex and other tools all load `AGENTS.md` from the repo root.
+> `CLAUDE.md` is a **symlink** to this file (Claude Code's historical entry point), so
+> there is a single set of bytes to read and write — no per-tool folders, no copies to
+> keep in sync. Edit here and every agent sees it. The human-facing project tour is the
+> repo-root [`README.md`](./README.md).
+
 ## What this project is
 
 **LARK** is a KrakenSDR-based Direction-of-Arrival (DOA) system for **Iridium NEXT**
@@ -10,14 +17,24 @@ satellite bursts at **~1626 MHz**. A 5-element uniform circular array (UCA) esti
 azimuth and elevation from the IRA preamble CW tone. Pure Python — no GNU Radio in the
 main pipeline.
 
-Validated outdoor accuracy (session 2026-06-05): azimuth MAD **~3.8°**, elevation MAD
-**~5.5°** vs SGP4 ground truth (with phase calibration enabled).
+Validated outdoor accuracy (reference session 2026-06-05, phase calibration on, vs SGP4
+ground truth). Headline metric is **MedAE** (median absolute error):
+
+| Axis | Single-burst | Multi-burst (B=16) |
+|------|--------------|--------------------|
+| Azimuth   | 4.1° | **3.7°** |
+| Elevation | 3.9° | **3.3°** |
+
+Elevation is the weaker axis (per-burst MAD ≈ 5.5° vs ≈ 3.8° az); multi-burst covariance
+averaging (`--cov-bursts 16`) is what closes the gap.
 
 ## Repository map
 
 ```
 LARK/
-├── AGENTS.md                          ← you are here
+├── AGENTS.md                          ← you are here (all agent rules, single file)
+├── CLAUDE.md → AGENTS.md              ← symlink (Claude Code entry point)
+├── README.md                          ← human-facing project tour
 ├── docs/                              ← architecture, pipeline, ADRs
 ├── krakenSDR/src/
 │   ├── core/                          ← reusable DSP (unit-tested)
@@ -103,16 +120,49 @@ pytest tests/ -q
 7. **Phase calibration** — never disable for real measurement workflows in docs/examples.
 8. **Tests** — run relevant pytest modules after substantive DSP changes.
 
+## Layer-specific notes
+
+### `core/` — DSP library (`krakenSDR/src/core/`)
+
+Hardware-independent, unit-tested signal processing.
+
+| Module | Responsibility |
+|--------|----------------|
+| `burst_processing.py` | detect, tone scan, BPF, MF covariance |
+| `multi_peak.py` | full CPI multi-satellite processing |
+| `doa_uca_2d.py` | UCA steering, MUSIC/Capon/Bartlett, peak find |
+| `track_clusterer.py` | peak → track association |
+| `recording.py` | session record + frame iteration |
+
+- Pure functions where possible; explicit parameters over hidden globals.
+- NumPy shapes: IQ `(n_ant, n_samples)`, spectrum `(n_el, n_az)`.
+- **Do not** add GNU Radio dependencies to `core/`.
+- **Do not** extend legacy modules (`gates`, `tone_extraction`, `tracking`) without an
+  explicit request.
+- After substantive changes: `pytest tests/test_burst*.py tests/test_multi_peak.py tests/test_doa.py -q`.
+
+### `apps/doa_iridium/` — application layer
+
+CLI entry points, config, offline viz/replay. Import DSP from `core/`; do not duplicate it.
+
+- Defaults live in `doa_config.toml`; CLI flags override for experiments.
+- `use_phase_cal = true` for any real-measurement workflow or doc example.
+- Outdoor profile: wide Doppler scan (±45 kHz); indoor: narrow band.
+- Reprocess writes `doa_multi_<algo>/` (`doa_multi.jsonl`, `tracks.json`); use
+  `--recluster-only` to tune clustering without re-reading IQ.
+- Viz flags: `--replay` (timeline), `--compare` (algorithm overlay), `--no-tracks`
+  (flat peak coloring, disable track-filter hotkeys).
+
 ## Where to read next
 
 | Topic | Document |
 |-------|----------|
+| Project overview (humans) | `README.md` |
 | Repo structure & layers | `docs/architecture.md` |
 | Signal path & algorithms | `docs/doa-pipeline.md` |
 | Why multi-peak per tone | `docs/decisions/001-multi-peak-per-tone.md` |
 | Why elevation gate | `docs/decisions/002-elevation-gate.md` |
 | Commands & field procedures | `krakenSDR/src/apps/doa_iridium/README.md` |
-| Cursor-specific rules | `.cursor/rules/*.mdc` |
 
 ## Session data layout
 
