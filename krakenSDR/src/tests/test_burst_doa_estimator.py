@@ -121,6 +121,26 @@ class TestDOACapon2D:
         assert _angular_error(az_est, 120.0) < 15.0
 
 
+class TestFindPeakElRange:
+
+    def test_find_peak_respects_el_max_deg(self):
+        cfg = UcaConfig(
+            n_ant=N_ANT, radius_lambda=R_LAMBDA,
+            n_az=72, n_el=19,
+            el_min_deg=5.0, el_max_deg=45.0,
+            num_expected_signals=1,
+        )
+        spec = np.full((cfg.n_el, cfg.n_az), -40.0, dtype=np.float64)
+        i_el = int(np.argmin(np.abs(cfg.el_range_deg() - 40.0)))
+        i_az = 18
+        spec[i_el, i_az] = 0.0
+        spec[i_el - 1, i_az] = -6.0
+        spec[i_el + 1, i_az] = -6.0
+        _, el_est, _ = find_peak_uca_2d(spec, cfg)
+        assert el_est <= cfg.el_max_deg + 0.5
+        assert abs(el_est - 40.0) < 3.0
+
+
 class TestDOAPhaseFit2D:
 
     def test_phase_fit_with_hint(self):

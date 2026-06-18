@@ -83,7 +83,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--alt", type=float, default=OBSERVER_ALT)
     p.add_argument("--snr-min", type=float, default=8.0,
                    help="Min burst SINR [dB] — keep only clean calibration bursts")
-    p.add_argument("--el-min", type=float, default=10.0,
+    p.add_argument("--el-min", type=float, default=8.0,
                    help="Min satellite elevation [deg] for calibration bursts")
     p.add_argument("--dopp-tol", type=float, default=2_000.0,
                    help="Doppler match tolerance [Hz] for satellite assignment")
@@ -91,6 +91,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Receiver LO offset [Hz] (default: auto-estimate)")
     p.add_argument("--rot-step", type=float, default=1.0,
                    help="Rotation grid step [deg]")
+    p.add_argument("--fit-tilt", action="store_true",
+                   help="Grid-search array-plane tilt (tilt_deg, tilt_az_deg)")
+    p.add_argument("--tilt-max", type=float, default=10.0,
+                   help="Max tilt magnitude to search [deg] (--fit-tilt)")
+    p.add_argument("--tilt-step", type=float, default=1.0,
+                   help="Tilt grid step [deg] (--fit-tilt)")
+    p.add_argument("--tilt-az-step", type=float, default=30.0,
+                   help="Tilt azimuth grid step [deg] (--fit-tilt)")
     p.add_argument("--max-frames", type=int, default=0, help="0 = all frames")
     p.add_argument("--frame-start", type=int, default=0)
     p.add_argument("--frame-stride", type=int, default=1)
@@ -147,7 +155,7 @@ def collect_burst_measurements(
             for tone_hz, _snr in tones:
                 try:
                     X_bpf = apply_bpf_and_normalize(
-                        X_win, min(window_samples, X_win.shape[1]),
+                        X_win, min(pre_samples, X_win.shape[1]),
                         FS, tone_hz, profile["bpf_bw_hz"],
                     )
                     n_pre_eff = min(pre_samples, X_bpf.shape[1] - bpf_guard)
@@ -272,18 +280,57 @@ def assign_satellites(
 # Phase-offset + rotation fit
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _steering(az_deg, el_deg, *, n_ant, radius_lambda, ant0_offset_deg, ant_ccw):
-    """Steering vectors (B, n_ant) — same convention as UcaConfig.positions."""
+def _uca_positions(
+    n_ant: int,
+    radius_lambda: float,
+    ant0_offset_deg: float,
+    ant_ccw: bool,
+    tilt_deg: float = 0.0,
+    tilt_az_deg: float = 0.0,
+) -> np.ndarray:
+    """(n_ant, 3) ENU positions in wavelengths — matches UcaConfig.positions."""
     k = np.arange(n_ant, dtype=np.float64)
     sign = -1.0 if ant_ccw else 1.0
-    phi = np.deg2rad(ant0_offset_deg) + sign * 2.0 * np.pi * k / n_ant
-    p_e = radius_lambda * np.sin(phi)            # (n_ant,)
-    p_n = radius_lambda * np.cos(phi)
+    phi_k = np.deg2rad(ant0_offset_deg) + sign * 2.0 * np.pi * k / n_ant
+    east = radius_lambda * np.sin(phi_k)
+    north = radius_lambda * np.cos(phi_k)
+    up = np.zeros_like(east)
+    if tilt_deg != 0.0:
+        beta = np.deg2rad(tilt_deg)
+        t_az = np.deg2rad(tilt_az_deg)
+        d_e, d_n = np.sin(t_az), np.cos(t_az)
+        along = east * d_e + north * d_n
+        east = east + along * d_e * (np.cos(beta) - 1.0)
+        north = north + along * d_n * (np.cos(beta) - 1.0)
+        up = -along * np.sin(beta)
+    return np.column_stack([east, north, up])
+
+
+def _steering(az_deg, el_deg, *, positions: np.ndarray):
+    """Steering vectors (B, n_ant) from precomputed antenna positions."""
     az = np.deg2rad(np.atleast_1d(az_deg))[:, None]   # (B, 1)
     el = np.deg2rad(np.atleast_1d(el_deg))[:, None]
-    tau = 2.0 * np.pi * (p_e[None, :] * np.cos(el) * np.sin(az)
-                         + p_n[None, :] * np.cos(el) * np.cos(az))
-    return np.exp(1j * tau)                       # (B, n_ant)
+    ue = np.cos(el) * np.sin(az)
+    un = np.cos(el) * np.cos(az)
+    uu = np.sin(el)
+    p = positions
+    tau = 2.0 * np.pi * (
+        p[:, 0] * ue + p[:, 1] * un + p[:, 2] * uu
+    )
+    return np.exp(1j * tau)
+
+
+def _fit_cost(Y, w, A) -> tuple[float, np.ndarray, np.ndarray]:
+    """Weighted circular-mean phase residual cost and per-channel stats."""
+    Z = Y * np.conj(A)
+    Z = Z * np.conj(Z[:, :1])
+    mag = np.abs(Z)
+    Z = np.where(mag > 1e-20, Z / np.maximum(mag, 1e-20), 0.0)
+    mean_ph = np.sum(w * Z, axis=0)
+    conc = np.abs(mean_ph)
+    cost = float(np.sum(1.0 - conc[1:]))
+    circ_std = np.degrees(np.sqrt(-2.0 * np.log(np.clip(conc, 1e-6, 1.0))))
+    return cost, np.degrees(np.angle(mean_ph)), circ_std
 
 
 def fit_offsets_and_rotation(
@@ -293,10 +340,14 @@ def fit_offsets_and_rotation(
     radius_lambda: float,
     ant_ccw: bool,
     rot_step_deg: float = 1.0,
+    fit_tilt: bool = False,
+    tilt_max_deg: float = 10.0,
+    tilt_step_deg: float = 1.0,
+    tilt_az_step_deg: float = 30.0,
 ) -> dict:
     """
-    Grid search over array rotation; per-channel offsets by weighted circular
-    mean of the residual phasors relative to antenna 0.
+    Grid search over array rotation (and optionally plane tilt); per-channel
+    offsets by weighted circular mean of residual phasors relative to antenna 0.
     """
     Y = np.stack([b["y_mf"] for b in assigned])               # (B, n_ant)
     az = np.array([b["az_true"] for b in assigned])
@@ -304,27 +355,32 @@ def fit_offsets_and_rotation(
     w = np.minimum(10.0 ** (np.array([b["snr_db"] for b in assigned]) / 10.0), 100.0)
     w = w[:, None] / np.sum(w)
 
+    if fit_tilt:
+        tilts = np.arange(0.0, tilt_max_deg + 0.1, tilt_step_deg)
+        tilt_azs = np.arange(0.0, 360.0, tilt_az_step_deg)
+    else:
+        tilts = np.array([0.0])
+        tilt_azs = np.array([0.0])
+
     best = None
     for rot in np.arange(-180.0, 180.0, rot_step_deg):
-        A = _steering(az, el, n_ant=n_ant, radius_lambda=radius_lambda,
-                      ant0_offset_deg=rot, ant_ccw=ant_ccw)
-        Z = Y * np.conj(A)                                    # residual phasors
-        Z = Z * np.conj(Z[:, :1])                             # relative to ant 0
-        mag = np.abs(Z)
-        Z = np.where(mag > 1e-20, Z / np.maximum(mag, 1e-20), 0.0)
-        mean_ph = np.sum(w * Z, axis=0)                       # (n_ant,)
-        conc = np.abs(mean_ph)                                # 1 = perfectly consistent
-        cost = float(np.sum(1.0 - conc[1:]))
-        if best is None or cost < best["cost"]:
-            # Circular std per channel [deg] (Mardia): sqrt(-2 ln R)
-            circ_std = np.degrees(np.sqrt(-2.0 * np.log(np.clip(conc, 1e-6, 1.0))))
-            best = {
-                "cost": cost,
-                "rot_deg": float(rot),
-                "offsets_deg": np.degrees(np.angle(mean_ph)),
-                "concentration": conc,
-                "circ_std_deg": circ_std,
-            }
+        for tilt in tilts:
+            for t_az in tilt_azs:
+                pos = _uca_positions(
+                    n_ant, radius_lambda, rot, ant_ccw,
+                    tilt_deg=float(tilt), tilt_az_deg=float(t_az),
+                )
+                A = _steering(az, el, positions=pos)
+                cost, offs_deg, circ_std = _fit_cost(Y, w, A)
+                if best is None or cost < best["cost"]:
+                    best = {
+                        "cost": cost,
+                        "rot_deg": float(rot),
+                        "tilt_deg": float(tilt),
+                        "tilt_az_deg": float(t_az),
+                        "offsets_deg": offs_deg,
+                        "circ_std_deg": circ_std,
+                    }
     best["offsets_deg"][0] = 0.0
     return best
 
@@ -362,29 +418,41 @@ def main(argv: list[str] | None = None) -> None:
         assigned,
         n_ant=arr["n_ant"], radius_lambda=arr["radius_lambda"],
         ant_ccw=arr["ant_ccw"], rot_step_deg=args.rot_step,
+        fit_tilt=args.fit_tilt,
+        tilt_max_deg=args.tilt_max,
+        tilt_step_deg=args.tilt_step,
+        tilt_az_step_deg=args.tilt_az_step,
     )
 
     offs = fit["offsets_deg"]
     print("\n── Fit result ──────────────────────────────────────────")
     print(f"ant0_offset_deg (array rotation): {fit['rot_deg']:+.1f}°")
+    if args.fit_tilt:
+        print(f"tilt_deg / tilt_az_deg:          {fit['tilt_deg']:+.1f}° / {fit['tilt_az_deg']:.0f}°")
     for k in range(len(offs)):
         print(f"  ch{k}: phase offset {offs[k]:+7.1f}°   "
               f"residual spread ±{fit['circ_std_deg'][k]:.1f}°")
     print(f"cost = {fit['cost']:.4f}  ({len(assigned)} bursts, {n_sats} satellites)")
 
     out_path = args.out or os.path.join(session_dir, "cal_tle.npz")
-    np.savez(
-        out_path,
+    save_kw = dict(
         phase_offsets_deg=offs.astype(np.float64),
         ant0_offset_deg=np.float64(fit["rot_deg"]),
         circ_std_deg=fit["circ_std_deg"].astype(np.float64),
         n_bursts=np.int32(len(assigned)),
         n_sats=np.int32(n_sats),
     )
+    if args.fit_tilt:
+        save_kw["tilt_deg"] = np.float64(fit["tilt_deg"])
+        save_kw["tilt_az_deg"] = np.float64(fit["tilt_az_deg"])
+    np.savez(out_path, **save_kw)
     print(f"\nSaved calibration to {out_path}")
     print("Apply it in doa_config.toml:")
     print("  [array]")
     print(f"  ant0_offset_deg = {fit['rot_deg']:.1f}")
+    if args.fit_tilt:
+        print(f"  tilt_deg        = {fit['tilt_deg']:.1f}")
+        print(f"  tilt_az_deg     = {fit['tilt_az_deg']:.0f}")
     print("  use_phase_cal   = true")
     print(f'  cal_file        = "{out_path}"')
 

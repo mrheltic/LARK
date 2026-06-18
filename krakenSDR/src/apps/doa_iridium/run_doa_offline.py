@@ -44,6 +44,7 @@ from apps.doa_iridium.run_doa import (  # noqa: E402
     _PROFILES,
     _apply_cli,
     _load_cal,
+    _load_cal_npz,
     load_config,
 )
 from core.burst_processing import (
@@ -143,12 +144,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _build_uca(cfg: dict) -> UcaConfig:
     arr = cfg["array"]
     alg = cfg["algorithm"]
+    n_ant = arr["n_ant"]
+    tilt_deg = float(arr.get("tilt_deg", 0.0))
+    tilt_az_deg = float(arr.get("tilt_az_deg", 0.0))
+    if arr.get("use_phase_cal") and arr.get("cal_file"):
+        meta = _load_cal_npz(arr["cal_file"], n_ant)
+        if meta.get("has_tilt"):
+            tilt_deg = float(meta["tilt_deg"])
+            tilt_az_deg = float(meta["tilt_az_deg"])
     return UcaConfig(
-        n_ant=arr["n_ant"], radius_lambda=arr["radius_lambda"],
+        n_ant=n_ant, radius_lambda=arr["radius_lambda"],
         n_az=alg["n_az"], n_el=alg["n_el"],
         el_min_deg=alg.get("el_min_deg", 5.0), el_max_deg=alg.get("el_max_deg", 90.0),
         ant0_offset_deg=arr["ant0_offset_deg"],
         ant_ccw=arr["ant_ccw"],
+        tilt_deg=tilt_deg,
+        tilt_az_deg=tilt_az_deg,
         num_expected_signals=1,
     )
 
@@ -219,9 +230,10 @@ def _run_doa_on_window(
     if dbg and dbg.enabled:
         dbg.save("tones", [{"tone_hz": float(t), "snr_db": float(s)} for t, s in tones])
 
+    bpf_pre = min(pre_samples, X_win.shape[1])
     try:
         X_bpf = apply_bpf_and_normalize(
-            X_win[:, :window_samples], window_samples, FS, tone_hz, profile["bpf_bw_hz"]
+            X_win, bpf_pre, FS, tone_hz, profile["bpf_bw_hz"]
         )
     except ValueError:
         return None

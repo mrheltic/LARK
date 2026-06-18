@@ -109,6 +109,7 @@ class TestFullPipeline:
         az_est, el_est, papr = find_peak_uca_2d(spec, cfg)
         assert papr > 3.0, f"PAPR too low: {papr:.1f} dB"
         assert _angular_error(az_est, 0.0) < 10.0, f"az={az_est:.1f}°, expected ~0°"
+        assert abs(el_est - 20.0) < 10.0, f"el={el_est:.1f}°, expected ~20°"
 
     @pytest.mark.parametrize("az,el", [(45, 30), (90, 45), (180, 25), (270, 60), (355, 15)])
     def test_pipeline_various_directions(self, az, el):
@@ -138,6 +139,7 @@ class TestFullPipeline:
 
         az_err = _angular_error(az_est, az)
         assert az_err < 15.0, f"az={az}°: est={az_est:.1f}°, err={az_err:.1f}°"
+        assert abs(el_est - el) < 15.0, f"el={el}°: est={el_est:.1f}°, err={abs(el_est - el):.1f}°"
 
     def test_pipeline_with_doppler(self):
         cfg = _uca_cfg()
@@ -205,6 +207,63 @@ class TestFullPipeline:
 
         starts = detect_energy_bursts(noise[0, :], FS, threshold_factor=5.0)
         assert len(starts) == 0, "Pure noise should not produce burst detection"
+
+
+def _make_burst_window_with_data_tail(
+    az_deg: float,
+    el_deg: float,
+    *,
+    pre_samples: int = 2621,
+    window_samples: int = 3000,
+    snr_db: float = 25.0,
+    rng_seed: int = 77,
+) -> np.ndarray:
+    """Preamble CW followed by a wideband DQPSK-like data section (production window)."""
+    rng = np.random.default_rng(rng_seed)
+    k = np.arange(N_ANT)
+    phi = 2 * np.pi * k / N_ANT
+    az_r = np.deg2rad(az_deg)
+    el_r = np.deg2rad(el_deg)
+    tau = 2 * np.pi * R_LAMBDA * np.cos(el_r) * np.cos(az_r - phi)
+    a = np.exp(1j * tau)
+    amp = 10 ** (snr_db / 20.0)
+
+    t_pre = np.arange(pre_samples, dtype=np.float64)
+    cw = amp * np.exp(2j * np.pi * TONE_HZ / FS * t_pre)
+    pre = np.outer(a, cw)
+
+    tail_len = window_samples - pre_samples
+    sym_rate = 25_000.0
+    t_tail = np.arange(tail_len, dtype=np.float64)
+    # Strong in-band modulation after the CW preamble (mimics IRA data section).
+    data = amp * np.exp(1j * (2 * np.pi * TONE_HZ / FS * t_tail
+                              + np.cumsum(rng.choice([-1, 1], tail_len) * 0.8)))
+    data = np.outer(a, data)
+
+    X_win = np.zeros((N_ANT, window_samples), dtype=np.complex64)
+    X_win[:, :pre_samples] = pre.astype(np.complex64)
+    X_win[:, pre_samples:] = data.astype(np.complex64)
+    return X_win
+
+
+class TestBPFWindowLength:
+    """BPF must use preamble length only — not the wider burst window."""
+
+    def test_pre_samples_differs_from_window_samples_with_data_tail(self):
+        """Longer BPF FFT includes post-preamble data and alters preamble IQ."""
+        X_win = _make_burst_window_with_data_tail(90.0, 35.0)
+
+        X_bpf_pre = apply_bpf_and_normalize(X_win, 2621, FS, TONE_HZ)
+        X_bpf_win = apply_bpf_and_normalize(X_win, 3000, FS, TONE_HZ)
+
+        n = min(2621, X_bpf_pre.shape[1], X_bpf_win.shape[1])
+        rel_diff = float(
+            np.linalg.norm(X_bpf_pre[:, :n] - X_bpf_win[:, :n])
+            / (np.linalg.norm(X_bpf_pre[:, :n]) + 1e-20)
+        )
+        assert rel_diff > 0.01, (
+            f"post-preamble data should change BPF output: rel_diff={rel_diff:.4f}"
+        )
 
 
 class TestPipelineEMA:

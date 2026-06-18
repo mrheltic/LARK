@@ -83,9 +83,10 @@ def _doa_from_tone(
     (n_ant complex) — the rank-1 array response that R_mf is built from;
     persisting it allows multi-burst covariance averaging offline.
     """
+    bpf_pre = min(pre_samples, X_win.shape[1])
     try:
         X_bpf = apply_bpf_and_normalize(
-            X_win, window_samples, FS, tone_hz, bpf_bw_hz,
+            X_win, bpf_pre, FS, tone_hz, bpf_bw_hz,
         )
     except ValueError:
         return None
@@ -222,7 +223,8 @@ def process_cpi_for_multi(
                 best_tone_hz = tone_hz
                 # Re-compute spec for the strongest tone for visualisation
                 try:
-                    X_bpf = apply_bpf_and_normalize(X_win, window_samples, FS, tone_hz, profile["bpf_bw_hz"])
+                    bpf_pre = min(pre_samples, X_win.shape[1])
+                    X_bpf = apply_bpf_and_normalize(X_win, bpf_pre, FS, tone_hz, profile["bpf_bw_hz"])
                     X_cal = apply_phase_correction(X_bpf, phase_offs) if has_cal else X_bpf
                     R_mf, _, _ = compute_mf_covariance(X_cal, tone_hz, FS,
                                                        min(pre_samples, X_bpf.shape[1] - bpf_guard), bpf_guard)

@@ -156,6 +156,7 @@ class UcaConfig:
                round(self.radius_lambda, 8),
                self.n_az, self.n_el,
                round(self.el_min_deg, 4),
+               round(self.el_max_deg, 4),
                round(self.ant0_offset_deg, 4),
                bool(self.ant_ccw),
                round(self.tilt_deg, 4),
@@ -216,7 +217,7 @@ def find_peak_uca_2d(
     Returns
     -----------
     az_deg  : estimated azimuth  [°, 0…360]
-    el_deg  : estimated elevation [°, el_min…90]
+    el_deg  : estimated elevation [°, el_min…el_max]
     papr_db : Peak-to-Average Power Ratio of the spectrum [dB]
     """
     idx       = np.unravel_index(np.argmax(spec), spec.shape)
@@ -243,12 +244,12 @@ def find_peak_uca_2d(
             el_frac = float(np.clip(0.5 * (ym - yp) / denom_el, -0.5, 0.5))
 
     az_step = 360.0 / n_az
-    el_step = (90.0 - cfg.el_min_deg) / max(n_el - 1, 1)
+    el_step = (cfg.el_max_deg - cfg.el_min_deg) / max(n_el - 1, 1)
 
     az_deg = (cfg.az_range_deg()[i_az] + az_frac * az_step) % 360.0
     el_deg = float(
         np.clip(cfg.el_range_deg()[i_el] + el_frac * el_step,
-                cfg.el_min_deg, 90.0)
+                cfg.el_min_deg, cfg.el_max_deg)
     )
 
     s_lin  = 10.0 ** (np.clip(spec, -200.0, 0.0) / 10.0)

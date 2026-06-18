@@ -73,6 +73,8 @@ el_max_deg = 90.0
 # for clean setups with phase calibration
 snr_min_db   = 4.0         # minimum covariance SINR [dB] — reject pure noise
 papr_min_db  = 2.5         # minimum MUSIC peak-to-average [dB]
+el_min_gate_deg = 10.0     # post-peak quality gate — reject el below this (offline default)
+                            # grid floor is algorithm.el_min_deg (5°); gate filters horizon artifacts
                             # < 2.0 = flat spectrum, direction unreliable
                             # with phase cal > 8-12 is achievable
 

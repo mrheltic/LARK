@@ -103,6 +103,7 @@ _DEFAULTS: dict = {
     },
     "thresholds": {
         "snr_min_db": 4.0, "papr_min_db": 2.5,
+        "el_min_gate_deg": 10.0,
         "cov_alpha": 0.93, "az_ema_alpha": 0.88, "el_ema_alpha": 0.65,
     },
     "output": {"json_file": "", "debug_dir": ""},
@@ -209,17 +210,32 @@ def _apply_cli(cfg: dict, args: argparse.Namespace) -> dict:
     return cfg
 
 
-def _load_cal(cal_file: str, n_ant: int) -> list[float]:
+def _load_cal_npz(cal_file: str, n_ant: int) -> dict:
+    """Load phase offsets and optional geometry (tilt) from a calibration .npz."""
+    out = {
+        "phase_offsets_deg": [0.0] * n_ant,
+        "tilt_deg": 0.0,
+        "tilt_az_deg": 0.0,
+        "has_tilt": False,
+    }
     if not cal_file:
-        return [0.0] * n_ant
+        return out
     try:
         data = np.load(cal_file)
         offs = list(data["phase_offsets_deg"])
         offs += [0.0] * max(0, n_ant - len(offs))
-        return [float(x) for x in offs[:n_ant]]
+        out["phase_offsets_deg"] = [float(x) for x in offs[:n_ant]]
+        if "tilt_deg" in data:
+            out["tilt_deg"] = float(data["tilt_deg"])
+            out["tilt_az_deg"] = float(data.get("tilt_az_deg", 0.0))
+            out["has_tilt"] = True
     except Exception as exc:
         print(f"[cal] Could not load {cal_file!r}: {exc} — using zeros.")
-        return [0.0] * n_ant
+    return out
+
+
+def _load_cal(cal_file: str, n_ant: int) -> list[float]:
+    return _load_cal_npz(cal_file, n_ant)["phase_offsets_deg"]
 
 
 # =============================================================================
@@ -273,6 +289,7 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
         find_peak_uca_2d,
     )
     from core.doa_algorithms import apply_phase_correction
+    from core.gates import BoundaryGate
     from core.multiburst import TrackCovarianceEma
 
     hw   = cfg["hardware"]
@@ -290,8 +307,14 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
     profile        = _PROFILES[alg["mode"]]
     radius_lambda  = arr["radius_lambda"]
     use_phase_cal  = bool(arr.get("use_phase_cal", False))
-    phase_offs     = _load_cal(arr["cal_file"], n_ant) if use_phase_cal else [0.0] * n_ant
+    cal_meta       = _load_cal_npz(arr["cal_file"], n_ant) if use_phase_cal else None
+    phase_offs     = cal_meta["phase_offsets_deg"] if cal_meta else [0.0] * n_ant
     has_cal        = use_phase_cal and any(p != 0.0 for p in phase_offs)
+    tilt_deg       = float(arr.get("tilt_deg", 0.0))
+    tilt_az_deg    = float(arr.get("tilt_az_deg", 0.0))
+    if cal_meta is not None and cal_meta.get("has_tilt"):
+        tilt_deg = float(cal_meta["tilt_deg"])
+        tilt_az_deg = float(cal_meta["tilt_az_deg"])
 
     uca = UcaConfig(
         n_ant=n_ant, radius_lambda=radius_lambda,
@@ -299,6 +322,8 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
         el_min_deg=alg.get("el_min_deg", 5.0), el_max_deg=alg.get("el_max_deg", 90.0),
         ant0_offset_deg=arr["ant0_offset_deg"],
         ant_ccw=arr["ant_ccw"],
+        tilt_deg=tilt_deg,
+        tilt_az_deg=tilt_az_deg,
         num_expected_signals=1,
     )
 
@@ -309,6 +334,9 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
     cov_alpha = thr["cov_alpha"]
     az_alpha  = thr["az_ema_alpha"]
     el_alpha  = thr["el_ema_alpha"]
+    el_min_gate = float(thr.get("el_min_gate_deg", 10.0))
+    el_step = (uca.el_max_deg - uca.el_min_deg) / max(uca.n_el - 1, 1)
+    boundary_gate = BoundaryGate(uca.el_min_deg, uca.el_max_deg, el_step)
 
     # Precompute antenna angular positions for expected phase diff computation
     _phi_k = 2 * np.pi * np.arange(1, n_ant) / n_ant   # (n_ant-1,), CW from North
@@ -382,9 +410,10 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
 
                 # ── Stage 3: BPF + amplitude normalisation ────────────────────────
                 X_win = X[:, b0:bend]
+                bpf_pre = min(pre_samples, X_win.shape[1])
                 try:
                     X_bpf = apply_bpf_and_normalize(
-                        X_win, window_samples, fs, tone_hz, profile["bpf_bw_hz"]
+                        X_win, bpf_pre, fs, tone_hz, profile["bpf_bw_hz"]
                     )
                 except ValueError:
                     continue
@@ -433,6 +462,10 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
                 az_raw, el_raw, papr = find_peak_uca_2d(spec, uca)
 
                 if papr < thr["papr_min_db"]:
+                    continue
+                if el_raw < el_min_gate:
+                    continue
+                if boundary_gate.check(el_inst=el_raw).el_clamped:
                     continue
 
                 if dbg and dbg.enabled:
