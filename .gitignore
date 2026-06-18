@@ -100,8 +100,10 @@ Thumbs.db
 
 # ── LibreSDR: temp TX files ───────────────────────────────────────────────────
 /tmp/libresdr_*
-paper/parsed/
-paper/images/
+
+# ── Reference papers: kept locally, never versioned ───────────────────────────
+/paper/
+
 *.npz
 *.wav
 *.pdf
