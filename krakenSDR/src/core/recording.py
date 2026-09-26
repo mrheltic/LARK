@@ -358,14 +358,35 @@ class SessionRecorder:
         return written
 
 
-def session_frame_times(session_dir: str) -> np.ndarray | None:
+def session_frame_times(session_dir: str, *, grid: bool = True) -> np.ndarray | None:
     """Per-frame wall-clock epochs [s] for raw/frame_NNNNNN.npy.
 
     Live recordings drop CPIs when processing lags, so ``frame_index ×
     CPI_duration`` drifts from wall time by many minutes over a session.
-    Prefers raw/timestamps.csv (written live by SessionRecorder); falls back
-    to file modification times (≈ when each frame was written, i.e. just
-    after the end of its CPI).  Returns None if there are no frames.
+    Prefers raw/timestamps.csv (written live by SessionRecorder), which since
+    Sep 2026 holds the epoch of the CPI's FIRST sample -- the convention every
+    consumer assumes, remap_epochs() in particular, which adds the intra-CPI
+    sample offset on top of it.
+
+    Falls back to file modification times, which do NOT follow that convention:
+    an mtime is roughly the end of the CPI plus however long the write took, so
+    it runs one CPI plus a write latency late, and the writes are bursty (on the
+    reference session 13% of consecutive mtimes are less than 30 ms apart
+    against a 64 ms CPI, and 5% of frames are off by more than 150 ms).
+    Sessions recorded before Sep 2026 have no timestamps.csv and take this path.
+
+    The jitter IS removed (``grid=True``, the default): the samples sit on an
+    exact grid of one CPI every ``cpi_size / fs``, and a dropped CPI skips a
+    whole slot, so every frame is put back on the grid by
+    :func:`rebuild_epochs_on_grid`.  The constant lag is NOT removed: the
+    median latency is added back, so the epochs keep the mtime convention that
+    the IBC-measured clock offset absorbs (removing it here without recomputing
+    that offset would shift every epoch twice).  On the reference session this
+    lowers the MAD of the IBC clock samples from 58 ms to 37 ms, against a floor
+    of about 22 ms set by the 90 ms quantisation of Iridium time.
+    ``grid=False`` returns the raw mtimes.
+
+    Returns None if there are no frames.
     """
     raw_dir = os.path.join(session_dir, "raw")
     n = count_session_raw_frames(session_dir)
@@ -387,10 +408,49 @@ def session_frame_times(session_dir: str) -> np.ndarray | None:
         if not np.any(np.isnan(ts)):
             return ts
 
-    return np.array([
+    mtimes = np.array([
         os.path.getmtime(os.path.join(raw_dir, f"frame_{i:06d}.npy"))
         for i in range(n)
     ])
+    if not grid or n < 2:
+        return mtimes
+    fs_hz = 1_024_000.0
+    meta_path = os.path.join(session_dir, "meta.json")
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                fs_hz = float(json.load(f).get("fs_hz", fs_hz))
+        except (OSError, ValueError):
+            pass
+    cpi_size = np.load(os.path.join(raw_dir, "frame_000000.npy"), mmap_mode="r").shape[-1]
+    return rebuild_epochs_on_grid(mtimes, cpi_size / fs_hz)
+
+
+def rebuild_epochs_on_grid(mtimes: np.ndarray, cpi_s: float,
+                           n_phase: int = 64) -> np.ndarray:
+    """Put mtime-stamped frames back on the sample grid (mtime convention kept).
+
+    Each CPI ends on a grid slot ``phase + (n+1)·cpi_s``, with ``n`` strictly
+    increasing (a dropped CPI skips a slot) and the end never after the mtime.
+    Every frame goes to the latest slot compatible with its mtime and with the
+    frames after it; the grid phase is the one that minimises the median
+    latency.  The median latency is then added back, so only the write jitter
+    is removed, not the constant lag.
+    """
+    mtimes = np.asarray(mtimes, dtype=np.float64)
+    rel = mtimes - mtimes[0]
+    best = None
+    for phase in np.linspace(0.0, cpi_s, n_phase, endpoint=False):
+        slot = np.floor((rel - phase) / cpi_s).astype(np.int64) - 1
+        for k in range(len(slot) - 2, -1, -1):
+            if slot[k] >= slot[k + 1]:
+                slot[k] = slot[k + 1] - 1
+        lat = rel - (phase + (slot + 1) * cpi_s)
+        score = float(np.median(lat))
+        if best is None or score < best[0]:
+            best = (score, phase, slot)
+    score, phase, slot = best
+    return mtimes[0] + phase + (slot + 1) * cpi_s + score
 
 
 def count_session_raw_frames(session_dir: str) -> int:

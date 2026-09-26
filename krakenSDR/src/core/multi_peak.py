@@ -138,6 +138,7 @@ def process_cpi_for_multi(
     min_sep_el_deg: float = 8.0,
     el_min_deg: float = 10.0,
     timestamp: float | None = None,
+    mix_hz: float = 0.0,
 ) -> dict[str, Any] | None:
     """
     Detect burst in a CPI and return one DOA estimate per detected satellite tone.
@@ -150,12 +151,30 @@ def process_cpi_for_multi(
     ``peaks`` shape: (n_sat_tones, 4) — az, el, power_db=0, papr_db
     ``cfo_hz`` scalar: CFO of the strongest tone (for backward compat)
     ``cfo_per_peak``: list of CFO per row of peaks (the real per-satellite discriminator)
+    ``b0_per_peak``: sample index, inside the CPI, where each peak's burst starts
+
+    ``mix_hz`` shifts the CPI in frequency before anything else looks at it, so
+    the whole chain — energy detection, tone scan, BPF, covariance, DOA — lands
+    on a different Iridium simplex carrier.  The recorder samples 1.024 MHz
+    around the ring alert channel and therefore holds all five of them, but the
+    tone scan only spans ``profile["scan_bw_hz"]`` about the nominal tone, which
+    covers the ring alert alone.  Since the preamble tone sits at a fixed offset
+    from its own carrier (fc + Rs/8), shifting by the carrier spacing brings
+    another channel's tone back to the same nominal frequency.
+
+    The shift is common to all five antennas, so the inter-element phase — the
+    only thing the DOA estimator reads — is untouched.  The time origin restarts
+    at every CPI, which is harmless: every covariance is formed within one CPI.
     """
     hw = cfg["hardware"]
     pre_samples = hw["pre_samples"]
     window_samples = min(hw["window_samples"], X.shape[1])
     bpf_guard = hw["bpf_guard"]
     has_cal = any(o != 0.0 for o in phase_offs)
+
+    if mix_hz:
+        n = np.arange(X.shape[1], dtype=np.float64)
+        X = X * np.exp(-2j * np.pi * (mix_hz / FS) * n).astype(np.complex64)
 
     starts = detect_energy_bursts(
         X, FS, threshold_factor=profile["energy_threshold"],
@@ -167,6 +186,7 @@ def process_cpi_for_multi(
     peak_list: list[tuple[float, float, float, float]] = []
     cfo_per_peak: list[float] = []
     snr_per_peak: list[float] = []
+    b0_per_peak: list[int] = []
     y_per_peak: list[np.ndarray] = []
     best_snr_db = -999.0
     best_tone_hz: float | None = None
@@ -217,6 +237,9 @@ def process_cpi_for_multi(
             peak_list.append((az_deg, el_deg, power_db, papr_db))
             cfo_per_peak.append(float(tone_hz - profile["tone_nom_hz"]))
             snr_per_peak.append(snr_db)
+            # sample index of the burst start inside the CPI: the burst's epoch
+            # is the CPI epoch plus b0/fs, as remap_epochs() does for decodes
+            b0_per_peak.append(int(b0))
             y_per_peak.append(np.asarray(y_mf, dtype=np.complex64))
             if snr_db > best_snr_db:
                 best_snr_db = snr_db
@@ -250,6 +273,7 @@ def process_cpi_for_multi(
         "peaks": peaks_to_array(peak_list),
         "cfo_per_peak": cfo_per_peak,
         "snr_per_peak": snr_per_peak,
+        "b0_per_peak": b0_per_peak,
         "y_per_peak": np.asarray(y_per_peak, dtype=np.complex64),
         "spec2d": np.asarray(best_spec, dtype=np.float32) if best_spec is not None else np.zeros((1, 1), dtype=np.float32),
     }

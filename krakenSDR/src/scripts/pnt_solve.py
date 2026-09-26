@@ -156,8 +156,10 @@ def load_peaks(session: str, subdir: str, clock_offset_s: float, min_el: float,
     frame_ts = session_frame_times(session)
     if frame_ts is None:
         raise SystemExit(f"No frame timestamps for {session}")
+    fs_hz = _session_fs(session)
 
     t, cfo, az, el, snr = [], [], [], [], []
+    n_no_b0 = 0
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             rec = json.loads(line)
@@ -165,18 +167,39 @@ def load_peaks(session: str, subdir: str, clock_offset_s: float, min_el: float,
             if fi >= len(frame_ts):
                 continue
             epoch = float(frame_ts[fi]) - clock_offset_s
+            b0s = rec.get("b0_per_peak")
             for k, peak in enumerate(rec["peaks"]):
                 if k > max_peak_rank or k >= len(rec["cfo_per_peak"]):
                     continue
                 if peak[1] < min_el:
                     continue
-                t.append(epoch)
+                # A burst's epoch is its CPI's epoch plus its start inside the
+                # CPI -- the convention remap_epochs() applies to the decoded
+                # IRA/IBC frames.  Omitting it leaves the bursts ~23 ms early
+                # against the ephemeris on the reference session, which alone
+                # moved the fix by 0.2 km along track.
+                if b0s is not None and k < len(b0s) and b0s[k] >= 0:
+                    t.append(epoch + b0s[k] / fs_hz)
+                else:
+                    n_no_b0 += 1
+                    t.append(epoch)
                 cfo.append(float(rec["cfo_per_peak"][k]))
                 az.append(float(peak[0]))
                 el.append(float(peak[1]))
                 snr.append(float(rec["snr_per_peak"][k])
                            if k < len(rec["snr_per_peak"]) else 0.0)
+    if n_no_b0:
+        print(f"[warn] {n_no_b0} peaks have no b0_per_peak: epoch = CPI start "
+              f"(run scripts/add_burst_offsets.py on {subdir})", file=sys.stderr)
     return (np.array(t), np.array(cfo), np.array(az), np.array(el), np.array(snr))
+
+
+def _session_fs(session: str) -> float:
+    try:
+        with open(os.path.join(session, "meta.json"), encoding="utf-8") as fh:
+            return float(json.load(fh).get("fs_hz", 1_024_000.0))
+    except (OSError, ValueError):
+        return 1_024_000.0
 
 
 class IraSource:

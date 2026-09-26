@@ -84,6 +84,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--out-subdir", metavar="NAME",
                    help="Output subdir under session (default: doa_multi or doa_multi_<algo>)")
     p.add_argument("--k-peaks", type=int, default=3, help="Max peaks per burst")
+    p.add_argument("--mix-hz", type=float, default=0.0,
+                   help="Shift the CPI by this many Hz before processing, to "
+                        "land on another Iridium simplex carrier. Offsets from "
+                        "the ring alert: -166667, -125000, +125000, +166667.")
     p.add_argument("--el-min", type=float, default=10.0,
                    help="Minimum elevation [°] to accept a DOA peak")
     p.add_argument("--frame-start", type=int, default=0)
@@ -307,6 +311,7 @@ def reprocess_session(
             k_peaks=args.k_peaks,
             el_min_deg=el_min_deg,
             timestamp=t_rel,
+            mix_hz=getattr(args, "mix_hz", 0.0) or 0.0,
         )
         if rec is None:
             if args.verbose and n_seen % 500 == 0:
@@ -333,6 +338,7 @@ def reprocess_session(
             "peaks": peaks,
             "cfo_per_peak": np.asarray(rec["cfo_per_peak"], dtype=np.float32),
             "snr_per_peak": np.asarray(rec["snr_per_peak"], dtype=np.float32),
+            "b0_per_peak": np.asarray(rec["b0_per_peak"], dtype=np.int32),
             "y_per_peak": np.asarray(rec["y_per_peak"], dtype=np.complex64),
             "az_slice": az_slice,
         }
@@ -353,6 +359,7 @@ def reprocess_session(
             "peaks": peaks.tolist(),
             "cfo_per_peak": [round(float(c), 1) for c in rec["cfo_per_peak"]],
             "snr_per_peak": [round(float(s), 2) for s in rec["snr_per_peak"]],
+            "b0_per_peak": [int(b) for b in rec["b0_per_peak"]],
             # MF array-response vector per peak, [[re, im] × n_ant] — enables
             # offline multi-burst covariance averaging (scripts/multiburst_doa.py)
             "y_per_peak": [
