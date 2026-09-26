@@ -45,7 +45,7 @@ network, no known starting position and no satellite labels**:
 
 | | |
 |---|---|
-| Position fix | **0.47 km** (1σ ellipse 0.56 × 0.21 km); 0.15 km with SGP4 |
+| Position fix | **0.15 km** (1σ ellipse 0.58 × 0.21 km); bootstrap 0.12–0.63 km, 0.66 km with SGP4 |
 | Same solve from angles alone | 24.4 km |
 | Satellites identified from the payload | 4/4, matching SGP4 to 2.1 km |
 | Receiver clock error, measured from IBC | +1.300 s (MAD 37 ms) |
@@ -89,12 +89,11 @@ python3 scripts/decode_ephemeris.py <session> \
 
 # 4. solve for the receiver's position
 python3 scripts/pnt_solve.py <session> --ephemeris ira --mode doppler \
-    --per-sat-df --per-satellite --plot pnt.png
+    --per-satellite --plot pnt.png
 
 # ... or watch it converge: --gui scrubs *listening time* and re-solves,
 # so you see the fix walk in from the blind guess and tighten as satellites rise
-python3 scripts/pnt_solve.py <session> --ephemeris ira --mode doppler \
-    --per-sat-df --gui
+python3 scripts/pnt_solve.py <session> --ephemeris ira --mode doppler --gui
 
 # how much the array helps the demodulator (needs all three export modes)
 python3 scripts/decode_yield.py <session> --doa-only \

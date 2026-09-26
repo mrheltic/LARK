@@ -225,8 +225,9 @@ def solve_position(obs: Observations, *, x0: tuple[float, float],
     (0-based indices, one per observation) instead of a single global one.  With
     one group per satellite this measures each transmitter's own frequency error
     rather than forcing it into the position: on the reference session the four
-    satellites differ by ~50 Hz (0.03 ppm), the same pattern appears under two
-    independent ephemerides, and letting them float improves the fix by ~20%.
+    satellites differ by ~70 Hz.  On the old (mtime) epochs letting them float
+    improved the fix by ~20 %; on the corrected epochs it makes it worse
+    (0.47 km against 0.15 km with one global offset), so the default is global.
     ``PntSolution.delta_f_hz`` then reports the mean over groups.
     """
     from scipy.optimize import least_squares

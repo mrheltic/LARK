@@ -32,8 +32,11 @@ averaging (`--cov-bursts 16`) is what closes the gap.
 satellites are, the same bursts fix where the *receiver* is — GNSS-independent PNT. The
 satellites broadcast what that needs: **IRA** frames carry the transmitter's own ECEF
 position, **IBC** frames carry Iridium system time. Decoding them (via `gr-iridium` +
-`iridium-toolkit`) makes the fix self-contained: **0.47 km, blind, no TLE, no network, no
-host clock** (0.15 km with SGP4 in place of the broadcast ephemeris). Doppler carries the
+`iridium-toolkit`) makes the fix self-contained: **0.15 km, blind, no TLE, no network, no
+host clock** — read it as a few hundred metres: bootstrap 0.12–0.63 km, 0.61 km at
+the true altitude, 0.66 km with SGP4 in place of the broadcast ephemeris. Use one
+receiver offset for all satellites (the default); `--per-sat-df` gave 0.47 km on
+the corrected epochs. Doppler carries the
 information (~14 Hz per km of observer displacement, ~35 Hz MAD on clean bursts); angles
 supply the initial guess, the side of the ground track, and **+31% decoded frames** from
 steering the array. See `docs/decisions/004-broadcast-ephemeris-pnt.md`.
@@ -41,7 +44,7 @@ steering the array. See `docs/decisions/004-broadcast-ephemeris-pnt.md`.
 **Timing conventions (easy to break, costly when broken).** A burst's epoch is its CPI's
 epoch plus its start inside the CPI (`b0_per_peak` / `remap_epochs()`); sessions without
 `raw/timestamps.csv` get CPI epochs rebuilt on the sample grid by `session_frame_times()`.
-Getting either wrong moved the reference fix from 0.47 km to 0.88 km, all along track.
+Getting either wrong moved the reference fix from 0.15 km to 0.97 km, all along track.
 
 ## Repository map
 
@@ -131,10 +134,10 @@ python3 scripts/export_iq.py ../data/doa_iridium/session_.../ --ant 0 --out /tmp
 python3 scripts/decode_ephemeris.py ../data/doa_iridium/session_.../ \
   --parsed /tmp/frames.parsed --index /tmp/cpi/index.json --validate-vs-tle
 python3 scripts/pnt_solve.py ../data/doa_iridium/session_.../ \
-  --ephemeris ira --mode doppler --per-sat-df --per-satellite
+  --ephemeris ira --mode doppler --per-satellite
 # interactive: timeline = listening time, re-solves at each step
 python3 scripts/pnt_solve.py ../data/doa_iridium/session_.../ \
-  --ephemeris ira --mode doppler --per-sat-df --gui
+  --ephemeris ira --mode doppler --gui
 
 # Tests
 pytest tests/ -q
