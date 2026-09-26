@@ -58,6 +58,21 @@ C_TEXT = "#d8dae8"
 C_SMOOTH = "#39d2c0"   # Kalman/RTS smoothed trajectory
 
 
+def use_light_theme() -> None:
+    """Switch the module palette to a print-friendly light theme.
+
+    The dark theme matches the live viewers, where it belongs; on paper it
+    burns ink and fights the surrounding text.  Called from --light.
+    """
+    global BG, BG2, C_BDR, C_MUT, C_TEXT, C_SMOOTH
+    BG = "#ffffff"
+    BG2 = "#f5f5f7"
+    C_BDR = "#b8bcc8"
+    C_MUT = "#5a6070"
+    C_TEXT = "#1a1d27"
+    C_SMOOTH = "#0a8f80"
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="DOA trajectory vs TLE ground truth")
     p.add_argument("session_dir")
@@ -76,6 +91,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-smooth", action="store_true",
                    help="Do not overlay the Kalman/RTS smoothed trajectory")
     p.add_argument("--show", action="store_true", help="Open interactive windows")
+    p.add_argument("--light", action="store_true",
+                   help="Light palette for print instead of the on-screen dark one")
+    p.add_argument("--figsize", default="13,7", metavar="W,H",
+                   help="Figure size in inches; use something smaller (e.g. 8,4.6) "
+                        "when the figure will be scaled down into a document")
+    p.add_argument("--dpi", type=int, default=140)
+    p.add_argument("--format", default="png", help="png or pdf")
+    p.add_argument("--title", default="full", choices=("full", "short", "none"),
+                   dest="title_mode",
+                   help="in-figure title: full (default), short (drop the "
+                        "residual line), or none when a caption carries it")
     # build_sat_tracks() expects observer location + el_min on the namespace.
     p.set_defaults(lat=OBSERVER_LAT, lon=OBSERVER_LON, alt=OBSERVER_ALT, el_min=5.0)
     return p.parse_args(argv)
@@ -188,7 +214,10 @@ def _style_axes(ax):
 def plot_satellite(sat: str, pts: list[dict], trk: dict, *,
                    lo_offset: float, subdir: str, out_dir: str, show: bool,
                    smooth_segs: list[np.ndarray] | None = None,
-                   outlier_idx: list[int] | None = None) -> str:
+                   outlier_idx: list[int] | None = None,
+                   figsize: str = "13,7", dpi: int = 140,
+                   title_mode: str = "full",
+                   fmt: str = "png") -> str:
     import matplotlib
     if not show:
         matplotlib.use("Agg")
@@ -219,10 +248,13 @@ def plot_satellite(sat: str, pts: list[dict], trk: dict, *,
     t_lo, t_hi = float(tt[0]), float(tt[-1])
     norm = plt.Normalize(t_lo, t_hi)
 
-    fig = plt.figure(figsize=(13, 7), facecolor=BG)
+    fw, fh = (float(v) for v in str(figsize).split(","))
+    fig = plt.figure(figsize=(fw, fh), facecolor=BG)
     gs = fig.add_gridspec(3, 2, width_ratios=[1.25, 1.0],
-                          hspace=0.45, wspace=0.25,
-                          left=0.05, right=0.97, top=0.88, bottom=0.08)
+                          hspace=0.38, wspace=0.34,
+                          left=0.05, right=0.97,
+                          top=(0.88 if title_mode != "none" else 0.97),
+                          bottom=0.08)
 
     # ── Sky plot ────────────────────────────────────────────────────────────
     ax_sky = fig.add_subplot(gs[:, 0], polar=True)
@@ -253,7 +285,13 @@ def plot_satellite(sat: str, pts: list[dict], trk: dict, *,
     sc = ax_sky.scatter(np.deg2rad(az_m), 90.0 - el_m, c=t_m, cmap=cmap,
                         norm=norm, s=22, edgecolors=BG, linewidths=0.4,
                         zorder=6)
-    cb = fig.colorbar(sc, ax=ax_sky, pad=0.1, fraction=0.04)
+    # Horizontal, under the sky plot.  A vertical colorbar sits between the
+    # polar axes and the right-hand column, so its label collides with those
+    # subplots' y-labels as soon as the figure is rendered below the 13x7
+    # default (measured clearance: 39 px at 13x7, 7 px at 9x5, -7 px and
+    # overlapping at 7.6x4.2; the thesis renders it at 6.8x3.9).
+    cb = fig.colorbar(sc, ax=ax_sky, orientation="horizontal",
+                      location="bottom", pad=0.13, fraction=0.038, shrink=0.78)
     cb.set_label("min since session start", color=C_MUT, fontsize=8)
     cb.ax.tick_params(colors=C_MUT, labelsize=8)
     cb.outline.set_edgecolor(C_BDR)
@@ -303,8 +341,9 @@ def plot_satellite(sat: str, pts: list[dict], trk: dict, *,
         if i == 2:
             ax.set_xlabel("min since session start", fontsize=9)
         if i == 0:
-            ax.legend(loc="best", fontsize=8, facecolor=BG2,
-                      edgecolor=C_BDR, labelcolor=C_TEXT)
+            ax.legend(loc="upper left", fontsize=7.5, facecolor=BG2,
+                      edgecolor=C_BDR, labelcolor=C_TEXT, framealpha=0.9,
+                      borderpad=0.35, handlelength=1.4)
 
     title = (
         f"{sat} — DOA trajectory vs TLE   ({subdir}, {len(pts)} burst)\n"
@@ -323,11 +362,14 @@ def plot_satellite(sat: str, pts: list[dict], trk: dict, *,
             f"el {np.median(el_res_s):+.1f}° "
             f"(MAD {np.median(np.abs(el_res_s - np.median(el_res_s))):.1f}°)"
         )
-    fig.suptitle(title, color=C_TEXT, fontsize=11)
+    if title_mode == "short":
+        title = title.split("\n")[0]
+    if title_mode != "none":
+        fig.suptitle(title, color=C_TEXT, fontsize=10)
 
     out_path = os.path.join(
-        out_dir, f"track_{sat.replace(' ', '_')}_{subdir}.png")
-    fig.savefig(out_path, dpi=140, facecolor=BG)
+        out_dir, f"track_{sat.replace(' ', '_')}_{subdir}.{fmt}")
+    fig.savefig(out_path, dpi=dpi, facecolor=BG, bbox_inches="tight")
     if show:
         plt.show()
     plt.close(fig)
@@ -336,6 +378,8 @@ def plot_satellite(sat: str, pts: list[dict], trk: dict, *,
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    if args.light:
+        use_light_theme()
     session_dir = os.path.abspath(args.session_dir.rstrip("/"))
     jsonl = os.path.join(session_dir, args.subdir, "doa_multi.jsonl")
     if not os.path.isfile(jsonl):
@@ -386,7 +430,9 @@ def main(argv: list[str] | None = None) -> None:
         path = plot_satellite(
             name, pts, tracks[ti], lo_offset=lo,
             subdir=args.subdir, out_dir=out_dir, show=args.show,
-            smooth_segs=segs, outlier_idx=outlier_idx)
+            smooth_segs=segs, outlier_idx=outlier_idx,
+            figsize=args.figsize, dpi=args.dpi, fmt=args.format,
+            title_mode=args.title_mode)
         print(f"  {name:24s} {len(pts):4d} burst → {path}")
         plotted += 1
 

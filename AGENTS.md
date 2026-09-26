@@ -28,6 +28,21 @@ ground truth). Headline metric is **MedAE** (median absolute error):
 Elevation is the weaker axis (per-burst MAD ≈ 5.5° vs ≈ 3.8° az); multi-burst covariance
 averaging (`--cov-bursts 16`) is what closes the gap.
 
+**The DOA is the method; the application is the inverse problem.** Given where the
+satellites are, the same bursts fix where the *receiver* is — GNSS-independent PNT. The
+satellites broadcast what that needs: **IRA** frames carry the transmitter's own ECEF
+position, **IBC** frames carry Iridium system time. Decoding them (via `gr-iridium` +
+`iridium-toolkit`) makes the fix self-contained: **0.47 km, blind, no TLE, no network, no
+host clock** (0.15 km with SGP4 in place of the broadcast ephemeris). Doppler carries the
+information (~14 Hz per km of observer displacement, ~35 Hz MAD on clean bursts); angles
+supply the initial guess, the side of the ground track, and **+31% decoded frames** from
+steering the array. See `docs/decisions/004-broadcast-ephemeris-pnt.md`.
+
+**Timing conventions (easy to break, costly when broken).** A burst's epoch is its CPI's
+epoch plus its start inside the CPI (`b0_per_peak` / `remap_epochs()`); sessions without
+`raw/timestamps.csv` get CPI epochs rebuilt on the sample grid by `session_frame_times()`.
+Getting either wrong moved the reference fix from 0.47 km to 0.88 km, all along track.
+
 ## Repository map
 
 ```
@@ -63,6 +78,11 @@ Run Python commands from **`krakenSDR/src/`** (that directory is on `sys.path`).
 | Burst DSP stages | `krakenSDR/src/core/burst_processing.py` |
 | Multi-sat CPI processing | `krakenSDR/src/core/multi_peak.py` |
 | Track clustering | `krakenSDR/src/core/track_clusterer.py` |
+| Ephemeris + time from decoded frames | `krakenSDR/src/core/broadcast_ephemeris.py` |
+| Observer position solver | `krakenSDR/src/core/pnt_solver.py` |
+| IQ export for the demodulator | `krakenSDR/src/scripts/export_iq.py` |
+| PNT fix (CLI) | `krakenSDR/src/scripts/pnt_solve.py` |
+| PNT interactive replay | `krakenSDR/src/apps/doa_iridium/pnt_replay.py` |
 
 ## Physical conventions (do not invert)
 
@@ -105,6 +125,17 @@ python3 apps/doa_iridium/run_doa_offline.py ../data/doa_iridium/session_.../ --c
 python3 apps/doa_iridium/run_doa_offline.py ../data/doa_iridium/session_.../ \
   --replay --no-tracks
 
+# PNT: decode the payload, then solve for the receiver's own position
+python3 scripts/export_iq.py ../data/doa_iridium/session_.../ --ant 0 --out /tmp/cpi
+# ... iridium-extractor + iridium-parser.py -o line -> /tmp/frames.parsed (see README)
+python3 scripts/decode_ephemeris.py ../data/doa_iridium/session_.../ \
+  --parsed /tmp/frames.parsed --index /tmp/cpi/index.json --validate-vs-tle
+python3 scripts/pnt_solve.py ../data/doa_iridium/session_.../ \
+  --ephemeris ira --mode doppler --per-sat-df --per-satellite
+# interactive: timeline = listening time, re-solves at each step
+python3 scripts/pnt_solve.py ../data/doa_iridium/session_.../ \
+  --ephemeris ira --mode doppler --per-sat-df --gui
+
 # Tests
 pytest tests/ -q
 ```
@@ -133,6 +164,8 @@ Hardware-independent, unit-tested signal processing.
 | `doa_uca_2d.py` | UCA steering, MUSIC/Capon/Bartlett, peak find |
 | `track_clusterer.py` | peak → track association |
 | `recording.py` | session record + frame iteration |
+| `broadcast_ephemeris.py` | IRA/IBC parsing, short-arc fit, clock offset |
+| `pnt_solver.py` | WGS-84 geometry, Doppler model, observer solve |
 
 - Pure functions where possible; explicit parameters over hidden globals.
 - NumPy shapes: IQ `(n_ant, n_samples)`, spectrum `(n_el, n_az)`.
@@ -152,6 +185,28 @@ CLI entry points, config, offline viz/replay. Import DSP from `core/`; do not du
   `--recluster-only` to tune clustering without re-reading IQ.
 - Viz flags: `--replay` (timeline), `--compare` (algorithm overlay), `--no-tracks`
   (flat peak coloring, disable track-filter hotkeys).
+- `pnt_replay.py` reuses the same theme constants and `_style_button` from
+  `offline_viz` / `offline_replay` — extend those rather than defining new colours.
+  Its timeline is *listening time*, and every step is a real re-solve, so the fixes
+  are precomputed once at startup (`--gui-steps`) to keep scrubbing instant.
+
+### PNT chain — traps that cost real debugging time
+
+- **`iridium-parser.py` needs `-o line`.** Without it nothing prints and it looks like a
+  decode failure.
+- **`gr-iridium` must be built against the *system* pybind11 2.11.1**, not the pip 3.x:
+  GNU Radio's ABI is `__pybind11_internals_v5` and the mismatch surfaces as
+  `unknown base type "gr::block"`. Build to a local prefix; never modify `external/`.
+- **gr-iridium rejects sample rates that are not a multiple of 100 kHz.** `export_iq.py`
+  resamples 1.024 → 1.0 MS/s; 125/128 is exact and maps a 65536-sample CPI to exactly
+  64000, so sample-offset timing stays integer. Resample per CPI, never per chunk.
+- **Exported chunks have a compressed time axis.** Dropped CPIs are concatenated, so a
+  chunk's internal clock runs ~23% slow. Always map back through `index.json`.
+- **About half of BCH-clean IRA position fields are corrupt** — filter on orbital radius
+  (`filter_plausible`). And never finite-difference IRA positions for velocity: 4 km
+  quantisation over 90 ms implies 44 km/s. Fit a short arc.
+- **Do not use DOA tracks for PNT.** The clusterer mixes satellites; associate per burst
+  by Doppler instead. Use rank-0 peaks only — rank-1 and rank-2 are ~80% ghosts.
 
 ## Where to read next
 
@@ -162,6 +217,7 @@ CLI entry points, config, offline viz/replay. Import DSP from `core/`; do not du
 | Signal path & algorithms | `docs/doa-pipeline.md` |
 | Why multi-peak per tone | `docs/decisions/001-multi-peak-per-tone.md` |
 | Why elevation gate | `docs/decisions/002-elevation-gate.md` |
+| Why decode the payload; PNT error budget | `docs/decisions/004-broadcast-ephemeris-pnt.md` |
 | Commands & field procedures | `krakenSDR/src/apps/doa_iridium/README.md` |
 
 ## Session data layout
@@ -175,7 +231,9 @@ session_YYYYMMDD_HHMMSS/
 │   ├── burst_NNNNNN.npz
 │   ├── waterfall.npz
 │   └── tracks.json
-└── groundtruth.json          # optional, from scripts/
+├── groundtruth.json          # optional, from scripts/
+├── broadcast_ephemeris.json  # optional, from scripts/decode_ephemeris.py
+└── pnt_solution.json         # optional, from scripts/pnt_solve.py
 ```
 
 Do not store tuning experiments or chat state in permanent repo docs — use issues,

@@ -113,3 +113,6 @@ krakenSDR/data/*
 
 # Array calibration shipped with the DOA config (needed by use_phase_cal)
 !krakenSDR/src/apps/doa_iridium/cal_tle.npz
+
+# Locally built gr-iridium (see docs/decisions/004-broadcast-ephemeris-pnt.md)
+/.local/

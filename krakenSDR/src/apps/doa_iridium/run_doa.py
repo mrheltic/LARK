@@ -366,7 +366,18 @@ def pipeline_thread(state: dict, cfg: dict, out_file=None, verbose: bool = False
 
             X = frame[:n_ant, :]
             frame_idx += 1
-            t_frame = time.time()
+            # Stamp the START of the CPI, not the moment its last sample landed.
+            # get_frame() returns once the whole CPI has been received, so
+            # time.time() here is already one CPI duration late, plus however
+            # long the read took.  Everything downstream reads this epoch as the
+            # time of the CPI's FIRST sample -- core/broadcast_ephemeris.py's
+            # remap_epochs() adds the intra-CPI sample offset on top of it -- so
+            # the two conventions have to agree or every decoded epoch carries a
+            # constant lag.  The IBC clock offset absorbs that lag today, which
+            # is why it has gone unnoticed: it silently inflates
+            # clock_offset_s by one CPI instead of measuring only the host
+            # clock error against Iridium system time.
+            t_frame = time.time() - X.shape[1] / fs
             with state["lock"]:
                 state["frame_count"] = frame_idx
 

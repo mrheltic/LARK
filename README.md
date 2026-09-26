@@ -1,7 +1,8 @@
 # LARK — Iridium satellite direction finding with a KrakenSDR
 
 LARK is a master's-thesis project that **passively locates Iridium satellites** from the
-ground. It listens to the satellites' L-band downlink bursts with a 5-channel
+ground — and then turns the problem around to **locate itself**. It listens to the
+satellites' L-band downlink bursts with a 5-channel
 [KrakenSDR](https://www.krakenrf.com/) **uniform circular array (UCA)**, estimates the
 **azimuth and elevation** of each satellite from the phase differences across the five
 antennas, and checks the result against orbital predictions (TLEs).
@@ -22,13 +23,93 @@ the architecture write-up is [`docs/architecture.md`](docs/architecture.md).
 
 ---
 
+## Why: positioning without GNSS
+
+Direction finding is the method, not the point. The point is the inverse problem: if you
+know where the satellites are, the same measurements tell you where **you** are — a
+position fix from signals of opportunity, with no GNSS involved.
+
+The catch is that "knowing where the satellites are" normally means a TLE catalogue, a
+network to fetch it, and a disciplined clock. None of those are available in the scenario
+that makes the application interesting. So LARK stops throwing the payload away:
+
+- **IRA** (Ring Alert) frames carry the transmitting satellite's own ECEF position.
+- **IBC** frames carry **Iridium system time**, from the satellite's clock rather than the
+  receiving PC's.
+
+Both are broadcast in the clear on the channel already being recorded. Decoding them makes
+the fix self-contained.
+
+On the reference session — one antenna's worth of decoding, 36 minutes, **no TLE, no
+network, no known starting position and no satellite labels**:
+
+| | |
+|---|---|
+| Position fix | **0.47 km** (1σ ellipse 0.56 × 0.21 km); 0.15 km with SGP4 |
+| Same solve from angles alone | 24.4 km |
+| Satellites identified from the payload | 4/4, matching SGP4 to 2.1 km |
+| Receiver clock error, measured from IBC | +1.300 s (MAD 37 ms) |
+| Listening time to below 1 km | ~4 minutes (five antennas, stored receiver offset) |
+
+**Doppler does the work, angles make it possible.** At ~4° of DOA error and ~800 km slant
+range, angles alone are worth tens of km. Doppler is worth ~14 Hz per km of observer
+displacement and matches the broadcast ephemeris to ~35 Hz (MAD), so it is two orders of
+magnitude stronger. What the array contributes is everything around it: a closed-form
+starting guess, an independent geometric check, and a **+31% increase in decoded frames**
+from steering the five elements at the measured direction — which a single-antenna
+receiver cannot do. (A *flat* sum of the array decodes 31% *fewer* frames than one
+element: an unsteered UCA is a beam pointed at zenith. Array gain requires pointing.)
+
+`pnt_solve.py --gui` replays the fix with the same dark UI as the DOA viewer, except
+the timeline is **listening time**: scrubbing forward re-solves with every burst up to
+that moment. It makes the geometry visible — with one satellite up, the Doppler
+likelihood is a long diagonal valley and the 1σ ellipse is a sliver across the ground
+track; as a second and third satellite rise, the valley closes into a bowl.
+
+Full reasoning, measurements and the open questions: [ADR 004](docs/decisions/004-broadcast-ephemeris-pnt.md).
+
+### Running it
+
+```bash
+cd krakenSDR/src
+
+# 1. export CPIs as single-channel cf32 (--beamform needs a reprocessed session)
+python3 scripts/export_iq.py <session> --ant 0 --out /tmp/cpi
+
+# 2. demodulate — needs gr-iridium built (see ADR 004 for the pybind11 trap)
+for f in /tmp/cpi/*.cf32; do
+    iridium-extractor -f cf32_le -r 1000000 -c 1626270000 "$f"
+done | grep '^RAW:' > /tmp/frames.bits
+python3 ../../external/iridium-toolkit/iridium-parser.py -o line \
+    /tmp/frames.bits > /tmp/frames.parsed        # -o line, or nothing prints
+
+# 3. ephemeris + clock from the decoded frames
+python3 scripts/decode_ephemeris.py <session> \
+    --parsed /tmp/frames.parsed --index /tmp/cpi/index.json --validate-vs-tle
+
+# 4. solve for the receiver's position
+python3 scripts/pnt_solve.py <session> --ephemeris ira --mode doppler \
+    --per-sat-df --per-satellite --plot pnt.png
+
+# ... or watch it converge: --gui scrubs *listening time* and re-solves,
+# so you see the fix walk in from the blind guess and tighten as satellites rise
+python3 scripts/pnt_solve.py <session> --ephemeris ira --mode doppler \
+    --per-sat-df --gui
+
+# how much the array helps the demodulator (needs all three export modes)
+python3 scripts/decode_yield.py <session> --doa-only \
+    --mode ant0:/tmp/m_ant0 --mode sum:/tmp/m_sum --mode beamform:/tmp/m_bf
+```
+
+---
+
 ## Repository layout
 
 | Path | What's in it |
 |------|--------------|
-| `krakenSDR/src/core/` | The DSP library: burst detection, beamforming, the UCA DOA estimators. |
+| `krakenSDR/src/core/` | The DSP library: burst detection, beamforming, the UCA DOA estimators — plus `broadcast_ephemeris.py` and `pnt_solver.py` for the inverse problem. |
 | `krakenSDR/src/apps/doa_iridium/` | The DOA app: `run_doa.py` (live) and `reprocess_session.py` (offline), plus config. |
-| `krakenSDR/src/scripts/` | TLE fetch, ground-truth prediction, array calibration, plotting. |
+| `krakenSDR/src/scripts/` | TLE fetch, ground-truth prediction, array calibration, plotting; and the PNT chain `export_iq.py` → `decode_ephemeris.py` → `pnt_solve.py`. |
 | `krakenSDR/src/tests/` | Synthetic-signal unit tests for the DOA pipeline. |
 | `libreSDR/` | The **satellite simulator / transmitter** (AD9363 "LibreSDR") — see below. |
 | `shared/` | Iridium constants, the TLE catalogue, and burst↔satellite matching. |
@@ -211,6 +292,8 @@ whenever you physically move or rotate the array.**
 
 - [`AGENTS.md`](AGENTS.md) — full project guide / conventions.
 - [`docs/architecture.md`](docs/architecture.md) — system architecture.
+- [`docs/decisions/004-broadcast-ephemeris-pnt.md`](docs/decisions/004-broadcast-ephemeris-pnt.md) —
+  why the payload gets decoded, and the full PNT error budget.
 - [`krakenSDR/src/apps/doa_iridium/README.md`](krakenSDR/src/apps/doa_iridium/README.md) — the
   detailed operations handbook (theory + field procedure + every config knob).
 - Upstream tools in `external/`: [`gr-iridium`](external/gr-iridium),
