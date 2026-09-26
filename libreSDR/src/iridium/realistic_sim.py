@@ -18,9 +18,14 @@ PHYSICAL PARAMETERS:
   - Channel spacing:   41,667 Hz  (FDMA, from iridium-toolkit)
 
 TDMA / IRA BURST STRUCTURE (Ring Alert):
-  - Superframe:        90 ms  →  8 slots  →  1 slot = 11.25 ms = 281 symbols
+  - Frame:             90 ms.  NOTE: the 8-equal-slot split below (11.25 ms =
+                       281 symbols) is a SIMPLIFICATION used by this simulator to
+                       emit bursts on a regular cadence.  The real Iridium frame
+                       is asymmetric: 20.300 ms simplex + 8 x 8.267 ms traffic
+                       slots + guard (FCC IBFS SAT-MOD-20131227-00148 App. 1).
   - Guard pre-burst:   8 symbols  (0.32 ms)
-  - Preamble run-in:   32 symbols (1.28 ms) — constant +45° phase rotation (all 0x00)
+  - Preamble run-in:   64 symbols (2.56 ms) — constant +45° phase rotation (all 0x00)
+                       (PREAMBLE_LENGTH_LONG; the code uses IRA_PREAMBLE_SYMS = 64)
                        → produces a tone at  fc + 3125 Hz  (Rs/8)
                        → THIS IS THE SIGNAL TO DETECT
   - Unique Word (UW):  12 symbols (24 bits) — from gr-iridium README footnote 2
